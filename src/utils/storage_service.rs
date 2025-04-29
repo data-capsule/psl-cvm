@@ -8,7 +8,9 @@ use super::{channel::{make_channel, Receiver, Sender}, StorageEngine};
 
 enum StorageServiceCommand {
     Put(HashType /* key */, Vec<u8> /* val */, oneshot::Sender<Result<(), Error>>),
-    Get(HashType /* key */, oneshot::Sender<Result<Vec<u8>, Error>>)
+    Get(HashType /* key */, oneshot::Sender<Result<Vec<u8>, Error>>),
+
+    PutNonBlocking(oneshot::Receiver<Result<CachedBlock, Error>>, oneshot::Sender<Result<CachedBlock, Error>>),
 }
 
 pub struct StorageService<S: StorageEngine> {
@@ -56,6 +58,30 @@ impl<S: StorageEngine> StorageService<S> {
                     let res = self.db.get_block(&key);
                     let _ = val_chan.send(res);
                 },
+
+                StorageServiceCommand::PutNonBlocking(block_rx, ack_tx) => {
+                    #[cfg(feature = "storage")]
+                    {
+                        let block = block_rx.await.unwrap();
+                        if block.is_err() {
+                            let _ = ack_tx.send(Err(block.unwrap_err()));
+                            continue;
+                        }
+
+                        let block = block.unwrap();
+                        let res = self.db.put_block(&block.block_ser, &block.block_hash);
+                        if res.is_err() {
+                            let _ = ack_tx.send(Err(res.unwrap_err()));
+                            continue;
+                        }
+                        let _ = ack_tx.send(Ok(block));
+                    }
+
+                    #[cfg(not(feature = "storage"))]
+                    {
+                        let _ = ack_tx.send(Ok(()));
+                    }
+                }
             }
         }
         self.db.destroy();
@@ -92,5 +118,12 @@ impl StorageServiceConnector {
         self.cmd_tx.send(StorageServiceCommand::Get(key.into_bytes(), tx)).await.unwrap();
 
         rx.await.unwrap()
+    }
+
+    pub async fn put_nonblocking(&self, block: oneshot::Receiver<Result<CachedBlock, Error>>) -> oneshot::Receiver<Result<CachedBlock, Error>> {
+        let (tx, rx) = oneshot::channel();
+        self.cmd_tx.send(StorageServiceCommand::PutNonBlocking(block, tx)).await.unwrap();
+
+        rx
     }
 }
