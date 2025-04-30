@@ -74,7 +74,7 @@ impl ForkReceiver {
         if pending_cmds > 0 {
             // Prefer clearing cmd_rx as fast as possible.
             let mut cmds = Vec::new();
-            self.cmd_rx.recv_many(&mut cmds, pending_cmds);
+            let _ = self.cmd_rx.recv_many(&mut cmds, pending_cmds);
 
             for cmd in cmds {
                 self.handle_command(cmd).await?;
@@ -116,7 +116,7 @@ impl ForkReceiver {
                     return Ok(());
                 }
 
-                let last_entry = stats.back().unwrap().clone();
+                let last_entry = stats.back().unwrap();
                 
                 
                 let to_remove_n = if last_entry.block_n <= n {

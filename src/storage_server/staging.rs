@@ -14,7 +14,8 @@ pub struct Staging {
     keystore: AtomicKeyStore,
     client: PinnedClient,
     block_rx: Receiver<(oneshot::Receiver<Result<CachedBlock, Error>>, SenderType)>,
-    logserver_tx: Sender<CachedBlock>,
+    logserver_tx: Sender<(SenderType, CachedBlock)>,
+    gc_tx: Sender<(SenderType, u64)>,
     fork_receiver_cmd_tx: UnboundedSender<ForkReceiverCommand>,
 
     last_confirmed_n: HashMap<SenderType, u64>,
@@ -24,7 +25,8 @@ impl Staging {
     pub fn new(
         config: AtomicConfig, keystore: AtomicKeyStore,
         block_rx: Receiver<(oneshot::Receiver<Result<CachedBlock, Error>>, SenderType)>,
-        logserver_tx: Sender<CachedBlock>,
+        logserver_tx: Sender<(SenderType, CachedBlock)>,
+        gc_tx: Sender<(SenderType, u64)>,
         fork_receiver_cmd_tx: UnboundedSender<ForkReceiverCommand>,
     ) -> Self {
         let client = Client::new_atomic(config.clone(), keystore.clone(), false, 0);
@@ -35,6 +37,7 @@ impl Staging {
             block_rx,
             logserver_tx,
             fork_receiver_cmd_tx,
+            gc_tx,
             client: client.into(),
 
             last_confirmed_n: HashMap::new(),
@@ -90,7 +93,7 @@ impl Staging {
             ForkReceiverCommand::Confirm(sender.clone(), block.block.n)
         );
 
-        let _ = self.logserver_tx.send(block.clone()).await;
+        let _ = self.logserver_tx.send((sender.clone(), block.clone())).await;
 
         let last_n = self.last_confirmed_n.entry(sender.clone())
             .or_insert(0);
@@ -170,4 +173,7 @@ impl Staging {
             MessageRef(&buf, sz, &SenderType::Anon)
         ).await;
     }
+
+
+    // TODO: Decide LogServer GC strategy
 }

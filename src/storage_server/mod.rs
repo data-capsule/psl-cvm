@@ -167,12 +167,14 @@ impl StorageNode {
         let (staging_tx, staging_rx) = make_channel(_chan_depth);
         let (logserver_tx, logserver_rx) = make_channel(_chan_depth);
         let (fork_receiver_cmd_tx, fork_receiver_cmd_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (gc_tx, gc_rx) = make_channel(_chan_depth);
 
         let fork_receiver = ForkReceiver::new(config.clone(), keystore.clone(), fork_receiver_rx, fork_receiver_crypto, fork_receiver_storage, staging_tx, fork_receiver_cmd_rx);
 
-        let staging = Staging::new(config.clone(), keystore.clone(), staging_rx, logserver_tx, fork_receiver_cmd_tx);
+        let staging = Staging::new(config.clone(), keystore.clone(), staging_rx, logserver_tx, gc_tx, fork_receiver_cmd_tx);
 
-        let logserver = LogServer::new(config.clone(), keystore.clone(), logserver_rx, backfill_request_rx);
+        let logserver_storage = storage.get_connector(crypto.get_connector());
+        let logserver = LogServer::new(config.clone(), keystore.clone(), logserver_storage, gc_rx, logserver_rx, backfill_request_rx);
 
 
 
