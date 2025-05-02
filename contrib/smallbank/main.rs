@@ -91,6 +91,7 @@ async fn run_main(config: Config, batch_proposer_tx: Sender<TxWithAckChanTag>, b
 
 const NUM_THREADS: usize = 32;
 
+
 fn main() {
     log4rs::init_config(config::default_log4rs_config()).unwrap();
 

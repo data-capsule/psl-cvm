@@ -3,7 +3,7 @@
 
 [workspace]
 resolver = "2"
-members = [".", "contrib"]
+members = [".", "runtime"]
 
 [package]
 name = "psl"

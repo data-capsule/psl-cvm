@@ -209,6 +209,4 @@ impl Staging {
         ).await;
     }
 
-
-    // TODO: Decide LogServer GC strategy
 }

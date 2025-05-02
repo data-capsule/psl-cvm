@@ -5,6 +5,7 @@ pub mod utils;
 pub mod config;
 pub mod consensus;
 pub mod storage_server;
+pub mod worker;
 pub mod crypto;
 pub mod rpc;
 pub mod proto;
