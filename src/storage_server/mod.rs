@@ -1,6 +1,6 @@
-mod fork_receiver;
-mod staging;
-mod logserver;
+pub mod fork_receiver;
+pub mod staging;
+pub mod logserver;
 
 use std::{io::{Error, ErrorKind}, ops::Deref, pin::Pin, sync::Arc};
 
@@ -173,8 +173,8 @@ impl StorageNode {
 
         let staging = Staging::new(config.clone(), keystore.clone(), staging_rx, logserver_tx, gc_tx, fork_receiver_cmd_tx);
 
-        let logserver_storage = storage.get_connector(crypto.get_connector());
-        let logserver = LogServer::new(config.clone(), keystore.clone(), logserver_storage, gc_rx, logserver_rx, backfill_request_rx);
+        // let logserver_storage = storage.get_connector(crypto.get_connector());
+        let logserver = LogServer::new(config.clone(), keystore.clone(), gc_rx, logserver_rx, backfill_request_rx);
 
 
 

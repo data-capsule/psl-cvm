@@ -9,7 +9,7 @@ pub struct LogServer {
     config: AtomicConfig,
     keystore: AtomicKeyStore,
     client: PinnedClient,
-    storage: StorageServiceConnector,
+    // storage: StorageServiceConnector,
 
     last_gced_n: HashMap<SenderType, u64>,
     gc_rx: Receiver<(SenderType, u64)>,
@@ -29,7 +29,7 @@ pub struct LogServer {
 impl LogServer {
     pub fn new(
         config: AtomicConfig, keystore: AtomicKeyStore,
-        storage: StorageServiceConnector,
+        // storage: StorageServiceConnector,
         gc_rx: Receiver<(SenderType, u64)>,
         block_rx: Receiver<(SenderType, CachedBlock)>,
         query_rx: Receiver<ProtoBackfillNack>,
@@ -45,7 +45,7 @@ impl LogServer {
             query_rx,
             gc_rx,
             client: client.into(),
-            storage,
+            // storage,
             last_gced_n: HashMap::new(),
             fork_cache: HashMap::new(),
             log_timer,

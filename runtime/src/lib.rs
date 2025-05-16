@@ -21,6 +21,15 @@ pub struct ResponseBody<'a> {
     pub body: &'a str,
 }
 
+impl Default for ResponseBody<'_> {
+    fn default() -> Self {
+        Self {
+            status: 0,
+            body: "",
+        }
+    }
+}
+
 pub type RequestHandler = extern "C" fn(
     request: *const RequestBody,
     response: *mut ResponseBody,
@@ -72,7 +81,9 @@ mod tests {
     #[test]
     fn load() {
 
-        let (func_assoc, lib) = unsafe {
+        // Need to make lib live as long as the end of the program
+
+        let (func_assoc, _lib) = unsafe {
             let lib = libloading::Library::new("../contrib/target/debug/libwasm_test.dylib").unwrap();
 
             let setup: libloading::Symbol<extern "C" fn() -> Pin<Box<PSLRuntime<'static>>>> =
