@@ -5,7 +5,7 @@ use num_bigint::{BigInt, Sign};
 use thiserror::Error;
 use tokio::sync::{oneshot, Mutex};
 use crate::{crypto::{hash, CachedBlock}, proto::execution::ProtoTransactionOpType, rpc::SenderType, utils::channel::{Receiver, Sender}};
-
+use crate::worker::block_sequencer::SequencerCommand;
 
 #[derive(Error, Debug)]
 pub enum CacheError {
@@ -33,32 +33,6 @@ pub enum CacheCommand {
     )
 }
 
-pub enum SequencerCommand {
-    // Write Op from myself
-    SelfWriteOp {
-        key: Vec<u8>,
-        value: Vec<u8>,
-        seq_num: u64,
-    },
-
-    // Write Op from other node, that I propagate
-    OtherWriteOp {
-        key: Vec<u8>,
-        value: Vec<u8>,
-        seq_num: u64,
-    },
-
-    // Advance the vector clock in the sequencer.
-    AdvanceVC {
-        sender: SenderType,
-        block_seq_num: u64
-    },
-
-    // Blocks can only be formed on receiving this token.
-    // Helps maintain atomicity.
-    // (Doesn't mean it is forced to form a block, just that it can)
-    MakeNewBlock,
-}
 
 #[derive(Clone)]
 pub struct CacheConnector {
