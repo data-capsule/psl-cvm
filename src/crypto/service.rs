@@ -437,7 +437,7 @@ impl CryptoService {
                             match resp {
                                 Ok(hsh) => hsh,
                                 Err(e) => {
-                                    warn!("Hash chain error: {} from {:?}", e, sender);
+                                    panic!("Hash chain error: {} from {:?}", e, sender);
                                     block_tx.send(Err(Error::new(ErrorKind::InvalidData, "Invalid parent hash"))).unwrap();
                                     hash_tx.send(Err(Error::new(ErrorKind::InvalidData, "Invalid parent hash")));
                                     return_parent_hash.send(default_hash());

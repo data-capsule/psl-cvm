@@ -1,0 +1,87 @@
+workdir = "deployment_artifacts"
+project_home = "https://github.com/data-capsule/psl-cvm"
+
+[deployment_config]
+mode = "lan-tiny"
+ssh_key = "cluster_key.pem"
+ssh_user = "pftadmin"
+node_port_base = 3000
+
+
+[node_config]
+
+[node_config.net_config]
+client_max_retry = 10
+
+[node_config.rpc_config]
+recv_buffer_size = 32768
+channel_depth = 1000
+
+[node_config.consensus_config]
+commit_index_gap_soft = 250
+commit_index_gap_hard = 5000
+liveness_u = 2
+max_backlog_batch_size = 1000
+signature_max_delay_blocks = 10
+signature_max_delay_ms = 10000
+num_crypto_workers = 5
+view_timeout_ms = 4000
+batch_max_delay_ms = 2
+
+[node_config.consensus_config.log_storage_config.RocksDB]
+write_buffer_size = 2147483648
+max_write_buffer_number = 1
+max_write_buffers_to_merge = 1
+
+[node_config.app_config]
+logger_stats_report_ms = 100
+checkpoint_interval_ms = 1000
+
+[node_config.evil_config]
+simulate_byzantine_behavior = false
+byzantine_start_block = 0
+
+
+[client_config]
+full_duplex = true
+client_sub_id = 0       # This is filled up later by the caller code.
+
+
+[client_config.net_config]
+client_max_retry = 10
+
+[client_config.workload_config]
+max_concurrent_requests = 32
+
+
+[client_config.workload_config.request_config.AEBlanks]
+payload_size = 512
+
+
+[[experiments]]
+name = "psl_storage"
+type = "psl_storage"
+repeats = 1
+num_nodes = 1 # This is fixed for this experiment.
+num_clients = 10
+node_distribution = "uniform"
+build_command = "make"
+duration = 60
+
+
+
+[[results]]
+name = "tput_rw_sweep"
+plotter = "stacked_bar_graph"
+ramp_up = 15
+ramp_down = 15
+output = "ycsb.pdf"
+xlabels = ["0", "0.25", "0.5", "0.75", "1"]
+xtitle = "Read Ratio"
+# xlabels = ["25R-75W", "50R-50W"]
+force_parse = true
+output_width = 15
+
+[results.legends]
+pirateship = "pirateship"
+signed_raft = "signed_raft"

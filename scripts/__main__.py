@@ -4,6 +4,7 @@ import shutil
 from time import sleep
 import time
 from typing import List
+from psl_experiments import PSLStorageExperiment
 import tomli
 import click
 from click_default_group import DefaultGroup
@@ -136,6 +137,8 @@ def parse_config(path, workdir=None, existing_experiments=None):
             klass = AppExperiment
         elif experiment_type == "autobahn":
             klass = AutobahnExperiment
+        elif experiment_type == "psl_storage":
+            klass = PSLStorageExperiment
         project_home = toml_dict["project_home"]
 
         if "sweeping_parameters" in e:
