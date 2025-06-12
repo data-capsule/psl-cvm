@@ -255,8 +255,8 @@ resource "azurerm_managed_disk" "sevpool_disk" {
 
 resource "azurerm_managed_disk" "tdxpool_disk" {
   name                 = "tdxpoolDataDisk${count.index}"
-  count                = length(local.sevpool_ids_flattened_)
-  location             = var.platform_locations[local.sevpool_ids_flattened_[count.index][0]]
+  count                = length(local.tdxpool_ids_flattened_)
+  location             = var.platform_locations[local.tdxpool_ids_flattened_[count.index][0]]
   resource_group_name  = azurerm_resource_group.rg.name
   storage_account_type = "Premium_LRS"
   disk_size_gb         = 2048 # P40 ssd Gives enough throughput for NIC bottleneck in 7+ machine clusters.
@@ -265,8 +265,8 @@ resource "azurerm_managed_disk" "tdxpool_disk" {
 
 resource "azurerm_managed_disk" "nonteepool_disk" {
   name                 = "nonteepoolDataDisk${count.index}"
-  count                = length(local.sevpool_ids_flattened_)
-  location             = var.platform_locations[local.sevpool_ids_flattened_[count.index][0]]
+  count                = length(local.nonteepool_ids_flattened_)
+  location             = var.platform_locations[local.nonteepool_ids_flattened_[count.index][0]]
   resource_group_name  = azurerm_resource_group.rg.name
   storage_account_type = "Premium_LRS"
   disk_size_gb         = 2048 # P40 ssd Gives enough throughput for NIC bottleneck in 7+ machine clusters.
