@@ -16,6 +16,8 @@ pub struct LogServer {
     gc_rx: Receiver<(SenderType, u64)>,
 
     fork_cache: HashMap<SenderType, VecDeque<CachedBlock>>,
+    total_blocks_stored_num: usize,
+    total_blocks_stored_bytes: usize,
 
     block_rx: Receiver<(SenderType, CachedBlock)>,
     query_rx: Receiver<ProtoBackfillQuery>,
@@ -52,6 +54,8 @@ impl LogServer {
             log_timer,
             submitted_block_window: 0,
             submitted_bytes_window: 0,
+            total_blocks_stored_num: 0,
+            total_blocks_stored_bytes: 0,
         }
     }
 
@@ -118,6 +122,8 @@ impl LogServer {
             }
         }
 
+        self.total_blocks_stored_num += 1;
+        self.total_blocks_stored_bytes += block.block_ser.len();
         fork.push_back(block);
     }
 
@@ -196,7 +202,7 @@ impl LogServer {
         let buf = ae.encode_to_vec();
         let sz = buf.len();
         let msg = MessageRef(&buf, sz, &SenderType::Anon);
-        PinnedClient::send(&self.client, &reply_name, msg).await;
+        let _ = PinnedClient::send(&self.client, &reply_name, msg).await;
     }
 
     /// Get all blocks from storage, starting with `start_index` and ending with `last_gced_n`.
@@ -259,7 +265,7 @@ impl LogServer {
             / self.log_timer.timeout.as_secs_f64();
 
         info!("Total forks: {} Avg fork size: {} Approx Throughput: {} blocks/s or {} MiB/s", total_forks, avg_fork_size, block_throughput, bytes_throughput / (1024.0 * 1024.0));
-
+        info!("Total blocks stored: {} blocks or {} MiB", self.total_blocks_stored_num, self.total_blocks_stored_bytes as f64 / (1024.0 * 1024.0));
         self.submitted_block_window = 0;
         self.submitted_bytes_window = 0;
     }
