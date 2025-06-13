@@ -55,7 +55,7 @@ max_concurrent_requests = 32
 
 
 [client_config.workload_config.request_config.AEBlanks]
-payload_size = 512
+payload_size = 512000
 
 
 [[experiments]]
@@ -63,10 +63,12 @@ name = "psl_storage"
 type = "psl_storage"
 repeats = 1
 num_nodes = 1 # This is fixed for this experiment.
-num_clients = 10
 node_distribution = "uniform"
 build_command = "make"
 duration = 60
+
+[experiments.sweeping_parameters]
+num_clients = [100, 200, 500, 700, 1000]
 
 
 

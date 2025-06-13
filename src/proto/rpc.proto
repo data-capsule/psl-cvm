@@ -19,9 +19,10 @@ message ProtoPayload {
         //// DEPRECATED ////
         proto.checkpoint.ProtoBackFillRequest backfill_request = 5;   
         proto.checkpoint.ProtoBackFillResponse backfill_response = 6;
+        proto.checkpoint.ProtoBackfillNack backfill_nack = 7;
         ////////////////////
 
-        proto.checkpoint.ProtoBackfillNack backfill_nack = 7;
+        proto.checkpoint.ProtoBackfillQuery backfill_query = 8;
 
     }
 }

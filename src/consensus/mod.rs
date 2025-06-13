@@ -143,6 +143,9 @@ impl ServerContextType for PinnedConsensusServerContext {
                             .expect("Channel send error");
                         return Ok(RespType::NoResp);
             },
+            _ => {
+                // Drop the message.
+            }
         }
 
 

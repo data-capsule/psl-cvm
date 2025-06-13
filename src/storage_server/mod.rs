@@ -8,7 +8,7 @@ use log::{debug, warn};
 use prost::Message as _;
 use tokio::{sync::Mutex, task::JoinSet};
 
-use crate::{config::{AtomicConfig, Config}, crypto::{AtomicKeyStore, CryptoService, KeyStore}, proto::{checkpoint::ProtoBackfillNack, consensus::ProtoAppendEntries, rpc::ProtoPayload}, rpc::{server::{MsgAckChan, RespType, Server, ServerContextType}, MessageRef, SenderType}, utils::{channel::{make_channel, Receiver, Sender}, RocksDBStorageEngine, StorageService}};
+use crate::{config::{AtomicConfig, Config}, crypto::{AtomicKeyStore, CryptoService, KeyStore}, proto::{checkpoint::{ProtoBackfillNack, ProtoBackfillQuery}, consensus::ProtoAppendEntries, rpc::ProtoPayload}, rpc::{server::{MsgAckChan, RespType, Server, ServerContextType}, MessageRef, SenderType}, utils::{channel::{make_channel, Receiver, Sender}, RocksDBStorageEngine, StorageService}};
 use fork_receiver::ForkReceiver;
 use staging::Staging;
 use logserver::LogServer;
@@ -17,7 +17,7 @@ pub struct StorageServerContext {
     config: AtomicConfig,
     keystore: AtomicKeyStore,
     fork_receiver_tx: Sender<(ProtoAppendEntries, SenderType)>,
-    backfill_request_tx: Sender<ProtoBackfillNack>,
+    backfill_request_tx: Sender<ProtoBackfillQuery>,
 }
 
 #[derive(Clone)]
@@ -28,7 +28,7 @@ impl PinnedStorageServerContext {
         config: AtomicConfig,
         keystore: AtomicKeyStore,
         fork_receiver_tx: Sender<(ProtoAppendEntries, SenderType)>,
-        backfill_request_tx: Sender<ProtoBackfillNack>,
+        backfill_request_tx: Sender<ProtoBackfillQuery>,
     ) -> Self {
         let context = StorageServerContext {
             config,
@@ -86,8 +86,8 @@ impl ServerContextType for PinnedStorageServerContext {
                     .expect("Channel send error");
                 return Ok(RespType::NoResp);
             },
-            crate::proto::rpc::proto_payload::Message::BackfillNack(proto_backfill_nack) => {
-                self.backfill_request_tx.send(proto_backfill_nack).await
+            crate::proto::rpc::proto_payload::Message::BackfillQuery(proto_backfill_query) => {
+                self.backfill_request_tx.send(proto_backfill_query).await
                     .expect("Channel send error");
                 return Ok(RespType::NoResp);
             },
@@ -128,8 +128,8 @@ impl StorageNode {
         config: Config,
         fork_receiver_tx: Sender<(ProtoAppendEntries, SenderType)>,
         fork_receiver_rx: Receiver<(ProtoAppendEntries, SenderType)>,
-        backfill_request_tx: Sender<ProtoBackfillNack>,
-        backfill_request_rx: Receiver<ProtoBackfillNack>,
+        backfill_request_tx: Sender<ProtoBackfillQuery>,
+        backfill_request_rx: Receiver<ProtoBackfillQuery>,
     ) -> Self {
         let _chan_depth = config.rpc_config.channel_depth as usize;
         let _num_crypto_tasks = config.consensus_config.num_crypto_workers;
@@ -173,8 +173,8 @@ impl StorageNode {
 
         let staging = Staging::new(config.clone(), keystore.clone(), staging_rx, logserver_tx, gc_tx, fork_receiver_cmd_tx);
 
-        // let logserver_storage = storage.get_connector(crypto.get_connector());
-        let logserver = LogServer::new(config.clone(), keystore.clone(), gc_rx, logserver_rx, backfill_request_rx);
+        let logserver_storage = storage.get_connector(crypto.get_connector());
+        let logserver = LogServer::new(config.clone(), keystore.clone(), logserver_storage, gc_rx, logserver_rx, backfill_request_rx);
 
 
 

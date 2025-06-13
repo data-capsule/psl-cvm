@@ -22,7 +22,7 @@ pub struct Staging {
     last_confirmed_n: HashMap<SenderType, u64>,
 }
 
-const PER_PEER_BLOCK_WSS: u64 = 1000;
+const PER_PEER_BLOCK_WSS: u64 = 10000;
 
 impl Staging {
     pub fn new(
