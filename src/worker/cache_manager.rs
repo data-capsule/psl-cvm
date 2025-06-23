@@ -5,7 +5,7 @@ use log::warn;
 use num_bigint::{BigInt, Sign};
 use thiserror::Error;
 use tokio::sync::{oneshot, Mutex};
-use crate::{crypto::{hash, CachedBlock}, proto::execution::ProtoTransactionOpType, rpc::SenderType, utils::channel::{Receiver, Sender}};
+use crate::{crypto::{hash, CachedBlock}, proto::execution::ProtoTransactionOpType, rpc::SenderType, utils::channel::{Receiver, Sender}, worker::block_sequencer::BlockSeqNumQuery};
 use crate::worker::block_sequencer::SequencerCommand;
 
 #[derive(Error, Debug)]
@@ -24,6 +24,7 @@ pub enum CacheCommand {
     Put(
         CacheKey /* Key */,
         Vec<u8> /* Value */,
+        BlockSeqNumQuery,
         oneshot::Sender<Result<u64 /* seq_num */, CacheError>>,
     ),
     Cas(
@@ -31,8 +32,7 @@ pub enum CacheCommand {
         Vec<u8> /* Value */,
         u64 /* Expected SeqNum */,
         oneshot::Sender<Result<u64 /* seq_num */, CacheError>>,
-    ),
-    CommitProbe(u64 /* seq_num */),
+    )
 }
 
 
@@ -80,8 +80,9 @@ impl CacheConnector {
         &self,
         key: Vec<u8>,
         value: Vec<u8>,
+        seq_num_query: BlockSeqNumQuery,
     ) -> anyhow::Result<()> {
-        dispatch!(self, CacheCommand::Put, key, value);
+        dispatch!(self, CacheCommand::Put, key, value, seq_num_query);
         Ok(())
     }
 
@@ -225,25 +226,25 @@ impl CacheManager {
 
                 // TODO: Fill from checkpoint if key not found.
             }
-            CacheCommand::Put(key, value, response_tx) => {
-                
+            CacheCommand::Put(key, value, seq_num_query, response_tx) => {
                 if self.cache.contains_key(&key) {
                     let seq_num = self.cache.get_mut(&key).unwrap().blind_update(value.clone());
                     response_tx.send(Ok(seq_num)).unwrap();
                     
-                    self.block_sequencer_tx.send(SequencerCommand::SelfWriteOp { key, value: CachedValue::new_with_seq_num(value, seq_num) }).await;
+                    self.block_sequencer_tx.send(SequencerCommand::SelfWriteOp { key, value: CachedValue::new_with_seq_num(value, seq_num), seq_num_query }).await;
                     return;
                 }
 
                 let cached_value = CachedValue::new(value.clone());
                 self.cache.insert(key.clone(), cached_value);
                 response_tx.send(Ok(1)).unwrap();
-                self.block_sequencer_tx.send(SequencerCommand::SelfWriteOp { key, value: CachedValue::new(value) }).await;
+                self.block_sequencer_tx.send(SequencerCommand::SelfWriteOp { key, value: CachedValue::new(value), seq_num_query }).await;
 
             }
             CacheCommand::Cas(key, value, expected_seq_num, response_tx) => {
                 unimplemented!();
             }
+
         }
     }
 

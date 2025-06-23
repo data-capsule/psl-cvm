@@ -6,7 +6,7 @@ use log::{debug, warn};
 use prost::Message as _;
 use tokio::{sync::Mutex, task::JoinSet};
 
-use crate::{config::{AtomicConfig, Config}, consensus::{batch_proposal::TxWithAckChanTag, fork_receiver::ForkReceiver}, crypto::{AtomicKeyStore, CryptoService, KeyStore}, proto::{checkpoint::ProtoBackfillNack, client::ProtoClientRequest, consensus::ProtoAppendEntries, rpc::ProtoPayload}, rpc::{server::{MsgAckChan, RespType, Server, ServerContextType}, MessageRef, SenderType}, storage_server::{logserver::LogServer, staging::{self, Staging}}, utils::{channel::{make_channel, Receiver, Sender}, RocksDBStorageEngine, StorageService, StorageServiceConnector}};
+use crate::{config::{AtomicConfig, Config}, consensus::{batch_proposal::TxWithAckChanTag, fork_receiver::ForkReceiver}, crypto::{AtomicKeyStore, CryptoService, KeyStore}, proto::{checkpoint::ProtoBackfillNack, client::ProtoClientRequest, consensus::{ProtoAppendEntries, ProtoVote}, rpc::ProtoPayload}, rpc::{server::{MsgAckChan, RespType, Server, ServerContextType}, MessageRef, SenderType}, storage_server::{logserver::LogServer, staging::{self, Staging}}, utils::{channel::{make_channel, Receiver, Sender}, RocksDBStorageEngine, StorageService, StorageServiceConnector}, worker::{app::ClientHandlerTask, block_broadcaster::BlockBroadcaster}};
 
 mod cache_manager;
 mod block_broadcaster;
@@ -20,6 +20,7 @@ pub struct PSLWorkerServerContext {
     backfill_request_tx: Sender<ProtoBackfillNack>,
     fork_receiver_tx: Sender<(ProtoAppendEntries, SenderType)>,
     client_request_tx: Sender<TxWithAckChanTag>,
+    staging_tx: Sender<ProtoVote>,
 }
 
 #[derive(Clone)]
@@ -32,6 +33,7 @@ impl PinnedPSLWorkerServerContext {
         backfill_request_tx: Sender<ProtoBackfillNack>,
         fork_receiver_tx: Sender<(ProtoAppendEntries, SenderType)>,
         client_request_tx: Sender<TxWithAckChanTag>,
+        staging_tx: Sender<ProtoVote>,
     ) -> Self {
         let context = PSLWorkerServerContext {
             config,
@@ -39,6 +41,7 @@ impl PinnedPSLWorkerServerContext {
             backfill_request_tx,
             fork_receiver_tx,
             client_request_tx,
+            staging_tx,
         };
         Self(Arc::new(Box::pin(context)))
     }
@@ -102,6 +105,11 @@ impl ServerContextType for PinnedPSLWorkerServerContext {
 
                 return Ok(RespType::Resp);
             },
+            crate::proto::rpc::proto_payload::Message::Vote(vote) => {
+                self.staging_tx.send(vote).await
+                    .expect("Channel send error");
+                return Ok(RespType::NoResp);
+            }
             _ => {
 
             }
@@ -115,7 +123,7 @@ impl ServerContextType for PinnedPSLWorkerServerContext {
 
 
 
-pub struct PSLWorker<E: PSLAppEngine + Send + Sync + 'static> {
+pub struct PSLWorker<E: ClientHandlerTask + Send + Sync + 'static> {
     config: AtomicConfig,
     keystore: AtomicKeyStore,
 
@@ -125,15 +133,15 @@ pub struct PSLWorker<E: PSLAppEngine + Send + Sync + 'static> {
     cache_manager: Arc<Mutex<CacheManager>>,
     logserver: Arc<Mutex<LogServer>>,
     fork_receiver: Arc<Mutex<ForkReceiver>>,
+
+    block_broadcaster_to_storage: Arc<Mutex<BlockBroadcaster>>,
+    block_broadcaster_to_other_workers: Arc<Mutex<BlockBroadcaster>>,
     staging: Arc<Mutex<Staging>>,
 
-    app: Arc<Mutex<E>>,
-
-
-
+    app: Arc<Mutex<PSLAppEngine<E>>>,
 }
 
-impl<E: PSLAppEngine + Send + Sync + 'static> PSLWorker<E> {
+impl<E: ClientHandlerTask + Send + Sync + 'static> PSLWorker<E> {
     pub fn new(config: Config) -> Self {
         let (client_request_tx, client_request_rx) = make_channel(config.rpc_config.channel_depth as usize);
         Self::mew(config, client_request_tx, client_request_rx)
@@ -163,10 +171,11 @@ impl<E: PSLAppEngine + Send + Sync + 'static> PSLWorker<E> {
         let (backfill_request_tx, backfill_request_rx) = make_channel(_chan_depth as usize);
         let (block_tx, block_rx) = make_channel(_chan_depth as usize);
         let (command_tx, command_rx) = make_channel(_chan_depth as usize);
+        let (staging_tx, staging_rx) = make_channel(_chan_depth as usize);
         
         let context = PinnedPSLWorkerServerContext::new(
             config.clone(), keystore.clone(),
-            backfill_request_tx, fork_receiver_tx, client_request_tx.clone()
+            backfill_request_tx, fork_receiver_tx, client_request_tx.clone(), staging_tx
         );
         let server = Arc::new(Server::new_atomic(
             config.clone(),
@@ -180,7 +189,10 @@ impl<E: PSLAppEngine + Send + Sync + 'static> PSLWorker<E> {
         let fork_receiver = Arc::new(Mutex::new(ForkReceiver::new()));
         let staging = Arc::new(Mutex::new(Staging::new()));
 
-        let app = Arc::new(Mutex::new(E::new(config.clone(), )));
+        let block_broadcaster_to_storage = Arc::new(Mutex::new(BlockBroadcaster::new(config.clone(), client, crypto, BroadcastMode::Star(config.consensus_config.node_list[0].clone()), true, block_rx, staging_tx)));
+        let block_broadcaster_to_other_workers = Arc::new(Mutex::new(BlockBroadcaster::new(config.clone(), client, crypto, BroadcastMode::Gossip(config.consensus_config.node_list.clone()), false, block_rx, staging_tx)));
+
+        let app = Arc::new(Mutex::new(PSLAppEngine::<E>::new(config.clone(), )));
         
         Self {
             config,
@@ -191,6 +203,8 @@ impl<E: PSLAppEngine + Send + Sync + 'static> PSLWorker<E> {
             cache_manager,
             logserver,
             fork_receiver,
+            block_broadcaster_to_storage,
+            block_broadcaster_to_other_workers,
             staging,
             app,
         }
@@ -204,6 +218,8 @@ impl<E: PSLAppEngine + Send + Sync + 'static> PSLWorker<E> {
         let logserver = self.logserver.clone();
         let fork_receiver = self.fork_receiver.clone();
         let staging = self.staging.clone();
+        let block_broadcaster_to_storage = self.block_broadcaster_to_storage.clone();
+        let block_broadcaster_to_other_workers = self.block_broadcaster_to_other_workers.clone();
         let app = self.app.clone();
 
         handles.spawn(async move {
@@ -223,7 +239,13 @@ impl<E: PSLAppEngine + Send + Sync + 'static> PSLWorker<E> {
             let _ = Staging::run(staging).await;
         });
         handles.spawn(async move {
-            let _ = E::run(app).await;
+            let _ = BlockBroadcaster::run(block_broadcaster_to_storage).await;
+        });
+        handles.spawn(async move {
+            let _ = BlockBroadcaster::run(block_broadcaster_to_other_workers).await;
+        });
+        handles.spawn(async move {
+            let _ = PSLAppEngine::run(app).await;
         });
 
 

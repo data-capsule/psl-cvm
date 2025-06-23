@@ -1,11 +1,11 @@
 use std::{future::Future, marker::PhantomData, sync::Arc};
 
 use anyhow::Ok;
-use futures::channel::oneshot;
+use futures::{channel::oneshot, stream::FuturesUnordered, StreamExt};
 use prost::{DecodeError, Message as _};
 use tokio::{sync::Mutex, task::JoinSet};
 
-use crate::{config::AtomicConfig, consensus::batch_proposal::{MsgAckChanWithTag, TxWithAckChanTag}, crypto::HashType, proto::{client::{ProtoClientReply, ProtoTransactionReceipt}, execution::{ProtoTransactionOp, ProtoTransactionOpResult, ProtoTransactionOpType, ProtoTransactionResult}}, rpc::{server::LatencyProfile, PinnedMessage, SenderType}, utils::channel::{make_channel, Receiver, Sender}};
+use crate::{config::AtomicConfig, consensus::batch_proposal::{MsgAckChanWithTag, TxWithAckChanTag}, crypto::HashType, proto::{client::{ProtoClientReply, ProtoTransactionReceipt}, execution::{ProtoTransactionOp, ProtoTransactionOpResult, ProtoTransactionOpType, ProtoTransactionResult}}, rpc::{server::LatencyProfile, PinnedMessage, SenderType}, utils::channel::{make_channel, Receiver, Sender}, worker::block_sequencer::BlockSeqNumQuery};
 
 use super::cache_manager::{CacheCommand, CacheError};
 
@@ -63,15 +63,16 @@ impl CacheConnector {
         &self,
         key: Vec<u8>,
         value: Vec<u8>,
-    ) -> anyhow::Result<u64, CacheError> {
+    ) -> anyhow::Result<(u64 /* lamport ts */, tokio::sync::oneshot::Receiver<u64 /* block seq num */>), CacheError> {
         let (tx, rx) = tokio::sync::oneshot::channel();
-        let command = CacheCommand::Put(key, value, tx);
+        let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+        let command = CacheCommand::Put(key, value, BlockSeqNumQuery::WaitForSeqNum(tx), response_tx);
 
         self.cache_tx.send(command).await;
 
-        let result = rx.await.unwrap();
+        let result = response_rx.await.unwrap()?;
 
-        result
+        std::result::Result::Ok((result, rx))
     }
 }
 
@@ -81,7 +82,7 @@ pub trait ClientHandlerTask {
     fn new(cache_tx: Sender<CacheCommand>, id: usize) -> Self;
     fn get_cache_connector(&self) -> &CacheConnector;
     fn get_id(&self) -> usize;
-    async fn on_client_request(&self, request: TxWithAckChanTag, reply_handler_tx: &Sender<UncommittedResultSet>) -> anyhow::Result<()>;
+    fn on_client_request(&self, request: TxWithAckChanTag, reply_handler_tx: &Sender<UncommittedResultSet>) -> impl Future<Output = Result<(), anyhow::Error>> + Send + Sync;
 }
 
 pub struct PSLAppEngine<T: ClientHandlerTask> {
@@ -93,7 +94,7 @@ pub struct PSLAppEngine<T: ClientHandlerTask> {
     client_handler_phantom: PhantomData<T>,
 }
 
-impl<T: ClientHandlerTask> PSLAppEngine<T> {
+impl<T: ClientHandlerTask + Send + Sync + 'static> PSLAppEngine<T> {
     pub fn new(config: AtomicConfig, cache_tx: Sender<CacheCommand>, client_command_rx: Receiver<TxWithAckChanTag>, commit_tx_spawner: tokio::sync::broadcast::Sender<u64>) -> Self {
         Self {
             config,
@@ -235,6 +236,7 @@ impl KVSTask {
         let mut atleast_one_write = false;
         let mut last_write_index = 0;
         let mut highest_committed_block_seq_num_needed = 0;
+        let mut block_seq_num_rx_vec = FuturesUnordered::new();
         let mut results = Vec::new();
 
         for (i, op) in ops.iter().enumerate() {
@@ -262,7 +264,13 @@ impl KVSTask {
                 ProtoTransactionOpType::Write => {
                     let key = op.operands[0].clone();
                     let value = op.operands[1].clone();
-                    self.cache_connector.dispatch_write_request(key, value).await;
+                    let res = self.cache_connector.dispatch_write_request(key, value).await;
+                    if let std::result::Result::Err(e) = res {
+                        return Err(e.into());
+                    }
+
+                    let (_, block_seq_num_rx) = res.unwrap();
+                    block_seq_num_rx_vec.push(block_seq_num_rx);
                     results.push(ProtoTransactionOpResult {
                         success: true,
                         values: vec![],
@@ -291,6 +299,17 @@ impl KVSTask {
         }
 
         if atleast_one_write {
+
+            // Find the highest block seq num needed.
+            while let Some(seq_num) = block_seq_num_rx_vec.next().await {
+                if seq_num.is_err() {
+                    continue;
+                }
+
+                let seq_num = seq_num.unwrap();
+                highest_committed_block_seq_num_needed = std::cmp::max(highest_committed_block_seq_num_needed, seq_num);
+            }
+
             return Ok((results, Some(highest_committed_block_seq_num_needed)));
         }
 
