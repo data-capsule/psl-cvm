@@ -6,7 +6,7 @@ use log::{debug, warn};
 use prost::Message as _;
 use tokio::{sync::Mutex, task::JoinSet};
 
-use crate::{config::{AtomicConfig, Config}, consensus::{batch_proposal::TxWithAckChanTag, fork_receiver::ForkReceiver}, crypto::{AtomicKeyStore, CryptoService, KeyStore}, proto::{checkpoint::ProtoBackfillNack, client::ProtoClientRequest, consensus::{ProtoAppendEntries, ProtoVote}, rpc::ProtoPayload}, rpc::{client::{Client, PinnedClient}, server::{MsgAckChan, RespType, Server, ServerContextType}, MessageRef, SenderType}, storage_server::logserver::LogServer, utils::{channel::{make_channel, Receiver, Sender}, RocksDBStorageEngine, StorageService, StorageServiceConnector}, worker::{app::ClientHandlerTask, block_broadcaster::BlockBroadcaster, block_sequencer::BlockSequencer}};
+use crate::{config::{AtomicConfig, Config}, consensus::{batch_proposal::TxWithAckChanTag, fork_receiver::ForkReceiver}, crypto::{AtomicKeyStore, CryptoService, KeyStore}, proto::{checkpoint::ProtoBackfillNack, client::ProtoClientRequest, consensus::{ProtoAppendEntries, ProtoVote}, rpc::ProtoPayload}, rpc::{client::{Client, PinnedClient}, server::{MsgAckChan, RespType, Server, ServerContextType}, MessageRef, SenderType}, storage_server::logserver::LogServer, utils::{channel::{make_channel, Receiver, Sender}, BlackHoleStorageEngine, RocksDBStorageEngine, StorageService, StorageServiceConnector}, worker::{app::ClientHandlerTask, block_broadcaster::{BlockBroadcaster, BroadcastMode}, block_sequencer::BlockSequencer}};
 
 mod cache_manager;
 mod block_broadcaster;
@@ -143,6 +143,7 @@ pub struct PSLWorker<E: ClientHandlerTask + Send + Sync + 'static> {
 
     app: Arc<Mutex<PSLAppEngine<E>>>,
     __commit_rx_spawner: tokio::sync::broadcast::Receiver<u64>,
+    __black_hole_storage: StorageService<BlackHoleStorageEngine>,
 }
 
 impl<E: ClientHandlerTask + Send + Sync + 'static> PSLWorker<E> {
@@ -171,15 +172,25 @@ impl<E: ClientHandlerTask + Send + Sync + 'static> PSLWorker<E> {
         crypto.run();
         
         
-        let (fork_receiver_tx, fork_receiver_rx) = make_channel(_chan_depth as usize);
         let (backfill_request_tx, backfill_request_rx) = make_channel(_chan_depth as usize);
+        let (fork_receiver_tx, fork_receiver_rx) = make_channel(_chan_depth as usize);
+        let (vote_tx, vote_rx) = make_channel(_chan_depth as usize);
+        let (cache_tx, cache_rx) = make_channel(_chan_depth as usize);
+        let (client_command_tx, client_command_rx) = make_channel(_chan_depth as usize);
+        let (ae_tx, ae_rx) = make_channel(_chan_depth as usize);
         let (block_tx, block_rx) = make_channel(_chan_depth as usize);
         let (command_tx, command_rx) = make_channel(_chan_depth as usize);
-        let (staging_tx, staging_rx) = make_channel(_chan_depth as usize);
+        let (block_sequencer_tx, block_sequencer_rx) = make_channel(_chan_depth as usize);
+        let (node_broadcaster_tx, node_broadcaster_rx) = make_channel(_chan_depth as usize);
+        let (storage_broadcaster_tx, storage_broadcaster_rx) = make_channel(_chan_depth as usize);
+        let (block_broadcaster_to_other_workers_deliver_tx, block_broadcaster_to_other_workers_deliver_rx) = make_channel(_chan_depth as usize);
+        let (logserver_tx, logserver_rx) = make_channel(_chan_depth as usize);
+        let (gc_tx, gc_rx) = make_channel(_chan_depth as usize);
+        let (query_tx, query_rx) = make_channel(_chan_depth as usize);
 
         let context = PinnedPSLWorkerServerContext::new(
             config.clone(), keystore.clone(),
-            backfill_request_tx, fork_receiver_tx, client_request_tx.clone(), staging_tx
+            backfill_request_tx, fork_receiver_tx, client_request_tx.clone(), vote_tx
         );
         let server = Arc::new(Server::new_atomic(
             config.clone(),
@@ -195,9 +206,10 @@ impl<E: ClientHandlerTask + Send + Sync + 'static> PSLWorker<E> {
         )));
 
         let fork_receiver_client = Client::new_atomic(config.clone(), key_store.clone(), false, 0).into();
+        let __black_hole_storage = StorageService::new(BlackHoleStorageEngine{}, _chan_depth);
         let fork_receiver = Arc::new(Mutex::new(crate::storage_server::fork_receiver::ForkReceiver::new(
             config.clone(), keystore.clone(), ae_rx, crypto.get_connector(),
-            s/* todo: storage black hole */, block_tx, command_rx
+            __black_hole_storage.get_connector(crypto.get_connector()), block_tx, command_rx
         )));
 
         let cache_manager = Arc::new(Mutex::new(CacheManager::new(
@@ -223,7 +235,7 @@ impl<E: ClientHandlerTask + Send + Sync + 'static> PSLWorker<E> {
 
         let bb_ow_client = Client::new_atomic(config.clone(), key_store.clone(), false, 0).into();
         let block_broadcaster_to_other_workers = Arc::new(Mutex::new(BlockBroadcaster::new(
-            config.clone(), bb_ow_client, BroadcastMode::Gossip(config.consensus_config.node_list.clone()), false, true,
+            config.clone(), bb_ow_client, BroadcastMode::Gossip(config.get().consensus_config.node_list.clone()), false, true,
             node_broadcaster_rx, Some(block_broadcaster_to_other_workers_deliver_rx), None
         )));
 
@@ -251,6 +263,7 @@ impl<E: ClientHandlerTask + Send + Sync + 'static> PSLWorker<E> {
             app,
 
             __commit_rx_spawner,
+            __black_hole_storage,
         }
     }
 
@@ -277,7 +290,7 @@ impl<E: ClientHandlerTask + Send + Sync + 'static> PSLWorker<E> {
             let _ = LogServer::run(logserver).await;
         });
         handles.spawn(async move {
-            let _ = ForkReceiver::run(fork_receiver).await;
+            let _ = crate::storage_server::fork_receiver::ForkReceiver::run(fork_receiver).await;
         });
         handles.spawn(async move {
             let _ = Staging::run(staging).await;

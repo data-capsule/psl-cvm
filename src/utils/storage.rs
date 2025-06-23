@@ -126,3 +126,30 @@ impl StorageEngine for RocksDBStorageEngine {
     }
 }
 
+
+#[derive(Debug)]
+pub struct BlackHoleStorageEngine {
+}
+
+
+impl StorageEngine for BlackHoleStorageEngine {
+    fn init(&mut self) {
+        // This does nothing for BlackHoleStorageEngine, since it is already created when new() is called.
+    }
+
+    fn destroy(&self) {
+        // This does nothing for BlackHoleStorageEngine, since it is already created when new() is called.
+    }
+
+    fn put_block(&self, _block_ser: &Vec<u8>, _block_hash: &Vec<u8>) -> Result<(), Error> {
+        Ok(())
+    }
+
+    fn put_multiple_blocks(&self, _blocks: &Vec<(Vec<u8> /* block_ser */, Vec<u8> /* block_hash */)>) -> Result<(), Error> {
+        Ok(())
+    }
+    
+    fn get_block(&self, _block_hash: &Vec<u8>) -> Result<Vec<u8>, Error> {
+        Err(Error::new(ErrorKind::InvalidInput, "Key not found"))
+    }
+}
