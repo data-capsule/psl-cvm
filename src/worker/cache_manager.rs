@@ -175,7 +175,7 @@ pub type CacheKey = Vec<u8>;
 
 pub struct CacheManager {
     command_rx: Receiver<CacheCommand>,
-    block_rx: Receiver<(SenderType, CachedBlock)>,
+    block_rx: Receiver<(oneshot::Receiver<Result<CachedBlock, std::io::Error>>, SenderType)>,
     block_sequencer_tx: Sender<SequencerCommand>,
     cache: HashMap<CacheKey, CachedValue>,
 
@@ -185,7 +185,7 @@ pub struct CacheManager {
 impl CacheManager {
     pub fn new(
         command_rx: Receiver<CacheCommand>,
-        block_rx: Receiver<(SenderType, CachedBlock)>,
+        block_rx: Receiver<(oneshot::Receiver<Result<CachedBlock, std::io::Error>>, SenderType)>,
         block_sequencer_tx: Sender<SequencerCommand>,
     ) -> Self {
         Self {
@@ -211,8 +211,14 @@ impl CacheManager {
             Some(command) = self.command_rx.recv() => {
                 self.handle_command(command).await;
             }
-            Some((sender, block)) = self.block_rx.recv() => {
-                self.handle_block(sender, block).await;
+            Some((block_rx, sender)) = self.block_rx.recv() => {
+                let block = block_rx.await.unwrap();
+
+                if let Ok(block) = block {
+                    self.handle_block(sender, block).await;
+                } else {
+                    warn!("Failed to get block from block_rx");
+                }
             }
         }
         Ok(())

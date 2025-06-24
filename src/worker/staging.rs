@@ -28,8 +28,8 @@ pub struct Staging {
     block_rx: Receiver<CachedBlock>,
 
     block_broadcaster_to_other_workers_tx: Sender<u64>,
-    logserver_tx: Sender<CachedBlock>,
-    client_reply_tx: Sender<u64>,
+    logserver_tx: Sender<(SenderType, CachedBlock)>,
+    client_reply_tx: tokio::sync::broadcast::Sender<u64>,
 
     vote_buffer: HashMap<u64, Vec<VoteWithSender>>,
     block_buffer: Vec<CachedBlock>,
@@ -39,7 +39,7 @@ pub struct Staging {
 }
 
 impl Staging {
-    pub fn new(config: AtomicConfig, crypto: CryptoServiceConnector, vote_rx: Receiver<VoteWithSender>, block_rx: Receiver<CachedBlock>, block_broadcaster_to_other_workers_tx: Sender<u64>, logserver_tx: Sender<CachedBlock>, client_reply_tx: Sender<u64>) -> Self {
+    pub fn new(config: AtomicConfig, crypto: CryptoServiceConnector, vote_rx: Receiver<VoteWithSender>, block_rx: Receiver<CachedBlock>, block_broadcaster_to_other_workers_tx: Sender<u64>, logserver_tx: Sender<(SenderType, CachedBlock)>, client_reply_tx: tokio::sync::broadcast::Sender<u64>) -> Self {
         Self {
             config,
             crypto,
@@ -136,9 +136,11 @@ impl Staging {
 
     async fn notify_downstream(&mut self, new_ci: u64) {
         // Send all blocks > self.commit_index <= new_ci to the logserver.
+        let me = self.config.get().net_config.name.clone();
+        let me = SenderType::Auth(me, 0);
         for block in &self.block_buffer {
             if block.block.n > self.commit_index && block.block.n <= new_ci {
-                self.logserver_tx.send(block.clone()).await;
+                self.logserver_tx.send((me.clone(), block.clone())).await;
             }
         }
 
@@ -146,6 +148,6 @@ impl Staging {
         self.block_broadcaster_to_other_workers_tx.send(new_ci).await;
 
         // Send the commit index to the client reply handler.
-        self.client_reply_tx.send(new_ci).await;
+        self.client_reply_tx.send(new_ci);
     }
 }

@@ -1,19 +1,51 @@
-use std::{io::{Error, ErrorKind}, ops::Deref, pin::Pin, sync::Arc};
+use std::{
+    io::{Error, ErrorKind},
+    ops::Deref,
+    pin::Pin,
+    sync::Arc,
+};
 
 use app::PSLAppEngine;
 use cache_manager::{CacheCommand, CacheManager};
 use log::{debug, warn};
 use prost::Message as _;
-use tokio::{sync::Mutex, task::JoinSet};
+use tokio::{
+    sync::{mpsc::unbounded_channel, Mutex},
+    task::JoinSet,
+};
 
-use crate::{config::{AtomicConfig, Config}, consensus::{batch_proposal::TxWithAckChanTag, fork_receiver::ForkReceiver}, crypto::{AtomicKeyStore, CryptoService, KeyStore}, proto::{checkpoint::ProtoBackfillNack, client::ProtoClientRequest, consensus::{ProtoAppendEntries, ProtoVote}, rpc::ProtoPayload}, rpc::{client::{Client, PinnedClient}, server::{MsgAckChan, RespType, Server, ServerContextType}, MessageRef, SenderType}, storage_server::logserver::LogServer, utils::{channel::{make_channel, Receiver, Sender}, BlackHoleStorageEngine, RocksDBStorageEngine, StorageService, StorageServiceConnector}, worker::{app::ClientHandlerTask, block_broadcaster::{BlockBroadcaster, BroadcastMode}, block_sequencer::BlockSequencer}};
+use crate::{
+    config::{AtomicConfig, Config},
+    consensus::batch_proposal::TxWithAckChanTag,
+    crypto::{AtomicKeyStore, CryptoService, KeyStore},
+    proto::{
+        checkpoint::ProtoBackfillNack,
+        consensus::ProtoAppendEntries,
+        rpc::ProtoPayload,
+    },
+    rpc::{
+        client::Client,
+        server::{MsgAckChan, RespType, Server, ServerContextType},
+        MessageRef, SenderType,
+    },
+    storage_server::logserver::LogServer,
+    utils::{
+        channel::{make_channel, Receiver, Sender},
+        BlackHoleStorageEngine, RemoteStorageEngine, StorageService,
+    },
+    worker::{
+        app::ClientHandlerTask,
+        block_broadcaster::{BlockBroadcaster, BroadcastMode},
+        block_sequencer::BlockSequencer,
+        staging::VoteWithSender,
+    },
+};
 
-mod cache_manager;
+pub mod app;
 mod block_broadcaster;
 mod block_sequencer;
+mod cache_manager;
 mod staging;
-pub mod app;
-
 
 use staging::Staging;
 
@@ -23,7 +55,7 @@ pub struct PSLWorkerServerContext {
     backfill_request_tx: Sender<ProtoBackfillNack>,
     fork_receiver_tx: Sender<(ProtoAppendEntries, SenderType)>,
     client_request_tx: Sender<TxWithAckChanTag>,
-    staging_tx: Sender<ProtoVote>,
+    staging_tx: Sender<VoteWithSender>,
 }
 
 #[derive(Clone)]
@@ -36,7 +68,7 @@ impl PinnedPSLWorkerServerContext {
         backfill_request_tx: Sender<ProtoBackfillNack>,
         fork_receiver_tx: Sender<(ProtoAppendEntries, SenderType)>,
         client_request_tx: Sender<TxWithAckChanTag>,
-        staging_tx: Sender<ProtoVote>,
+        staging_tx: Sender<VoteWithSender>,
     ) -> Self {
         let context = PSLWorkerServerContext {
             config,
@@ -62,8 +94,12 @@ impl ServerContextType for PinnedPSLWorkerServerContext {
     fn get_server_keys(&self) -> std::sync::Arc<Box<crate::crypto::KeyStore>> {
         self.keystore.get()
     }
-    
-    async fn handle_rpc(&self, m: MessageRef<'_>, ack_chan: MsgAckChan) -> Result<RespType, std::io::Error> {
+
+    async fn handle_rpc(
+        &self,
+        m: MessageRef<'_>,
+        ack_chan: MsgAckChan,
+    ) -> Result<RespType, std::io::Error> {
         let sender = match m.2 {
             crate::rpc::SenderType::Anon => {
                 return Err(Error::new(
@@ -71,7 +107,7 @@ impl ServerContextType for PinnedPSLWorkerServerContext {
                     "unauthenticated message",
                 )); // Anonymous replies shouldn't come here
             }
-            _sender @ crate::rpc::SenderType::Auth(_, _) => _sender.clone()
+            _sender @ crate::rpc::SenderType::Auth(_, _) => _sender.clone(),
         };
         let body = match ProtoPayload::decode(&m.0.as_slice()[0..m.1]) {
             Ok(b) => b,
@@ -81,7 +117,7 @@ impl ServerContextType for PinnedPSLWorkerServerContext {
                 return Err(Error::new(ErrorKind::InvalidData, e));
             }
         };
-    
+
         let msg = match body.message {
             Some(m) => m,
             None => {
@@ -91,40 +127,42 @@ impl ServerContextType for PinnedPSLWorkerServerContext {
         };
 
         match msg {
-            crate::proto::rpc::proto_payload::Message::AppendEntries(proto_append_entries) => {                        
-                self.fork_receiver_tx.send((proto_append_entries, sender)).await
+            crate::proto::rpc::proto_payload::Message::AppendEntries(proto_append_entries) => {
+                self.fork_receiver_tx
+                    .send((proto_append_entries, sender))
+                    .await
                     .expect("Channel send error");
                 return Ok(RespType::NoResp);
-            },
+            }
             crate::proto::rpc::proto_payload::Message::BackfillNack(proto_backfill_nack) => {
-                self.backfill_request_tx.send(proto_backfill_nack).await
+                self.backfill_request_tx
+                    .send(proto_backfill_nack)
+                    .await
                     .expect("Channel send error");
                 return Ok(RespType::NoResp);
-            },
+            }
             crate::proto::rpc::proto_payload::Message::ClientRequest(client_request) => {
                 let client_tag = client_request.client_tag;
-                self.client_request_tx.send((client_request.tx, (ack_chan, client_tag, sender))).await
+                self.client_request_tx
+                    .send((client_request.tx, (ack_chan, client_tag, sender)))
+                    .await
                     .expect("Channel send error");
 
                 return Ok(RespType::Resp);
-            },
+            }
             crate::proto::rpc::proto_payload::Message::Vote(vote) => {
-                self.staging_tx.send(vote).await
+                self.staging_tx
+                    .send((sender, vote))
+                    .await
                     .expect("Channel send error");
                 return Ok(RespType::NoResp);
             }
-            _ => {
-
-            }
+            _ => {}
         }
-
-
 
         Ok(RespType::NoResp)
     }
 }
-
-
 
 pub struct PSLWorker<E: ClientHandlerTask + Send + Sync + 'static> {
     config: AtomicConfig,
@@ -136,7 +174,7 @@ pub struct PSLWorker<E: ClientHandlerTask + Send + Sync + 'static> {
     cache_manager: Arc<Mutex<CacheManager>>,
     logserver: Arc<Mutex<LogServer>>,
     fork_receiver: Arc<Mutex<crate::storage_server::fork_receiver::ForkReceiver>>,
-
+    block_sequencer: Arc<Mutex<BlockSequencer>>,
     block_broadcaster_to_storage: Arc<Mutex<BlockBroadcaster>>,
     block_broadcaster_to_other_workers: Arc<Mutex<BlockBroadcaster>>,
     staging: Arc<Mutex<Staging>>,
@@ -148,17 +186,23 @@ pub struct PSLWorker<E: ClientHandlerTask + Send + Sync + 'static> {
 
 impl<E: ClientHandlerTask + Send + Sync + 'static> PSLWorker<E> {
     pub fn new(config: Config) -> Self {
-        let (client_request_tx, client_request_rx) = make_channel(config.rpc_config.channel_depth as usize);
+        let (client_request_tx, client_request_rx) =
+            make_channel(config.rpc_config.channel_depth as usize);
         Self::mew(config, client_request_tx, client_request_rx)
     }
-    
+
     /// mew() must be called from within a Tokio context with channel passed in.
     /// This is new()'s cat brother.
-    ///
+    /// ```
     ///  /\_/\
     /// ( o.o )
-    ///  > ^ < 
-    pub fn mew(config: Config, client_request_tx: Sender<TxWithAckChanTag>, client_request_rx: Receiver<TxWithAckChanTag>) -> Self {
+    ///  > ^ <
+    /// ```
+    pub fn mew(
+        config: Config,
+        client_request_tx: Sender<TxWithAckChanTag>,
+        client_request_rx: Receiver<TxWithAckChanTag>,
+    ) -> Self {
         let _chan_depth = config.rpc_config.channel_depth as usize;
         let _num_crypto_tasks = config.consensus_config.num_crypto_workers;
 
@@ -170,27 +214,54 @@ impl<E: ClientHandlerTask + Send + Sync + 'static> PSLWorker<E> {
         let keystore = AtomicKeyStore::new(key_store);
         let mut crypto = CryptoService::new(_num_crypto_tasks, keystore.clone(), config.clone());
         crypto.run();
-        
-        
+
+        // Wiring diagram:
+        //                                   +-------------------------------------------------------------------------------------------------+
+        //                                   |                                                                                                 |
+        //                                   |                                                                                                 |
+        //                                   |                                                                                                 |     +-----------+
+        //                                   |                                                                                                 |     | LogServer |
+        //                                   |                                                                                                 |     |           |
+        //                                   |                                                                                                 |     +-----------+
+        //                                   v                  +--------+                                                                     |           ^
+        // +--------+                     +-------+             |        |               +-----------+           +------------------+     +----+----+      |
+        // |        |                     |       |             |Cache   +-------------> |           |           | Block Broadcaster+---->| Staging |      |
+        // | Client +-------------------->|  App  +------------>|Manager |               | Block     +---------->| to Storage       |     |         +------+---+
+        // |        |                     |       |             |        |               | Sequencer |           +------------------+     +---------+ +--------v---------+
+        // +--------+                     +-------+             +--------+               |           +----------------------------------------------->|Block Broadcaster |
+        //                                                           ^                   +-----------+                                                |to other workers  |
+        //                                 +-----------+             |                                                                                +------------------+
+        //  +-------+                      |           |             |
+        //  |Other  +--------------------->|  Fork     +-------------+
+        //  |workers|                      |  Receiver |
+        //  +-------+                      +-----------+
+
         let (backfill_request_tx, backfill_request_rx) = make_channel(_chan_depth as usize);
         let (fork_receiver_tx, fork_receiver_rx) = make_channel(_chan_depth as usize);
         let (vote_tx, vote_rx) = make_channel(_chan_depth as usize);
         let (cache_tx, cache_rx) = make_channel(_chan_depth as usize);
         let (client_command_tx, client_command_rx) = make_channel(_chan_depth as usize);
-        let (ae_tx, ae_rx) = make_channel(_chan_depth as usize);
         let (block_tx, block_rx) = make_channel(_chan_depth as usize);
-        let (command_tx, command_rx) = make_channel(_chan_depth as usize);
+        let (command_tx, command_rx) = unbounded_channel();
         let (block_sequencer_tx, block_sequencer_rx) = make_channel(_chan_depth as usize);
         let (node_broadcaster_tx, node_broadcaster_rx) = make_channel(_chan_depth as usize);
         let (storage_broadcaster_tx, storage_broadcaster_rx) = make_channel(_chan_depth as usize);
-        let (block_broadcaster_to_other_workers_deliver_tx, block_broadcaster_to_other_workers_deliver_rx) = make_channel(_chan_depth as usize);
+        let (
+            block_broadcaster_to_other_workers_deliver_tx,
+            block_broadcaster_to_other_workers_deliver_rx,
+        ) = make_channel(_chan_depth as usize);
         let (logserver_tx, logserver_rx) = make_channel(_chan_depth as usize);
         let (gc_tx, gc_rx) = make_channel(_chan_depth as usize);
         let (query_tx, query_rx) = make_channel(_chan_depth as usize);
+        let (staging_tx, staging_rx) = make_channel(_chan_depth as usize);
 
         let context = PinnedPSLWorkerServerContext::new(
-            config.clone(), keystore.clone(),
-            backfill_request_tx, fork_receiver_tx, client_request_tx.clone(), vote_tx
+            config.clone(),
+            keystore.clone(),
+            backfill_request_tx,
+            fork_receiver_tx,
+            client_request_tx.clone(),
+            vote_tx,
         );
         let server = Arc::new(Server::new_atomic(
             config.clone(),
@@ -198,56 +269,95 @@ impl<E: ClientHandlerTask + Send + Sync + 'static> PSLWorker<E> {
             keystore.clone(),
         ));
 
-        let (commit_tx_spawner, __commit_rx_spawner) = tokio::sync::broadcast::channel(_chan_depth as usize);
+        let (commit_tx_spawner, __commit_rx_spawner) =
+            tokio::sync::broadcast::channel(_chan_depth as usize);
 
         let app = Arc::new(Mutex::new(PSLAppEngine::<E>::new(
             config.clone(),
-            cache_tx, client_command_rx, commit_tx_spawner
+            cache_tx,
+            client_command_rx,
+            commit_tx_spawner.clone(),
         )));
 
-        let fork_receiver_client = Client::new_atomic(config.clone(), key_store.clone(), false, 0).into();
-        let __black_hole_storage = StorageService::new(BlackHoleStorageEngine{}, _chan_depth);
-        let fork_receiver = Arc::new(Mutex::new(crate::storage_server::fork_receiver::ForkReceiver::new(
-            config.clone(), keystore.clone(), ae_rx, crypto.get_connector(),
-            __black_hole_storage.get_connector(crypto.get_connector()), block_tx, command_rx
-        )));
+        let fork_receiver_client =
+            Client::new_atomic(config.clone(), keystore.clone(), false, 0).into();
+        let __black_hole_storage = StorageService::new(BlackHoleStorageEngine {}, _chan_depth);
+        let fork_receiver = Arc::new(Mutex::new(
+            crate::storage_server::fork_receiver::ForkReceiver::new(
+                config.clone(),
+                keystore.clone(),
+                fork_receiver_rx,
+                crypto.get_connector(),
+                __black_hole_storage.get_connector(crypto.get_connector()),
+                block_tx,
+                command_rx,
+            ),
+        ));
 
         let cache_manager = Arc::new(Mutex::new(CacheManager::new(
-            cache_rx, block_rx, block_sequencer_tx
+            cache_rx,
+            block_rx,
+            block_sequencer_tx,
         )));
 
         let block_sequencer = Arc::new(Mutex::new(BlockSequencer::new(
-            config.clone(), crypto.get_connector(), block_sequencer_rx,
-            node_broadcaster_tx, storage_broadcaster_tx
+            config.clone(),
+            crypto.get_connector(),
+            block_sequencer_rx,
+            node_broadcaster_tx,
+            storage_broadcaster_tx,
         )));
 
-        let bb_ts_client = Client::new_atomic(config.clone(), key_store.clone(), false, 0).into();
+        let bb_ts_client = Client::new_atomic(config.clone(), keystore.clone(), false, 0).into();
         let block_broadcaster_to_storage = Arc::new(Mutex::new(BlockBroadcaster::new(
-            config.clone(), bb_ts_client, BroadcastMode::Star("storage".to_string()), true, false,
-            storage_broadcaster_rx, None, Some(staging_tx)
+            config.clone(),
+            bb_ts_client,
+            BroadcastMode::Star("storage".to_string()),
+            true,
+            false,
+            storage_broadcaster_rx,
+            None,
+            Some(staging_tx),
         )));
 
         let staging = Arc::new(Mutex::new(Staging::new(
-            config, crypto.get_connector(),
-            vote_rx, staging_rx, block_broadcaster_to_other_workers_deliver_tx,
-            logserver_tx, commit_tx_spawner
+            config.clone(),
+            crypto.get_connector(),
+            vote_rx,
+            staging_rx,
+            block_broadcaster_to_other_workers_deliver_tx,
+            logserver_tx,
+            commit_tx_spawner,
         )));
 
-        let bb_ow_client = Client::new_atomic(config.clone(), key_store.clone(), false, 0).into();
+        let bb_ow_client = Client::new_atomic(config.clone(), keystore.clone(), false, 0).into();
         let block_broadcaster_to_other_workers = Arc::new(Mutex::new(BlockBroadcaster::new(
-            config.clone(), bb_ow_client, BroadcastMode::Gossip(config.get().consensus_config.node_list.clone()), false, true,
-            node_broadcaster_rx, Some(block_broadcaster_to_other_workers_deliver_rx), None
+            config.clone(),
+            bb_ow_client,
+            BroadcastMode::Gossip(config.get().consensus_config.node_list.clone()),
+            false,
+            true,
+            node_broadcaster_rx,
+            Some(block_broadcaster_to_other_workers_deliver_rx),
+            None,
         )));
 
-
-        let remote_storage = StorageService::<RemoteStorageEngine>::new();
+        let remote_storage = StorageService::<RemoteStorageEngine>::new(
+            RemoteStorageEngine {
+                config: config.clone(),
+            },
+            _chan_depth,
+        );
 
         let logserver = Arc::new(Mutex::new(LogServer::new(
-            config.clone(), keystore.clone(), remote_storage.get_connector(crypto.get_connector()),
-            gc_rx, logserver_rx, query_rx
+            config.clone(),
+            keystore.clone(),
+            remote_storage.get_connector(crypto.get_connector()),
+            gc_rx,
+            logserver_rx,
+            query_rx,
         )));
 
-        
         Self {
             config,
             keystore,
@@ -257,6 +367,7 @@ impl<E: ClientHandlerTask + Send + Sync + 'static> PSLWorker<E> {
             cache_manager,
             logserver,
             fork_receiver,
+            block_sequencer,
             block_broadcaster_to_storage,
             block_broadcaster_to_other_workers,
             staging,
@@ -304,7 +415,6 @@ impl<E: ClientHandlerTask + Send + Sync + 'static> PSLWorker<E> {
         handles.spawn(async move {
             let _ = PSLAppEngine::run(app).await;
         });
-
 
         handles
     }

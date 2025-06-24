@@ -1,6 +1,6 @@
 use rocksdb::{DBCompactionStyle, FifoCompactOptions, Options, UniversalCompactOptions, WriteBatchWithTransaction, WriteOptions, DB};
 
-use crate::config::{RocksDBConfig, StorageConfig};
+use crate::config::{AtomicConfig, RocksDBConfig, StorageConfig};
 use std::{fmt::Debug, io::{Error, ErrorKind}};
 
 pub trait StorageEngine: Debug + Sync + Send {
@@ -150,6 +150,40 @@ impl StorageEngine for BlackHoleStorageEngine {
     }
     
     fn get_block(&self, _block_hash: &Vec<u8>) -> Result<Vec<u8>, Error> {
+        Err(Error::new(ErrorKind::InvalidInput, "Key not found"))
+    }
+}
+
+pub struct RemoteStorageEngine {
+    pub config: AtomicConfig,
+}
+
+impl std::fmt::Debug for RemoteStorageEngine {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "RemoteStorageEngine")
+    }
+}
+
+
+impl StorageEngine for RemoteStorageEngine {
+    fn init(&mut self) {
+        // This does nothing for RemoteStorageEngine, since it is already created when new() is called.
+    }
+
+    fn destroy(&self) {
+        // This does nothing for BlackHoleStorageEngine, since it is already created when new() is called.
+    }
+
+    fn put_block(&self, _block_ser: &Vec<u8>, _block_hash: &Vec<u8>) -> Result<(), Error> {
+        panic!("Remote Storage Engine is read only");
+    }
+
+    fn put_multiple_blocks(&self, _blocks: &Vec<(Vec<u8> /* block_ser */, Vec<u8> /* block_hash */)>) -> Result<(), Error> {
+        panic!("Remote Storage Engine is read only");
+    }
+    
+    fn get_block(&self, _block_hash: &Vec<u8>) -> Result<Vec<u8>, Error> {
+        // TODO: Implement this
         Err(Error::new(ErrorKind::InvalidInput, "Key not found"))
     }
 }
