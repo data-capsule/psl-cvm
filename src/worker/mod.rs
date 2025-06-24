@@ -19,7 +19,7 @@ use crate::{
     consensus::batch_proposal::TxWithAckChanTag,
     crypto::{AtomicKeyStore, CryptoService, KeyStore},
     proto::{
-        checkpoint::ProtoBackfillNack,
+        checkpoint::{ProtoBackfillNack, ProtoBackfillQuery},
         consensus::ProtoAppendEntries,
         rpc::ProtoPayload,
     },
@@ -52,7 +52,7 @@ use staging::Staging;
 pub struct PSLWorkerServerContext {
     config: AtomicConfig,
     keystore: AtomicKeyStore,
-    backfill_request_tx: Sender<ProtoBackfillNack>,
+    backfill_request_tx: Sender<ProtoBackfillQuery>,
     fork_receiver_tx: Sender<(ProtoAppendEntries, SenderType)>,
     client_request_tx: Sender<TxWithAckChanTag>,
     staging_tx: Sender<VoteWithSender>,
@@ -65,7 +65,7 @@ impl PinnedPSLWorkerServerContext {
     pub fn new(
         config: AtomicConfig,
         keystore: AtomicKeyStore,
-        backfill_request_tx: Sender<ProtoBackfillNack>,
+        backfill_request_tx: Sender<ProtoBackfillQuery>,
         fork_receiver_tx: Sender<(ProtoAppendEntries, SenderType)>,
         client_request_tx: Sender<TxWithAckChanTag>,
         staging_tx: Sender<VoteWithSender>,
@@ -134,9 +134,9 @@ impl ServerContextType for PinnedPSLWorkerServerContext {
                     .expect("Channel send error");
                 return Ok(RespType::NoResp);
             }
-            crate::proto::rpc::proto_payload::Message::BackfillNack(proto_backfill_nack) => {
+            crate::proto::rpc::proto_payload::Message::BackfillQuery(proto_backfill_query) => {
                 self.backfill_request_tx
-                    .send(proto_backfill_nack)
+                    .send(proto_backfill_query)
                     .await
                     .expect("Channel send error");
                 return Ok(RespType::NoResp);
@@ -254,7 +254,6 @@ impl<E: ClientHandlerTask + Send + Sync + 'static> PSLWorker<E> {
         ) = make_channel(_chan_depth as usize);
         let (logserver_tx, logserver_rx) = make_channel(_chan_depth as usize);
         let (gc_tx, gc_rx) = make_channel(_chan_depth as usize);
-        let (query_tx, query_rx) = make_channel(_chan_depth as usize);
         let (staging_tx, staging_rx) = make_channel(_chan_depth as usize);
 
         let context = PinnedPSLWorkerServerContext::new(
@@ -357,7 +356,7 @@ impl<E: ClientHandlerTask + Send + Sync + 'static> PSLWorker<E> {
             remote_storage.get_connector(crypto.get_connector()),
             gc_rx,
             logserver_rx,
-            query_rx,
+            backfill_request_rx,
         )));
 
         Self {
@@ -380,7 +379,7 @@ impl<E: ClientHandlerTask + Send + Sync + 'static> PSLWorker<E> {
         }
     }
 
-    pub fn run(&mut self) -> JoinSet<()> {
+    pub async fn run(&mut self) -> JoinSet<()> {
         let mut handles = JoinSet::new();
 
         let server = self.server.clone();
@@ -391,6 +390,7 @@ impl<E: ClientHandlerTask + Send + Sync + 'static> PSLWorker<E> {
         let block_broadcaster_to_storage = self.block_broadcaster_to_storage.clone();
         let block_broadcaster_to_other_workers = self.block_broadcaster_to_other_workers.clone();
         let app = self.app.clone();
+        let block_sequencer = self.block_sequencer.clone();
 
         handles.spawn(async move {
             let _ = Server::<PinnedPSLWorkerServerContext>::run(server).await;
@@ -399,6 +399,11 @@ impl<E: ClientHandlerTask + Send + Sync + 'static> PSLWorker<E> {
         handles.spawn(async move {
             let _ = CacheManager::run(cache_manager).await;
         });
+
+        handles.spawn(async move {
+            let _ = BlockSequencer::run(block_sequencer).await;
+        });
+
         handles.spawn(async move {
             let _ = LogServer::run(logserver).await;
         });

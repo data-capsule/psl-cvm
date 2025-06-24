@@ -1,7 +1,7 @@
-use std::ops::{Deref, DerefMut};
+use std::{ops::{Deref, DerefMut}, sync::Arc};
 
 use hashbrown::HashMap;
-use tokio::sync::oneshot;
+use tokio::sync::{oneshot, Mutex};
 
 use crate::{config::{AtomicConfig, AtomicPSLWorkerConfig}, crypto::{CachedBlock, CryptoServiceConnector, FutureHash, HashType}, proto::{consensus::ProtoBlock, execution::{ProtoTransaction, ProtoTransactionOp, ProtoTransactionOpType, ProtoTransactionPhase}}, rpc::SenderType, utils::channel::{Receiver, Sender}};
 
@@ -108,7 +108,12 @@ impl BlockSequencer {
         }
     }
 
-    pub async fn run(&mut self) {
+    pub async fn run(block_sequencer: Arc<Mutex<Self>>) {
+        let mut block_sequencer = block_sequencer.lock().await;
+        block_sequencer.worker().await;
+    }
+
+    async fn worker(&mut self) {
         while let Some(command) = self.cache_manager_rx.recv().await {
             match command {
                 SequencerCommand::SelfWriteOp { key, value, seq_num_query } => {

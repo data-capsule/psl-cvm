@@ -310,3 +310,14 @@ impl AtomicConfig {
 }
 
 pub type AtomicPSLWorkerConfig = AtomicStruct<PSLWorkerConfig>;
+
+impl PSLWorkerConfig {
+    pub fn serialize(self: &Self) -> String {
+        serde_json::to_string_pretty(self).expect("Invalid Config")
+    }
+
+    pub fn deserialize(s: &String) -> PSLWorkerConfig {
+        let res: Result<PSLWorkerConfig> = serde_json::from_str(s.as_str());
+        res.expect("Invalid JSON config")
+    }
+}

@@ -2,8 +2,8 @@
 // Licensed under the MIT License.
 
 use log::{debug, error, info};
-use psl::config::{self, Config};
-use psl::{consensus, storage_server};
+use psl::config::{self, Config, PSLWorkerConfig};
+use psl::{consensus, storage_server, worker};
 use tokio::{runtime, signal};
 use std::process::exit;
 use std::{env, fs, io, path, sync::{atomic::AtomicUsize, Arc, Mutex}};
@@ -14,14 +14,14 @@ use std::io::Write;
 static ALLOC: snmalloc_rs::SnMalloc = snmalloc_rs::SnMalloc;
 
 enum RunMode {
-    Storage,
-    Worker,
-    Sequencer,
+    Storage(Config),
+    Worker(PSLWorkerConfig),
+    Sequencer(Config),
 }
 
 /// Fetch json config file from command line path.
 /// Panic if not found or parsed properly.
-fn process_args() -> (Config, RunMode) {
+fn process_args() -> RunMode {
     macro_rules! usage_str {
         () => {
             "\x1b[31;1mUsage: {} storage|worker|sequencer path/to/config.json\x1b[0m"
@@ -38,21 +38,22 @@ fn process_args() -> (Config, RunMode) {
         panic!(usage_str!(), args[0]);
     }
 
-    let run_mode = match args[1].as_str() {
-        "storage" => RunMode::Storage,
-        "worker" => RunMode::Worker,
-        "sequencer" => RunMode::Sequencer,
-        _ => panic!(usage_str!(), args[0]),
-    };
-
+    
     let cfg_path = path::Path::new(args[2].as_str());
     if !cfg_path.exists() {
         panic!(usage_str!(), args[0]);
     }
-
+    
     let cfg_contents = fs::read_to_string(cfg_path).expect("Invalid file path");
+    
+    let run_mode = match args[1].as_str() {
+        "storage" => RunMode::Storage(Config::deserialize(&cfg_contents)),
+        "worker" => RunMode::Worker(PSLWorkerConfig::deserialize(&cfg_contents)),
+        "sequencer" => RunMode::Sequencer(Config::deserialize(&cfg_contents)),
+        _ => panic!(usage_str!(), args[0]),
+    };
 
-    (Config::deserialize(&cfg_contents), run_mode)
+    run_mode
 }
 
 #[allow(unused_assignments)]
@@ -75,7 +76,7 @@ fn get_feature_set() -> (&'static str, &'static str) {
 
 enum NodeType {
     Sequencer(consensus::ConsensusNode<KVSAppEngine>),
-    Worker,
+    Worker(worker::PSLWorker<worker::app::KVSTask>),
     Storage(storage_server::StorageNode),
 
 }
@@ -86,9 +87,9 @@ async fn run_sequencer(cfg: Config) -> NodeType {
 }
 
 
-async fn run_worker(cfg: Config) -> NodeType {
-    // TODO
-    NodeType::Worker
+async fn run_worker(cfg: PSLWorkerConfig) -> NodeType {
+    let node = worker::PSLWorker::<worker::app::KVSTask>::new(cfg);
+    NodeType::Worker(node)
 }
 
 async fn run_storage(cfg: Config) -> NodeType {
@@ -119,19 +120,19 @@ macro_rules! handle_signal_till_end {
 
     };
 }
-async fn run_main(cfg: Config, run_mode: RunMode) -> Result<(), io::Error> {
+async fn run_main(run_mode: RunMode) -> Result<(), io::Error> {
     let node_type = match run_mode {
-        RunMode::Storage => run_storage(cfg).await,
-        RunMode::Worker => run_worker(cfg).await,
-        RunMode::Sequencer => run_sequencer(cfg).await,
+        RunMode::Storage(cfg) => run_storage(cfg).await,
+        RunMode::Worker(cfg) => run_worker(cfg).await,
+        RunMode::Sequencer(cfg) => run_sequencer(cfg).await,
     };
 
     match node_type {
         NodeType::Sequencer(mut consensus_node) => {
             handle_signal_till_end!(consensus_node);
         },
-        NodeType::Worker => {
-            unimplemented!();
+        NodeType::Worker(mut worker_node) => {
+            handle_signal_till_end!(worker_node);
         },
         NodeType::Storage(mut storage_node) => {
             handle_signal_till_end!(storage_node);
@@ -147,7 +148,7 @@ const NUM_THREADS: usize = 32;
 fn main() {
     log4rs::init_config(config::default_log4rs_config()).unwrap();
 
-    let (cfg, run_mode) = process_args();
+    let run_mode = process_args();
 
     let (protocol, app) = get_feature_set();
     info!("Protocol: {}, App: {}", protocol, app);
@@ -160,7 +161,16 @@ fn main() {
     let core_ids = 
         Arc::new(Mutex::new(Box::pin(core_affinity::get_core_ids().unwrap())));
 
-    let start_idx = cfg.consensus_config.node_list.iter().position(|r| r.eq(&cfg.net_config.name)).unwrap();
+    let (node_list, my_name) = match &run_mode {
+        RunMode::Storage(_cfg) | RunMode::Sequencer(_cfg) => {
+            (_cfg.consensus_config.node_list.clone(), _cfg.net_config.name.clone())
+        },
+        RunMode::Worker(_cfg) => {
+            (_cfg.worker_config.storage_list.clone(), _cfg.net_config.name.clone())
+        },
+    };
+
+    let start_idx = node_list.iter().position(|r| r.eq(&my_name)).unwrap();
     let mut num_threads = NUM_THREADS;
     {
         let _num_cores = core_ids.lock().unwrap().len();
@@ -192,5 +202,5 @@ fn main() {
         })
         .build()
         .unwrap();
-    let _ = runtime.block_on(run_main(cfg, run_mode));
+    let _ = runtime.block_on(run_main(run_mode));
 }
