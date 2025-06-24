@@ -3,19 +3,21 @@ use std::sync::Arc;
 use indexmap::IndexMap;
 use prost::Message;
 use tokio::{sync::Mutex, sync::oneshot};
-use crate::{config::AtomicConfig, crypto::CachedBlock, proto::consensus::{HalfSerializedBlock, ProtoAppendEntries, ProtoFork}, rpc::{client::PinnedClient, server::LatencyProfile, PinnedMessage, SenderType}, utils::channel::{Receiver, Sender}};
+use crate::{config::{AtomicConfig, AtomicPSLWorkerConfig}, crypto::CachedBlock, proto::consensus::{HalfSerializedBlock, ProtoAppendEntries, ProtoFork}, rpc::{client::PinnedClient, server::LatencyProfile, PinnedMessage, SenderType}, utils::channel::{Receiver, Sender}};
 
 
 pub enum BroadcastMode {
-    Star(String /* Name prefix to send to */),
-    Gossip(Vec<String> /* Names to send to */),
+    /// Broadcast to all storage servers
+    StorageStar,
+    /// Broadcast to workers in gossip_downstream_worker_list
+    WorkerGossip,
     // RandomGossip(String) // TODO: Implement this
 }
 
 
 
 pub struct BlockBroadcaster {
-    config: AtomicConfig,
+    config: AtomicPSLWorkerConfig,
     client: PinnedClient,
 
     broadcast_mode: BroadcastMode,
@@ -32,7 +34,7 @@ pub struct BlockBroadcaster {
 }
 
 impl BlockBroadcaster {
-    pub fn new(config: AtomicConfig, client: PinnedClient, broadcast_mode: BroadcastMode, forward_to_staging: bool, wait_for_signal: bool, block_rx: Receiver<oneshot::Receiver<CachedBlock>>, wait_rx: Option<Receiver<u64>>, staging_tx: Option<Sender<CachedBlock>>) -> Self {
+    pub fn new(config: AtomicPSLWorkerConfig, client: PinnedClient, broadcast_mode: BroadcastMode, forward_to_staging: bool, wait_for_signal: bool, block_rx: Receiver<oneshot::Receiver<CachedBlock>>, wait_rx: Option<Receiver<u64>>, staging_tx: Option<Sender<CachedBlock>>) -> Self {
         Self {
             config,
             client,
@@ -49,20 +51,21 @@ impl BlockBroadcaster {
 
     fn get_peers(&self) -> Vec<String> {
         match &self.broadcast_mode {
-            BroadcastMode::Star(name_prefix) => {
-                self.config.get().consensus_config.node_list
-                .iter().filter(|name| name.starts_with(name_prefix))
-                .map(|name| name.to_string())
-                .collect()
+            BroadcastMode::StorageStar => {
+                self.config.get().worker_config.storage_list.clone()
             }
-            BroadcastMode::Gossip(names) => names.clone(),
+            BroadcastMode::WorkerGossip => {
+                self.config.get().worker_config.gossip_downstream_worker_list.clone()
+            },
         }
     }
 
     fn get_success_threshold(&self) -> usize {
         match &self.broadcast_mode {
-            BroadcastMode::Star(_) => self.config.get().consensus_config.node_list.len() / 2 + 1,
-            BroadcastMode::Gossip(_) => 0,
+            BroadcastMode::StorageStar => {
+                self.config.get().worker_config.storage_list.len() / 2 + 1
+            }
+            BroadcastMode::WorkerGossip => 0,
         }
     }
 

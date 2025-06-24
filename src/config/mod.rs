@@ -82,6 +82,23 @@ pub struct ConsensusConfig {
     pub commit_index_gap_hard: u64, // ci - bci >= this -> followers trigger view change.
 }
 
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct WorkerConfig {
+    pub all_worker_list: Vec<String>,
+    pub storage_list: Vec<String>,
+    pub gossip_downstream_worker_list: Vec<String>,
+    pub all_writes_max_batch_size: usize,
+    pub self_writes_max_batch_size: usize,
+    pub batch_max_delay_ms: u64,
+    pub signature_max_delay_ms: u64,
+    pub signature_max_delay_blocks: u64,
+    pub num_crypto_workers: usize,
+    pub num_worker_threads_per_worker: usize,
+    pub num_replier_threads_per_worker: usize,
+}
+
+
 impl ConsensusConfig {
     pub fn get_leader_for_view(&self, view: u64) -> String {
 
@@ -135,6 +152,14 @@ pub struct Config {
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct PSLWorkerConfig {
+    pub net_config: NetConfig,
+    pub rpc_config: RpcConfig,
+    pub worker_config: WorkerConfig,
+    pub app_config: AppConfig,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct ClientNetConfig {
     pub name: String,
     pub tls_root_ca_cert_path: String,
@@ -162,6 +187,38 @@ pub struct WorkloadConfig {
     pub rate: f64, // in requests per second
 
     pub request_config: RequestConfig
+}
+
+impl WorkerConfig {
+    pub fn to_consensus_config(&self) -> ConsensusConfig {
+        ConsensusConfig {
+            node_list: self.storage_list.clone(),
+            learner_list: self.storage_list.clone(),
+            max_backlog_batch_size: self.all_writes_max_batch_size,
+            batch_max_delay_ms: self.batch_max_delay_ms,
+            signature_max_delay_ms: self.signature_max_delay_ms,
+            signature_max_delay_blocks: self.signature_max_delay_blocks,
+            num_crypto_workers: self.num_crypto_workers,
+            
+            // These are not used in the worker config.
+            log_storage_config: StorageConfig::BlackHole,
+            view_timeout_ms: 0,
+            liveness_u: 0,
+            commit_index_gap_soft: 0,
+            commit_index_gap_hard: 0,
+        }
+    }
+}
+
+impl PSLWorkerConfig {
+    pub fn to_config(&self) -> Config {
+        Config {
+            net_config: self.net_config.clone(),
+            rpc_config: self.rpc_config.clone(),
+            consensus_config: self.worker_config.to_consensus_config(),
+            app_config: self.app_config.clone(),
+        }
+    }
 }
 
 
@@ -251,3 +308,5 @@ impl AtomicConfig {
         self.set(config);
     }
 }
+
+pub type AtomicPSLWorkerConfig = AtomicStruct<PSLWorkerConfig>;

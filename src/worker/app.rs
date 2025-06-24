@@ -5,7 +5,7 @@ use futures::{channel::oneshot, stream::FuturesUnordered, StreamExt};
 use prost::{DecodeError, Message as _};
 use tokio::{sync::Mutex, task::JoinSet};
 
-use crate::{config::AtomicConfig, consensus::batch_proposal::{MsgAckChanWithTag, TxWithAckChanTag}, crypto::HashType, proto::{client::{ProtoClientReply, ProtoTransactionReceipt}, execution::{ProtoTransactionOp, ProtoTransactionOpResult, ProtoTransactionOpType, ProtoTransactionResult}}, rpc::{server::LatencyProfile, PinnedMessage, SenderType}, utils::channel::{make_channel, Receiver, Sender}, worker::block_sequencer::BlockSeqNumQuery};
+use crate::{config::{AtomicConfig, AtomicPSLWorkerConfig}, consensus::batch_proposal::{MsgAckChanWithTag, TxWithAckChanTag}, crypto::HashType, proto::{client::{ProtoClientReply, ProtoTransactionReceipt}, execution::{ProtoTransactionOp, ProtoTransactionOpResult, ProtoTransactionOpType, ProtoTransactionResult}}, rpc::{server::LatencyProfile, PinnedMessage, SenderType}, utils::channel::{make_channel, Receiver, Sender}, worker::block_sequencer::BlockSeqNumQuery};
 
 use super::cache_manager::{CacheCommand, CacheError};
 
@@ -13,8 +13,8 @@ pub struct CacheConnector {
     cache_tx: Sender<CacheCommand>,
 }
 
-const NUM_WORKER_THREADS: usize = 4;
-const NUM_REPLIER_THREADS: usize = 20;
+// const NUM_WORKER_THREADS: usize = 4;
+// const NUM_REPLIER_THREADS: usize = 20;
 
 enum FutureSeqNum {
     None,
@@ -86,7 +86,7 @@ pub trait ClientHandlerTask {
 }
 
 pub struct PSLAppEngine<T: ClientHandlerTask> {
-    config: AtomicConfig,
+    config: AtomicPSLWorkerConfig,
     cache_tx: Sender<CacheCommand>,
     client_command_rx: Receiver<TxWithAckChanTag>,
     commit_tx_spawner: tokio::sync::broadcast::Sender<u64>,
@@ -95,7 +95,7 @@ pub struct PSLAppEngine<T: ClientHandlerTask> {
 }
 
 impl<T: ClientHandlerTask + Send + Sync + 'static> PSLAppEngine<T> {
-    pub fn new(config: AtomicConfig, cache_tx: Sender<CacheCommand>, client_command_rx: Receiver<TxWithAckChanTag>, commit_tx_spawner: tokio::sync::broadcast::Sender<u64>) -> Self {
+    pub fn new(config: AtomicPSLWorkerConfig, cache_tx: Sender<CacheCommand>, client_command_rx: Receiver<TxWithAckChanTag>, commit_tx_spawner: tokio::sync::broadcast::Sender<u64>) -> Self {
         Self {
             config,
             cache_tx,
@@ -114,7 +114,7 @@ impl<T: ClientHandlerTask + Send + Sync + 'static> PSLAppEngine<T> {
         // tokio channel won't work here.
         let (reply_tx, reply_rx) = make_channel(_chan_depth);
 
-        for id in 0..NUM_WORKER_THREADS {
+        for id in 0..app.config.get().worker_config.num_worker_threads_per_worker {
             let cache_tx = app.cache_tx.clone();
             let _reply_tx = reply_tx.clone();
             let client_command_rx = app.client_command_rx.clone();
@@ -127,7 +127,7 @@ impl<T: ClientHandlerTask + Send + Sync + 'static> PSLAppEngine<T> {
             });
         }
 
-        for _ in 0..NUM_REPLIER_THREADS {
+        for _ in 0..app.config.get().worker_config.num_replier_threads_per_worker {
             let _reply_rx = reply_rx.clone();
             let mut _commit_rx = app.commit_tx_spawner.subscribe();
 

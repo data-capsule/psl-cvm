@@ -3,7 +3,7 @@ use std::ops::{Deref, DerefMut};
 use hashbrown::HashMap;
 use tokio::sync::oneshot;
 
-use crate::{config::AtomicConfig, crypto::{CachedBlock, CryptoServiceConnector, FutureHash, HashType}, proto::{consensus::ProtoBlock, execution::{ProtoTransaction, ProtoTransactionOp, ProtoTransactionOpType, ProtoTransactionPhase}}, rpc::SenderType, utils::channel::{Receiver, Sender}};
+use crate::{config::{AtomicConfig, AtomicPSLWorkerConfig}, crypto::{CachedBlock, CryptoServiceConnector, FutureHash, HashType}, proto::{consensus::ProtoBlock, execution::{ProtoTransaction, ProtoTransactionOp, ProtoTransactionOpType, ProtoTransactionPhase}}, rpc::SenderType, utils::channel::{Receiver, Sender}};
 
 use super::cache_manager::{CacheKey, CachedValue};
 
@@ -74,7 +74,7 @@ impl VectorClock {
 
 
 pub struct BlockSequencer {
-    config: AtomicConfig,
+    config: AtomicPSLWorkerConfig,
     crypto: CryptoServiceConnector,
 
     curr_block_seq_num: u64,
@@ -90,7 +90,7 @@ pub struct BlockSequencer {
 }
 
 impl BlockSequencer {
-    pub fn new(config: AtomicConfig, crypto: CryptoServiceConnector,
+    pub fn new(config: AtomicPSLWorkerConfig, crypto: CryptoServiceConnector,
         cache_manager_rx: Receiver<SequencerCommand>,
         node_broadcaster_tx: Sender<oneshot::Receiver<CachedBlock>>,
         storage_broadcaster_tx: Sender<oneshot::Receiver<CachedBlock>>,
@@ -138,8 +138,8 @@ impl BlockSequencer {
     async fn maybe_prepare_new_block(&mut self) {
         let config = self.config.get();
         // TODO: Make the config proper.
-        let all_write_batch_size = config.consensus_config.max_backlog_batch_size;
-        let self_write_batch_size = all_write_batch_size / 2;
+        let all_write_batch_size = config.worker_config.all_writes_max_batch_size;
+        let self_write_batch_size = config.worker_config.self_writes_max_batch_size;
 
         if self.all_write_op_bag.len() < all_write_batch_size  || self.self_write_op_bag.len() < self_write_batch_size {
             return; // Not enough writes to form a block

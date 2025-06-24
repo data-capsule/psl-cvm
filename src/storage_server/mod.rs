@@ -149,8 +149,8 @@ impl StorageNode {
                 let _db = RocksDBStorageEngine::new(rocksdb_config.clone());
                 StorageService::new(_db, _chan_depth)
             },
-            crate::config::StorageConfig::FileStorage(_) => {
-                panic!("File storage not supported!");
+            _ => {
+                panic!("Anything other than RocksDB is not supported!");
             },
         };
 

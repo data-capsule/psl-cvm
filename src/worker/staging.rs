@@ -3,7 +3,7 @@ use std::sync::Arc;
 use hashbrown::{HashMap, HashSet};
 use tokio::sync::Mutex;
 
-use crate::{config::AtomicConfig, crypto::{CachedBlock, CryptoServiceConnector}, proto::consensus::ProtoVote, rpc::SenderType, utils::channel::{Receiver, Sender}};
+use crate::{config::{AtomicConfig, AtomicPSLWorkerConfig}, crypto::{CachedBlock, CryptoServiceConnector}, proto::consensus::ProtoVote, rpc::SenderType, utils::channel::{Receiver, Sender}};
 
 pub type VoteWithSender = (SenderType, ProtoVote);
 
@@ -21,7 +21,7 @@ pub type VoteWithSender = (SenderType, ProtoVote);
 ///                                                      ----------------------
 /// ```
 pub struct Staging {
-    config: AtomicConfig,
+    config: AtomicPSLWorkerConfig,
     crypto: CryptoServiceConnector,
 
     vote_rx: Receiver<VoteWithSender>,
@@ -39,7 +39,7 @@ pub struct Staging {
 }
 
 impl Staging {
-    pub fn new(config: AtomicConfig, crypto: CryptoServiceConnector, vote_rx: Receiver<VoteWithSender>, block_rx: Receiver<CachedBlock>, block_broadcaster_to_other_workers_tx: Sender<u64>, logserver_tx: Sender<(SenderType, CachedBlock)>, client_reply_tx: tokio::sync::broadcast::Sender<u64>) -> Self {
+    pub fn new(config: AtomicPSLWorkerConfig, crypto: CryptoServiceConnector, vote_rx: Receiver<VoteWithSender>, block_rx: Receiver<CachedBlock>, block_broadcaster_to_other_workers_tx: Sender<u64>, logserver_tx: Sender<(SenderType, CachedBlock)>, client_reply_tx: tokio::sync::broadcast::Sender<u64>) -> Self {
         Self {
             config,
             crypto,
@@ -100,7 +100,7 @@ impl Staging {
     fn get_commit_threshold(&self) -> usize {
 
         // TODO: This is not correct. Change the config to reflect the quorum size.
-        let n = self.config.get().consensus_config.node_list.len() as usize;
+        let n = self.config.get().worker_config.storage_list.len() as usize;
         n / 2 + 1
     }
 

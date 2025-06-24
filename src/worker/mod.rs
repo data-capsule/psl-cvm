@@ -15,7 +15,7 @@ use tokio::{
 };
 
 use crate::{
-    config::{AtomicConfig, Config},
+    config::{AtomicConfig, AtomicPSLWorkerConfig, Config, PSLWorkerConfig},
     consensus::batch_proposal::TxWithAckChanTag,
     crypto::{AtomicKeyStore, CryptoService, KeyStore},
     proto::{
@@ -165,7 +165,7 @@ impl ServerContextType for PinnedPSLWorkerServerContext {
 }
 
 pub struct PSLWorker<E: ClientHandlerTask + Send + Sync + 'static> {
-    config: AtomicConfig,
+    config: AtomicPSLWorkerConfig,
     keystore: AtomicKeyStore,
 
     server: Arc<Server<PinnedPSLWorkerServerContext>>,
@@ -185,7 +185,7 @@ pub struct PSLWorker<E: ClientHandlerTask + Send + Sync + 'static> {
 }
 
 impl<E: ClientHandlerTask + Send + Sync + 'static> PSLWorker<E> {
-    pub fn new(config: Config) -> Self {
+    pub fn new(config: PSLWorkerConfig) -> Self {
         let (client_request_tx, client_request_rx) =
             make_channel(config.rpc_config.channel_depth as usize);
         Self::mew(config, client_request_tx, client_request_rx)
@@ -199,20 +199,22 @@ impl<E: ClientHandlerTask + Send + Sync + 'static> PSLWorker<E> {
     ///  > ^ <
     /// ```
     pub fn mew(
-        config: Config,
+        config: PSLWorkerConfig,
         client_request_tx: Sender<TxWithAckChanTag>,
         client_request_rx: Receiver<TxWithAckChanTag>,
     ) -> Self {
         let _chan_depth = config.rpc_config.channel_depth as usize;
-        let _num_crypto_tasks = config.consensus_config.num_crypto_workers;
+        let _num_crypto_tasks = config.worker_config.num_crypto_workers;
 
         let key_store = KeyStore::new(
             &config.rpc_config.allowed_keylist_path,
             &config.rpc_config.signing_priv_key_path,
         );
-        let config = AtomicConfig::new(config);
+        let config = AtomicPSLWorkerConfig::new(config);
         let keystore = AtomicKeyStore::new(key_store);
-        let mut crypto = CryptoService::new(_num_crypto_tasks, keystore.clone(), config.clone());
+
+        let og_config = AtomicConfig::new(config.get().to_config());
+        let mut crypto = CryptoService::new(_num_crypto_tasks, keystore.clone(), og_config.clone());
         crypto.run();
 
         // Wiring diagram:
@@ -256,7 +258,7 @@ impl<E: ClientHandlerTask + Send + Sync + 'static> PSLWorker<E> {
         let (staging_tx, staging_rx) = make_channel(_chan_depth as usize);
 
         let context = PinnedPSLWorkerServerContext::new(
-            config.clone(),
+            og_config.clone(),
             keystore.clone(),
             backfill_request_tx,
             fork_receiver_tx,
@@ -264,7 +266,7 @@ impl<E: ClientHandlerTask + Send + Sync + 'static> PSLWorker<E> {
             vote_tx,
         );
         let server = Arc::new(Server::new_atomic(
-            config.clone(),
+            og_config.clone(),
             context,
             keystore.clone(),
         ));
@@ -280,11 +282,11 @@ impl<E: ClientHandlerTask + Send + Sync + 'static> PSLWorker<E> {
         )));
 
         let fork_receiver_client =
-            Client::new_atomic(config.clone(), keystore.clone(), false, 0).into();
+            Client::new_atomic(og_config.clone(), keystore.clone(), false, 0).into();
         let __black_hole_storage = StorageService::new(BlackHoleStorageEngine {}, _chan_depth);
         let fork_receiver = Arc::new(Mutex::new(
             crate::storage_server::fork_receiver::ForkReceiver::new(
-                config.clone(),
+                og_config.clone(),
                 keystore.clone(),
                 fork_receiver_rx,
                 crypto.get_connector(),
@@ -308,11 +310,11 @@ impl<E: ClientHandlerTask + Send + Sync + 'static> PSLWorker<E> {
             storage_broadcaster_tx,
         )));
 
-        let bb_ts_client = Client::new_atomic(config.clone(), keystore.clone(), false, 0).into();
+        let bb_ts_client = Client::new_atomic(og_config.clone(), keystore.clone(), false, 0).into();
         let block_broadcaster_to_storage = Arc::new(Mutex::new(BlockBroadcaster::new(
             config.clone(),
             bb_ts_client,
-            BroadcastMode::Star("storage".to_string()),
+            BroadcastMode::StorageStar,
             true,
             false,
             storage_broadcaster_rx,
@@ -330,11 +332,11 @@ impl<E: ClientHandlerTask + Send + Sync + 'static> PSLWorker<E> {
             commit_tx_spawner,
         )));
 
-        let bb_ow_client = Client::new_atomic(config.clone(), keystore.clone(), false, 0).into();
+        let bb_ow_client = Client::new_atomic(og_config.clone(), keystore.clone(), false, 0).into();
         let block_broadcaster_to_other_workers = Arc::new(Mutex::new(BlockBroadcaster::new(
             config.clone(),
             bb_ow_client,
-            BroadcastMode::Gossip(config.get().consensus_config.node_list.clone()),
+            BroadcastMode::WorkerGossip,
             false,
             true,
             node_broadcaster_rx,
@@ -344,13 +346,13 @@ impl<E: ClientHandlerTask + Send + Sync + 'static> PSLWorker<E> {
 
         let remote_storage = StorageService::<RemoteStorageEngine>::new(
             RemoteStorageEngine {
-                config: config.clone(),
+                config: og_config.clone(),
             },
             _chan_depth,
         );
 
         let logserver = Arc::new(Mutex::new(LogServer::new(
-            config.clone(),
+            og_config.clone(),
             keystore.clone(),
             remote_storage.get_connector(crypto.get_connector()),
             gc_rx,
