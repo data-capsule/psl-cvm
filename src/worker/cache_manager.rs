@@ -1,9 +1,7 @@
 use std::{pin::Pin, sync::Arc, time::{Duration, Instant}};
 
-use actix_web::body::MessageBody;
 use hashbrown::HashMap;
-use hex::ToHex;
-use log::{error, warn};
+use log::{error, info, warn};
 use num_bigint::{BigInt, Sign};
 use thiserror::Error;
 use tokio::sync::{mpsc::UnboundedSender, oneshot, Mutex};
@@ -187,6 +185,8 @@ pub struct CacheManager {
     last_committed_seq_num: u64,
     batch_timer: Arc<Pin<Box<ResettableTimer>>>,
     last_batch_time: Instant,
+
+    log_timer: Arc<Pin<Box<ResettableTimer>>>,
 }
 
 impl CacheManager {
@@ -198,6 +198,8 @@ impl CacheManager {
         fork_receiver_cmd_tx: UnboundedSender<ForkReceiverCommand>,
     ) -> Self {
         let batch_timer = ResettableTimer::new(Duration::from_millis(config.get().worker_config.batch_max_delay_ms));
+        let log_timer = ResettableTimer::new(Duration::from_millis(config.get().app_config.logger_stats_report_ms));
+        
         Self {
             config,
             command_rx,
@@ -208,6 +210,7 @@ impl CacheManager {
             last_committed_seq_num: 0,
             batch_timer,
             last_batch_time: Instant::now(),
+            log_timer,
         }
     }
 
@@ -215,7 +218,7 @@ impl CacheManager {
         let mut cache_manager = cache_manager.lock().await;
 
         cache_manager.batch_timer.run().await;
-        
+        cache_manager.log_timer.run().await;
         
         while let Ok(_) = cache_manager.worker().await {
             // Handle errors if needed
@@ -244,8 +247,27 @@ impl CacheManager {
                     self.block_sequencer_tx.send(SequencerCommand::ForceMakeNewBlock).await;
                 }
             }
+            _ = self.log_timer.wait() => {
+                self.log_stats().await;
+            }
         }
         Ok(())
+    }
+
+    async fn log_stats(&mut self) {
+        let (max_seq_num, max_key) = self.cache.iter()
+        .fold((0u64, CacheKey::new()), |acc, (key, val)| {
+            if acc.0 < val.seq_num {
+                (val.seq_num, key.clone())
+            } else {
+                acc
+            }
+        });
+
+        info!("Cache size: {}, Max seq num: {} with Key: {}",
+            self.cache.len(),
+            max_seq_num, String::from_utf8(max_key.clone()).unwrap_or(hex::encode(max_key))
+        );
     }
 
     async fn handle_command(&mut self, command: CacheCommand) {

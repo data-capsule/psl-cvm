@@ -1,10 +1,10 @@
-use std::{ops::{Deref, DerefMut}, sync::Arc};
+use std::{fmt::{self, Display}, ops::{Deref, DerefMut}, pin::Pin, sync::Arc, time::Duration};
 
 use hashbrown::HashMap;
-use log::warn;
+use log::{info, warn};
 use tokio::sync::{oneshot, Mutex};
 
-use crate::{config::{AtomicConfig, AtomicPSLWorkerConfig}, crypto::{default_hash, CachedBlock, CryptoServiceConnector, FutureHash, HashType}, proto::{consensus::ProtoBlock, execution::{ProtoTransaction, ProtoTransactionOp, ProtoTransactionOpType, ProtoTransactionPhase}}, rpc::SenderType, utils::channel::{Receiver, Sender}};
+use crate::{config::{AtomicConfig, AtomicPSLWorkerConfig}, crypto::{default_hash, CachedBlock, CryptoServiceConnector, FutureHash, HashType}, proto::{consensus::ProtoBlock, execution::{ProtoTransaction, ProtoTransactionOp, ProtoTransactionOpType, ProtoTransactionPhase}}, rpc::SenderType, utils::{channel::{Receiver, Sender}, timer::ResettableTimer}};
 
 use super::cache_manager::{CacheKey, CachedValue};
 
@@ -78,6 +78,17 @@ impl VectorClock {
     }
 }
 
+impl Display for VectorClock {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for (sender, seq_num) in self.0.iter() {
+            let (name, _) = sender.to_name_and_sub_id();
+            write!(f, "{} -> {} ", name, seq_num)?;
+        }
+
+        Ok(())
+    }
+}
+
 
 pub struct BlockSequencer {
     config: AtomicPSLWorkerConfig,
@@ -93,6 +104,8 @@ pub struct BlockSequencer {
 
     node_broadcaster_tx: Sender<oneshot::Receiver<CachedBlock>>,
     storage_broadcaster_tx: Sender<oneshot::Receiver<CachedBlock>>,
+
+    log_timer: Arc<Pin<Box<ResettableTimer>>>,
 }
 
 impl BlockSequencer {
@@ -101,6 +114,7 @@ impl BlockSequencer {
         node_broadcaster_tx: Sender<oneshot::Receiver<CachedBlock>>,
         storage_broadcaster_tx: Sender<oneshot::Receiver<CachedBlock>>,
     ) -> Self {
+        let log_timer = ResettableTimer::new(Duration::from_millis(config.get().app_config.logger_stats_report_ms));
         Self {
             config, crypto,
             curr_block_seq_num: 1,
@@ -111,40 +125,57 @@ impl BlockSequencer {
             cache_manager_rx,
             node_broadcaster_tx,
             storage_broadcaster_tx,
+            log_timer,
         }
     }
 
     pub async fn run(block_sequencer: Arc<Mutex<Self>>) {
         let mut block_sequencer = block_sequencer.lock().await;
+        block_sequencer.log_timer.run().await;
         block_sequencer.worker().await;
     }
 
     async fn worker(&mut self) {
-        while let Some(command) = self.cache_manager_rx.recv().await {
-            match command {
-                SequencerCommand::SelfWriteOp { key, value, seq_num_query } => {
-                    self.self_write_op_bag.push((key.clone(), value.clone()));
-                    self.all_write_op_bag.push((key, value));
-
-                    match seq_num_query {
-                        BlockSeqNumQuery::DontBother => {}
-                        BlockSeqNumQuery::WaitForSeqNum(sender) => {
-                            sender.send(self.curr_block_seq_num).unwrap();
-                        }
-                    }
-                },
-                SequencerCommand::OtherWriteOp { key, value } => {
-                    self.all_write_op_bag.push((key, value));
-                },
-                SequencerCommand::AdvanceVC { sender, block_seq_num } => {
-                    self.curr_vector_clock.advance(sender, block_seq_num);
-                },
-                SequencerCommand::MakeNewBlock => {
-                    self.maybe_prepare_new_block().await;
-                },
-                SequencerCommand::ForceMakeNewBlock => {
-                    self.force_prepare_new_block().await;
+        loop {
+            tokio::select! {
+                command = self.cache_manager_rx.recv() => {
+                    self.handle_command(command.unwrap()).await;
                 }
+                _ = self.log_timer.wait() => {
+                    self.log_stats().await;
+                }
+            }
+        }
+    }
+
+    async fn log_stats(&mut self) {
+        info!("Vector Clock: {}", self.curr_vector_clock);
+    }
+
+    async fn handle_command(&mut self, command: SequencerCommand) {
+        match command {
+            SequencerCommand::SelfWriteOp { key, value, seq_num_query } => {
+                self.self_write_op_bag.push((key.clone(), value.clone()));
+                self.all_write_op_bag.push((key, value));
+
+                match seq_num_query {
+                    BlockSeqNumQuery::DontBother => {}
+                    BlockSeqNumQuery::WaitForSeqNum(sender) => {
+                        sender.send(self.curr_block_seq_num).unwrap();
+                    }
+                }
+            },
+            SequencerCommand::OtherWriteOp { key, value } => {
+                self.all_write_op_bag.push((key, value));
+            },
+            SequencerCommand::AdvanceVC { sender, block_seq_num } => {
+                self.curr_vector_clock.advance(sender, block_seq_num);
+            },
+            SequencerCommand::MakeNewBlock => {
+                self.maybe_prepare_new_block().await;
+            },
+            SequencerCommand::ForceMakeNewBlock => {
+                self.force_prepare_new_block().await;
             }
         }
     }
