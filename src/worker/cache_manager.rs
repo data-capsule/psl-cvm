@@ -1,7 +1,7 @@
 use std::{pin::Pin, sync::Arc, time::{Duration, Instant}};
 
 use hashbrown::HashMap;
-use log::warn;
+use log::{error, warn};
 use num_bigint::{BigInt, Sign};
 use thiserror::Error;
 use tokio::sync::{mpsc::UnboundedSender, oneshot, Mutex};
@@ -226,8 +226,9 @@ impl CacheManager {
                 self.handle_command(command).await;
             }
             Some((block_rx, sender)) = self.block_rx.recv() => {
-                let block = block_rx.await.unwrap();
-
+                error!("YOOOOO >>>> 6");
+                let block = block_rx.await.expect("Block rx error");
+                warn!("Received block from {:?}", sender);
                 if let Ok(block) = block {
                     self.handle_block(sender, block).await;
                 } else {

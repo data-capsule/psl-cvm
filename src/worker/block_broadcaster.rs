@@ -4,7 +4,7 @@ use indexmap::IndexMap;
 use log::warn;
 use prost::Message;
 use tokio::{sync::Mutex, sync::oneshot};
-use crate::{config::{AtomicConfig, AtomicPSLWorkerConfig}, crypto::CachedBlock, proto::consensus::{HalfSerializedBlock, ProtoAppendEntries, ProtoFork}, rpc::{client::PinnedClient, server::LatencyProfile, PinnedMessage, SenderType}, utils::channel::{Receiver, Sender}};
+use crate::{config::{AtomicConfig, AtomicPSLWorkerConfig}, crypto::CachedBlock, proto::{consensus::{HalfSerializedBlock, ProtoAppendEntries, ProtoFork}, rpc::ProtoPayload}, rpc::{client::PinnedClient, server::LatencyProfile, PinnedMessage, SenderType}, utils::channel::{Receiver, Sender}};
 
 
 pub enum BroadcastMode {
@@ -132,7 +132,10 @@ impl BlockBroadcaster {
                 }
 
                 let ae = self.wrap_block_for_broadcast(block);
-                let data = ae.encode_to_vec();
+                let payload = ProtoPayload {
+                    message: Some(crate::proto::rpc::proto_payload::Message::AppendEntries(ae)),
+                };
+                let data = payload.encode_to_vec();
 
                 let sz = data.len();
                 let data = PinnedMessage::from(data, sz, SenderType::Anon);

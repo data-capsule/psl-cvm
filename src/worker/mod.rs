@@ -128,6 +128,7 @@ impl ServerContextType for PinnedPSLWorkerServerContext {
 
         match msg {
             crate::proto::rpc::proto_payload::Message::AppendEntries(proto_append_entries) => {
+                warn!("Received append entries from {:?}", sender);
                 self.fork_receiver_tx
                     .send((proto_append_entries, sender))
                     .await
@@ -183,7 +184,7 @@ pub struct PSLWorker<E: ClientHandlerTask + Send + Sync + 'static> {
 
     app: Arc<Mutex<PSLAppEngine<E>>>,
     __commit_rx_spawner: tokio::sync::broadcast::Receiver<u64>,
-    __black_hole_storage: StorageService<BlackHoleStorageEngine>,
+    __black_hole_storage: Arc<Mutex<StorageService<BlackHoleStorageEngine>>>,
 }
 
 impl<E: ClientHandlerTask + Send + Sync + 'static> PSLWorker<E> {
@@ -286,6 +287,7 @@ impl<E: ClientHandlerTask + Send + Sync + 'static> PSLWorker<E> {
             crate::storage_server::fork_receiver::ForkReceiver::new(
                 og_config.clone(),
                 keystore.clone(),
+                false,
                 fork_receiver_rx,
                 crypto.get_connector(),
                 __black_hole_storage.get_connector(crypto.get_connector()),
@@ -377,7 +379,7 @@ impl<E: ClientHandlerTask + Send + Sync + 'static> PSLWorker<E> {
             app,
 
             __commit_rx_spawner,
-            __black_hole_storage,
+            __black_hole_storage: Arc::new(Mutex::new(__black_hole_storage)),
         }
     }
 
@@ -393,6 +395,8 @@ impl<E: ClientHandlerTask + Send + Sync + 'static> PSLWorker<E> {
         let block_broadcaster_to_other_workers = self.block_broadcaster_to_other_workers.clone();
         let app = self.app.clone();
         let block_sequencer = self.block_sequencer.clone();
+
+        let __black_hole_storage = self.__black_hole_storage.clone();
 
         handles.spawn(async move {
             let _ = Server::<PinnedPSLWorkerServerContext>::run(server).await;
@@ -423,6 +427,10 @@ impl<E: ClientHandlerTask + Send + Sync + 'static> PSLWorker<E> {
         });
         handles.spawn(async move {
             let _ = PSLAppEngine::run(app).await;
+        });
+        handles.spawn(async move {
+            let mut __black_hole_storage = __black_hole_storage.lock().await;
+            __black_hole_storage.run().await;
         });
 
         handles

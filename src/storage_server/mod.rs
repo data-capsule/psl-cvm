@@ -82,6 +82,7 @@ impl ServerContextType for PinnedStorageServerContext {
 
         match msg {
             crate::proto::rpc::proto_payload::Message::AppendEntries(proto_append_entries) => {                        
+                warn!("Received append entries from {:?}", sender);
                 self.fork_receiver_tx.send((proto_append_entries, sender)).await
                     .expect("Channel send error");
                 return Ok(RespType::NoResp);
@@ -169,7 +170,7 @@ impl StorageNode {
         let (fork_receiver_cmd_tx, fork_receiver_cmd_rx) = tokio::sync::mpsc::unbounded_channel();
         let (gc_tx, gc_rx) = make_channel(_chan_depth);
 
-        let fork_receiver = ForkReceiver::new(config.clone(), keystore.clone(), fork_receiver_rx, fork_receiver_crypto, fork_receiver_storage, staging_tx, fork_receiver_cmd_rx);
+        let fork_receiver = ForkReceiver::new(config.clone(), keystore.clone(), true, fork_receiver_rx, fork_receiver_crypto, fork_receiver_storage, staging_tx, fork_receiver_cmd_rx);
 
         let staging = Staging::new(config.clone(), keystore.clone(), staging_rx, logserver_tx, gc_tx, fork_receiver_cmd_tx);
 

@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use hashbrown::{HashMap, HashSet};
+use log::warn;
 use tokio::sync::Mutex;
 
 use crate::{config::{AtomicConfig, AtomicPSLWorkerConfig}, crypto::{CachedBlock, CryptoServiceConnector}, proto::consensus::ProtoVote, rpc::SenderType, utils::channel::{Receiver, Sender}};
@@ -127,6 +128,8 @@ impl Staging {
                 new_ci = block.block.n;
             }
         }
+
+        warn!("New commit index: {}", new_ci);
 
         new_ci
     }

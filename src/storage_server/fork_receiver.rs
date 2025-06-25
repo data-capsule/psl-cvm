@@ -21,6 +21,8 @@ pub struct ForkReceiver {
     keystore: AtomicKeyStore,
     client: PinnedClient,
 
+    check_parent_hash: bool,
+
     ae_rx: Receiver<(ProtoAppendEntries, SenderType)>,
     crypto: CryptoServiceConnector,
     storage: StorageServiceConnector,
@@ -38,7 +40,9 @@ pub struct ForkReceiver {
 
 impl ForkReceiver {
     pub fn new(
-        config: AtomicConfig, keystore: AtomicKeyStore,
+        config: AtomicConfig,
+        keystore: AtomicKeyStore,
+        check_parent_hash: bool,
         ae_rx: Receiver<(ProtoAppendEntries, SenderType)>,
         crypto: CryptoServiceConnector,
         storage: StorageServiceConnector,
@@ -51,6 +55,7 @@ impl ForkReceiver {
         Self {
             config,
             keystore,
+            check_parent_hash,
             ae_rx,
             crypto,
             storage,
@@ -163,7 +168,7 @@ impl ForkReceiver {
             .entry(sender.clone())
             .or_insert(VecDeque::new());
     
-        trace!("Getting AppendEntries from {:?}. stats = {:?}", sender, stats);        
+        warn!("Getting AppendEntries from {:?}. stats = {:?}", sender, stats);        
         
         for block in fork.serialized_blocks.drain(..) {
             let _n = block.n;
@@ -171,7 +176,7 @@ impl ForkReceiver {
             // TODO: This step can be made constant time!
             // This is currently O(# pending blocks).
             let parent_hash = Self::find_parent_hash(stats, &block).await;
-            let (fut_block, hash, _parent_hash) = self.crypto.verify_and_prepare_block_simple(block.serialized_body, parent_hash, sender.clone()).await;
+            let (fut_block, hash, _parent_hash) = self.crypto.verify_and_prepare_block_simple(block.serialized_body, parent_hash, sender.clone(), self.check_parent_hash).await;
 
             Self::append_block(stats, _n, hash).await;
             Self::reset_parent_hash(stats, _n - 1, _parent_hash).await;
@@ -180,6 +185,7 @@ impl ForkReceiver {
             let storage_acked_block = self.storage.put_nonblocking(fut_block).await;
 
             let _ = self.staging_tx.send((storage_acked_block, sender.clone())).await;
+            warn!("Sent block {} to staging", _n);
         }
 
         Ok(())

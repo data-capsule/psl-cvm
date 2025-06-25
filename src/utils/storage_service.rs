@@ -113,7 +113,11 @@ impl<S: StorageEngine> StorageService<S> {
             StorageServiceCommand::PutNonBlocking(block_rx, ack_tx) => {
                 #[cfg(feature = "storage")]
                 {
+                    use log::error;
+
+                    error!("YOOOOO >>>> 7.1");
                     let block = block_rx.await.unwrap();
+                    error!("YOOOOO >>>> 7");
                     if block.is_err() {
                         let _ = ack_tx.send(Err(block.unwrap_err()));
                         return;
@@ -125,10 +129,12 @@ impl<S: StorageEngine> StorageService<S> {
                     self.aggregate_storage_latency_window += start.elapsed();
                     self.aggregate_storage_latency_count += 1;
                     if res.is_err() {
+                        error!("YOOOOO >>>> 8");
                         let _ = ack_tx.send(Err(res.unwrap_err()));
                         return;
                     }
                     let _ = ack_tx.send(Ok(block));
+                    error!("YOOOOO >>>> 9");
                 }
 
                 #[cfg(not(feature = "storage"))]

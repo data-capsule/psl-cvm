@@ -4,7 +4,7 @@ use bytes::{BufMut, BytesMut};
 use ed25519_dalek::{verify_batch, Signature, SIGNATURE_LENGTH};
 use futures::SinkExt;
 use itertools::min;
-use log::{info, trace, warn};
+use log::{error, info, trace, warn};
 use prost::Message;
 use rand::{thread_rng, Rng};
 use sha2::{Digest, Sha256, Sha512};
@@ -128,7 +128,7 @@ enum CryptoServiceCommand {
 
 
     // For Simple AppendEntries without QCs
-    VerifyAndPrepareBlockSimple(Vec<u8> /* block_ser */, FutureHash /* parent */, SenderType /* sender */, oneshot::Sender<Result<CachedBlock, Error>>, oneshot::Sender<Result<HashType, Error>>, oneshot::Sender<HashType> /* return FutureHash */),
+    VerifyAndPrepareBlockSimple(Vec<u8> /* block_ser */, FutureHash /* parent */, SenderType /* sender */, oneshot::Sender<Result<CachedBlock, Error>>, oneshot::Sender<Result<HashType, Error>>, oneshot::Sender<HashType> /* return FutureHash */, bool /* check_parent_hash */),
     
     Die
 }
@@ -427,43 +427,57 @@ impl CryptoService {
                     tx.send(res).unwrap();
                 }
             
-                CryptoServiceCommand::VerifyAndPrepareBlockSimple(block_ser, parent_hash, sender, block_tx, hash_tx, return_parent_hash) => {
-                    let _parent_hash = match parent_hash {
-                        FutureHash::None => default_hash(),
-                        FutureHash::Immediate(val) => val,
-                        FutureHash::Future(receiver) => receiver.await.unwrap(),
-                        FutureHash::FutureResult(receiver) => {
-                            let resp = receiver.await.unwrap();
-                            match resp {
-                                Ok(hsh) => hsh,
-                                Err(e) => {
-                                    panic!("Hash chain error: {} from {:?}", e, sender);
-                                    block_tx.send(Err(Error::new(ErrorKind::InvalidData, "Invalid parent hash"))).unwrap();
-                                    hash_tx.send(Err(Error::new(ErrorKind::InvalidData, "Invalid parent hash")));
-                                    return_parent_hash.send(default_hash());
-                                    continue;
+                CryptoServiceCommand::VerifyAndPrepareBlockSimple(block_ser, parent_hash, sender, block_tx, hash_tx, return_parent_hash, check_parent_hash) => {
+                    let _parent_hash = if check_parent_hash {
+                        match parent_hash {
+                            FutureHash::None => default_hash(),
+                            FutureHash::Immediate(val) => val,
+                            FutureHash::Future(receiver) => receiver.await.unwrap(),
+                            FutureHash::FutureResult(receiver) => {
+                                let resp = receiver.await.unwrap();
+                                match resp {
+                                    Ok(hsh) => hsh,
+                                    Err(e) => {
+                                        panic!("Hash chain error: {} from {:?}", e, sender);
+                                        block_tx.send(Err(Error::new(ErrorKind::InvalidData, "Invalid parent hash"))).unwrap();
+                                        hash_tx.send(Err(Error::new(ErrorKind::InvalidData, "Invalid parent hash")));
+                                        return_parent_hash.send(default_hash());
+                                        continue;
+                                    }
                                 }
                             }
                         }
+                    } else {
+                        default_hash()
                     };
+                    
                     let block_parent_hash = get_parent_hash_in_proto_block_ser(block_ser.as_ref());
                     // Hash parent check
-                    if block_parent_hash.is_none() || !block_parent_hash.unwrap().eq(&_parent_hash) {
-                        block_tx.send(Err(Error::new(ErrorKind::InvalidData, "Invalid parent hash"))).unwrap();
-                        hash_tx.send(Err(Error::new(ErrorKind::InvalidData, "Invalid parent hash")));
-                        return_parent_hash.send(_parent_hash);
-                        continue;
+                    if check_parent_hash {
+                        if block_parent_hash.is_none() || !block_parent_hash.unwrap().eq(&_parent_hash) {
+                            block_tx.send(Err(Error::new(ErrorKind::InvalidData, "Invalid parent hash"))).unwrap();
+                            hash_tx.send(Err(Error::new(ErrorKind::InvalidData, "Invalid parent hash")));
+                            return_parent_hash.send(_parent_hash);
+                            continue;
+                        }
                     }
                     return_parent_hash.send(_parent_hash);
                     
                     let block = deserialize_proto_block(block_ser.as_ref());
-                    let hsh = hash_proto_block_ser(&block_ser);
+                    let hsh = if check_parent_hash {
+                        hash_proto_block_ser(&block_ser)
+                    } else {
+                        default_hash()
+                    };
+                    error!("YOOOOO >>>> 1");
 
                     if block.is_err() {
                         block_tx.send(Err(Error::new(ErrorKind::InvalidData, "Decode error"))).unwrap();
                         hash_tx.send(Err(Error::new(ErrorKind::InvalidData, "Decode error")));
                         continue;
                     }
+
+                    error!("YOOOOO >>>> 2");
 
                     let block = block.unwrap();
 
@@ -498,8 +512,13 @@ impl CryptoService {
                         }
 
                     }
+
+                    error!("YOOOOO >>>> 3");
+
                     block_tx.send(Ok(CachedBlock::new(block, block_ser, hsh.clone()))).unwrap();
+                    error!("YOOOOO >>>> 4");
                     hash_tx.send(Ok(hsh));
+                    error!("YOOOOO >>>> 5");
                 }
             }
         }
@@ -636,7 +655,7 @@ impl CryptoServiceConnector {
         dispatch_cmd!(self, CryptoServiceCommand::PrepareVC, vc)
     }
 
-    pub async fn verify_and_prepare_block_simple(&mut self, block_ser: Vec<u8>, parent_hash: FutureHash, sender: SenderType) -> (
+    pub async fn verify_and_prepare_block_simple(&mut self, block_ser: Vec<u8>, parent_hash: FutureHash, sender: SenderType, check_parent_hash: bool) -> (
         oneshot::Receiver<Result<CachedBlock, Error>>,
         FutureHash /* hash of this block */,
         FutureHash /* returned parent hash */,
@@ -644,7 +663,7 @@ impl CryptoServiceConnector {
         let (block_tx, block_rx) = oneshot::channel();
         let (hash_tx, hash_rx) = oneshot::channel();
         let (return_parent_hash_tx, return_parent_hash_rx) = oneshot::channel();
-        self.dispatch(CryptoServiceCommand::VerifyAndPrepareBlockSimple(block_ser, parent_hash, sender, block_tx, hash_tx, return_parent_hash_tx)).await;
+        self.dispatch(CryptoServiceCommand::VerifyAndPrepareBlockSimple(block_ser, parent_hash, sender, block_tx, hash_tx, return_parent_hash_tx, check_parent_hash)).await;
 
         (block_rx, FutureHash::FutureResult(hash_rx), FutureHash::Future(return_parent_hash_rx))
     }
