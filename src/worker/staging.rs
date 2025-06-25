@@ -129,8 +129,6 @@ impl Staging {
             }
         }
 
-        warn!("New commit index: {}", new_ci);
-
         new_ci
     }
 

@@ -168,9 +168,7 @@ impl<Gen: PerWorkerWorkloadGenerator + Send + Sync + 'static> ClientWorker<Gen> 
                     let resp = match req.rate_control {
                         RateControl::CloseLoop => {
                             // We will wait for the response.
-                            error!("Waiting for reply from {}", req.wait_from);
                             let res = PinnedClient::await_reply(&client, &req.wait_from).await;
-                            error!("Got reply from {}", req.wait_from);
                             if res.is_err() {
                                 // We need to try again.
                                 let _ = backpressure_tx.send(CheckerResponse::TryAgain(req, None, None)).await;
@@ -181,11 +179,9 @@ impl<Gen: PerWorkerWorkloadGenerator + Send + Sync + 'static> ClientWorker<Gen> 
                             let msg = res.unwrap();
                             let sz = msg.as_ref().1;
                             let resp = ProtoClientReply::decode(&msg.as_ref().0.as_slice()[..sz]);
-                            error!("Decoded reply from {}", req.wait_from);
                             if resp.is_err() {
                                 // We need to try again.
                                 let _ = backpressure_tx.send(CheckerResponse::TryAgain(req, None, None)).await;
-                                error!("Trying again");
                                 continue;
                             }
 
@@ -495,7 +491,6 @@ impl<Gen: PerWorkerWorkloadGenerator + Send + Sync + 'static> ClientWorker<Gen> 
                 },
                 Executor::Any => {
                     let recv_node = &node_list[(*curr_round_robin_id) % node_list.len()];
-                    warn!("Sending request to {}", recv_node);
                     // *curr_round_robin_id = *curr_round_robin_id + 1;
                     req.last_sent_to = recv_node.clone();
                     PinnedClient::send(

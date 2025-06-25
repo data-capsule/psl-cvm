@@ -3,7 +3,7 @@ use std::{io::Error, pin::Pin, sync::Arc, time::{Duration, Instant}};
 use log::info;
 use tokio::sync::oneshot;
 
-use crate::crypto::{CachedBlock, CryptoServiceConnector, HashType};
+use crate::{config::AtomicConfig, crypto::{CachedBlock, CryptoServiceConnector, HashType}, utils::BlackHoleStorageEngine};
 
 use super::{channel::{make_channel, Receiver, Sender}, timer::ResettableTimer, StorageEngine};
 
@@ -13,14 +13,13 @@ enum StorageServiceCommand {
 
     PutNonBlocking(oneshot::Receiver<Result<CachedBlock, Error>>, oneshot::Sender<Result<CachedBlock, Error>>),
 }
-
-const LOG_TIMER_MS: u64 = 1000;
 pub struct StorageService<S: StorageEngine> {
     db: S,
 
     cmd_rx: Receiver<StorageServiceCommand>,
     cmd_tx: Sender<StorageServiceCommand>,
 
+    config: AtomicConfig,
     log_timer: Arc<Pin<Box<ResettableTimer>>>,
     aggregate_storage_latency_window: Duration,
     aggregate_storage_latency_count: usize,
@@ -34,14 +33,15 @@ pub struct StorageServiceConnector {
 
 
 impl<S: StorageEngine> StorageService<S> {
-    pub fn new(db: S, buffer_size: usize) -> Self {
+    pub fn new(config: AtomicConfig, db: S, buffer_size: usize) -> Self {
         let (cmd_tx, cmd_rx) = make_channel(buffer_size);
         let log_timer = ResettableTimer::new(
-            Duration::from_millis(LOG_TIMER_MS)
+            Duration::from_millis(config.get().app_config.logger_stats_report_ms)
         );
         
         Self {
             db, cmd_rx, cmd_tx,
+            config,
             log_timer,
             aggregate_storage_latency_window: Duration::from_millis(0),
             aggregate_storage_latency_count: 0,
@@ -79,7 +79,10 @@ impl<S: StorageEngine> StorageService<S> {
                 } else {
                     0f64
                 };
-                info!("Avg Put Latency: {} ms", latency);
+
+                if self.db.id() != "blackhole".to_string() {
+                    info!("Avg Put Latency: {} ms", latency);
+                }
             }
             cmd = self.cmd_rx.recv() => {
                 if let Some(cmd) = cmd {
@@ -113,11 +116,7 @@ impl<S: StorageEngine> StorageService<S> {
             StorageServiceCommand::PutNonBlocking(block_rx, ack_tx) => {
                 #[cfg(feature = "storage")]
                 {
-                    use log::error;
-
-                    error!("YOOOOO >>>> 7.1");
                     let block = block_rx.await.unwrap();
-                    error!("YOOOOO >>>> 7");
                     if block.is_err() {
                         let _ = ack_tx.send(Err(block.unwrap_err()));
                         return;
@@ -129,12 +128,11 @@ impl<S: StorageEngine> StorageService<S> {
                     self.aggregate_storage_latency_window += start.elapsed();
                     self.aggregate_storage_latency_count += 1;
                     if res.is_err() {
-                        error!("YOOOOO >>>> 8");
                         let _ = ack_tx.send(Err(res.unwrap_err()));
                         return;
                     }
                     let _ = ack_tx.send(Ok(block));
-                    error!("YOOOOO >>>> 9");
+
                 }
 
                 #[cfg(not(feature = "storage"))]

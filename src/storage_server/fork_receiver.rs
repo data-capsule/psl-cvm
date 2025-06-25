@@ -168,7 +168,6 @@ impl ForkReceiver {
             .entry(sender.clone())
             .or_insert(VecDeque::new());
     
-        warn!("Getting AppendEntries from {:?}. stats = {:?}", sender, stats);        
         
         for block in fork.serialized_blocks.drain(..) {
             let _n = block.n;
@@ -185,7 +184,6 @@ impl ForkReceiver {
             let storage_acked_block = self.storage.put_nonblocking(fut_block).await;
 
             let _ = self.staging_tx.send((storage_acked_block, sender.clone())).await;
-            warn!("Sent block {} to staging", _n);
         }
 
         Ok(())

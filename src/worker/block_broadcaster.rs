@@ -140,8 +140,6 @@ impl BlockBroadcaster {
                 let sz = data.len();
                 let data = PinnedMessage::from(data, sz, SenderType::Anon);
 
-                warn!("Broadcasting block {} to {:?}", block.block.n, peers);
-
                 let _ = PinnedClient::broadcast(
                     &self.client,
                     &peers, &data, 

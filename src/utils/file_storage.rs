@@ -104,6 +104,10 @@ impl StorageEngine for FileStorageEngine {
         self.create_dir_if_not_exists(&self.config.db_path);
     }
 
+    fn id(&self) -> String {
+        "file".to_string()
+    }
+
     fn destroy(&self) {
         // let n = {
         //     let mtable = self.memtable.lock().unwrap();

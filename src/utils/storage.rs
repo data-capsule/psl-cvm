@@ -6,6 +6,7 @@ use std::{fmt::Debug, io::{Error, ErrorKind}};
 pub trait StorageEngine: Debug + Sync + Send {
     fn init(&mut self);
     fn destroy(&self);
+    fn id(&self) -> String;
 
     /// Can't trust the storage to handle anything more than block hashes
     fn put_block(&self, block_ser: &Vec<u8>, block_hash: &Vec<u8>) -> Result<(), Error>;
@@ -50,6 +51,10 @@ impl RocksDBStorageEngine {
 impl StorageEngine for RocksDBStorageEngine {
     fn init(&mut self) {
         // This does nothing for RocksDBStorageEngine, since it is already created when new() is called.
+    }
+
+    fn id(&self) -> String {
+        "rocksdb".to_string()
     }
 
     fn destroy(&self) {
@@ -139,6 +144,10 @@ impl StorageEngine for BlackHoleStorageEngine {
 
     fn destroy(&self) {
         // This does nothing for BlackHoleStorageEngine, since it is already created when new() is called.
+    } 
+
+    fn id(&self) -> String {
+        "blackhole".to_string()
     }
 
     fn put_block(&self, _block_ser: &Vec<u8>, _block_hash: &Vec<u8>) -> Result<(), Error> {
@@ -172,6 +181,10 @@ impl StorageEngine for RemoteStorageEngine {
 
     fn destroy(&self) {
         // This does nothing for BlackHoleStorageEngine, since it is already created when new() is called.
+    }
+
+    fn id(&self) -> String {
+        "remote".to_string()
     }
 
     fn put_block(&self, _block_ser: &Vec<u8>, _block_hash: &Vec<u8>) -> Result<(), Error> {

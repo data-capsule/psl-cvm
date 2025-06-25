@@ -82,7 +82,6 @@ impl ServerContextType for PinnedStorageServerContext {
 
         match msg {
             crate::proto::rpc::proto_payload::Message::AppendEntries(proto_append_entries) => {                        
-                warn!("Received append entries from {:?}", sender);
                 self.fork_receiver_tx.send((proto_append_entries, sender)).await
                     .expect("Channel send error");
                 return Ok(RespType::NoResp);
@@ -148,7 +147,7 @@ impl StorageNode {
         let storage = match storage_config {
             rocksdb_config @ crate::config::StorageConfig::RocksDB(_) => {
                 let _db = RocksDBStorageEngine::new(rocksdb_config.clone());
-                StorageService::new(_db, _chan_depth)
+                StorageService::new(config.clone(), _db, _chan_depth)
             },
             _ => {
                 panic!("Anything other than RocksDB is not supported!");

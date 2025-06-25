@@ -216,7 +216,7 @@ impl<E: AppEngine + Send + Sync> ConsensusNode<E> {
         let storage = match storage_config {
             rocksdb_config @ crate::config::StorageConfig::RocksDB(_) => {
                 let _db = RocksDBStorageEngine::new(rocksdb_config.clone());
-                StorageService::new(_db, _chan_depth)
+                StorageService::new(config.clone(), _db, _chan_depth)
             },
             _ => {
                 panic!("Anything other than RocksDB is not supported!");

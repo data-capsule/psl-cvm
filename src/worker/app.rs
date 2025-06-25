@@ -129,7 +129,6 @@ impl<T: ClientHandlerTask + Send + Sync + 'static> PSLAppEngine<T> {
             app.handles.spawn(async move {
                 let handler_task = T::new(cache_tx, id);
                 while let Some(command) = client_command_rx.recv().await {
-                    warn!("Received client request from {:?}", command.1.2);
                     handler_task.on_client_request(command, &_reply_tx).await;
                 }
             });
@@ -155,8 +154,6 @@ impl<T: ClientHandlerTask + Send + Sync + 'static> PSLAppEngine<T> {
                             pending_results.push((result, ack_chan, seq_num));
                         }
                     }
-
-                    warn!("Pending results: {:?} Current commit seq num: {}", pending_results, commit_seq_num);
 
                     for (result, ack_chan, seq_num) in &pending_results {
                         if *seq_num > commit_seq_num {
@@ -184,7 +181,6 @@ impl<T: ClientHandlerTask + Send + Sync + 'static> PSLAppEngine<T> {
                         let msg = PinnedMessage::from(buf, len, SenderType::Anon);
                         ack_chan.0.send((msg, LatencyProfile::new())).await;
 
-                        error!("Sent reply to {:?}", ack_chan.2);
                     }
 
                     pending_results.retain(|(_, _, seq_num)| *seq_num > commit_seq_num);
@@ -224,7 +220,6 @@ impl ClientHandlerTask for KVSTask {
             return self.reply_invalid(resp, reply_handler_tx).await;
         }
 
-        warn!(">>>> 1");
 
         let req = req.as_ref().unwrap();
         if req.on_receive.is_none() {
@@ -234,11 +229,8 @@ impl ClientHandlerTask for KVSTask {
             return self.reply_invalid(resp, reply_handler_tx).await;
         }
 
-        warn!(">>>> 2");
-
         let on_receive = req.on_receive.as_ref().unwrap();
 
-        warn!(">>>> 3");
 
         if let std::result::Result::Ok((results, seq_num)) = self.execute_ops(on_receive.ops.as_ref()).await {
             return self.reply_receipt(resp, results, seq_num, reply_handler_tx).await;
@@ -274,7 +266,6 @@ impl KVSTask {
         }
 
         for op in ops {
-            warn!("Executing op: {:?}", op);
             let op_type: Result<ProtoTransactionOpType, DecodeError> = op.op_type.try_into();
             if let Err(e) = op_type {
                 return Err(e.into());

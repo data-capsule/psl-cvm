@@ -469,7 +469,6 @@ impl CryptoService {
                     } else {
                         default_hash()
                     };
-                    error!("YOOOOO >>>> 1");
 
                     if block.is_err() {
                         block_tx.send(Err(Error::new(ErrorKind::InvalidData, "Decode error"))).unwrap();
@@ -477,7 +476,6 @@ impl CryptoService {
                         continue;
                     }
 
-                    error!("YOOOOO >>>> 2");
 
                     let block = block.unwrap();
 
@@ -513,12 +511,8 @@ impl CryptoService {
 
                     }
 
-                    error!("YOOOOO >>>> 3");
-
                     block_tx.send(Ok(CachedBlock::new(block, block_ser, hsh.clone()))).unwrap();
-                    error!("YOOOOO >>>> 4");
                     hash_tx.send(Ok(hsh));
-                    error!("YOOOOO >>>> 5");
                 }
             }
         }

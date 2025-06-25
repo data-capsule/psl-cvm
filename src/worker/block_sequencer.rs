@@ -170,7 +170,6 @@ impl BlockSequencer {
     }
 
     async fn do_prepare_new_block(&mut self) {
-        warn!("Preparing new block");
         let seq_num = self.curr_block_seq_num;
         self.curr_block_seq_num += 1;
 

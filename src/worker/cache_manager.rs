@@ -1,6 +1,8 @@
 use std::{pin::Pin, sync::Arc, time::{Duration, Instant}};
 
+use actix_web::body::MessageBody;
 use hashbrown::HashMap;
+use hex::ToHex;
 use log::{error, warn};
 use num_bigint::{BigInt, Sign};
 use thiserror::Error;
@@ -106,7 +108,7 @@ impl CachedValue {
 
     pub fn new_with_seq_num(value: Vec<u8>, seq_num: u64) -> Self {
         let val_hash = hash(&value);
-        let val_hash = BigInt::from_bytes_be(Sign::NoSign, &val_hash);
+        let val_hash = BigInt::from_bytes_be(Sign::Plus, &val_hash);
         Self {
             value,
             seq_num,
@@ -118,7 +120,7 @@ impl CachedValue {
     pub fn blind_update(&mut self, new_value: Vec<u8>) -> u64 {
         self.value = new_value;
         self.seq_num += 1;
-        self.val_hash = BigInt::from_bytes_be(Sign::NoSign, &hash(&self.value));
+        self.val_hash = BigInt::from_bytes_be(Sign::Plus, &hash(&self.value));
 
         self.seq_num
     }
@@ -132,11 +134,11 @@ impl CachedValue {
         if new_seq_num > self.seq_num {
             self.value.copy_from_slice(&new_value);
             self.seq_num = new_seq_num;
-            self.val_hash = BigInt::from_bytes_be(Sign::NoSign, &hash(&self.value));
+            self.val_hash = BigInt::from_bytes_be(Sign::Plus, &hash(&self.value));
             return Ok(new_seq_num);
         } else if new_seq_num == self.seq_num {
             let new_hash = hash(&new_value);
-            let new_hash_num = BigInt::from_bytes_be(Sign::NoSign, &new_hash);
+            let new_hash_num = BigInt::from_bytes_be(Sign::Plus, &new_hash);
             if new_hash_num > self.val_hash {
                 self.value.copy_from_slice(&new_value);
                 self.val_hash = new_hash_num;
@@ -226,9 +228,7 @@ impl CacheManager {
                 self.handle_command(command).await;
             }
             Some((block_rx, sender)) = self.block_rx.recv() => {
-                error!("YOOOOO >>>> 6");
                 let block = block_rx.await.expect("Block rx error");
-                warn!("Received block from {:?}", sender);
                 if let Ok(block) = block {
                     self.handle_block(sender, block).await;
                 } else {
@@ -275,7 +275,6 @@ impl CacheManager {
                 unimplemented!();
             }
             CacheCommand::Commit => {
-                warn!("Cache State: {:?}", self.cache);
                 self.last_batch_time = Instant::now();
                 self.block_sequencer_tx.send(SequencerCommand::MakeNewBlock).await;
             }

@@ -128,7 +128,6 @@ impl ServerContextType for PinnedPSLWorkerServerContext {
 
         match msg {
             crate::proto::rpc::proto_payload::Message::AppendEntries(proto_append_entries) => {
-                warn!("Received append entries from {:?}", sender);
                 self.fork_receiver_tx
                     .send((proto_append_entries, sender))
                     .await
@@ -143,8 +142,6 @@ impl ServerContextType for PinnedPSLWorkerServerContext {
                 return Ok(RespType::NoResp);
             }
             crate::proto::rpc::proto_payload::Message::ClientRequest(client_request) => {
-                warn!("Received client request from {:?}", sender);
-                
                 let client_tag = client_request.client_tag;
                 self.client_request_tx
                     .send((client_request.tx, (ack_chan, client_tag, sender)))
@@ -282,7 +279,7 @@ impl<E: ClientHandlerTask + Send + Sync + 'static> PSLWorker<E> {
             commit_tx_spawner.clone(),
         )));
 
-        let __black_hole_storage = StorageService::new(BlackHoleStorageEngine {}, _chan_depth);
+        let __black_hole_storage = StorageService::new(og_config.clone(), BlackHoleStorageEngine {}, _chan_depth);
         let fork_receiver = Arc::new(Mutex::new(
             crate::storage_server::fork_receiver::ForkReceiver::new(
                 og_config.clone(),
@@ -348,6 +345,7 @@ impl<E: ClientHandlerTask + Send + Sync + 'static> PSLWorker<E> {
         )));
 
         let remote_storage = StorageService::<RemoteStorageEngine>::new(
+            og_config.clone(),
             RemoteStorageEngine {
                 config: og_config.clone(),
             },
