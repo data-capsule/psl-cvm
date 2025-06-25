@@ -298,7 +298,8 @@ class Deployment:
                 "private_ip": private_ip,
                 "public_ip": public_ip,
                 "tee_type": tee_type,
-                "region_id": region_id
+                "region_id": region_id,
+                "tag": ""
             }
 
         self.raw_config["node_list"] = node_list
@@ -332,7 +333,12 @@ class Deployment:
             else:
                 region_id = 0
 
-            self.nodelist.append(Node(name, public_ip, private_ip, tee_type, region_id, is_client, is_coordinator))
+            if "tag" in info:
+                tag = info["tag"]
+            else:
+                tag = ""
+
+            self.nodelist.append(Node(name, public_ip, private_ip, tee_type, region_id, is_client, is_coordinator, tag))
 
             if dev_vm:
                 self.dev_vm = self.nodelist[-1]
@@ -398,6 +404,11 @@ class Deployment:
     def get_nodes_with_tee(self, tee):
         return [
             vm for vm in self.get_all_node_vms() if tee in vm.tee_type
+        ]
+    
+    def get_nodes_with_tag(self, tag):
+        return [
+            vm for vm in self.get_all_node_vms() if tag in vm.tag
         ]
     
     def get_wan_setup(self, layout):

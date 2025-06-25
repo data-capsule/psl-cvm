@@ -1,5 +1,9 @@
 import os
 from experiments import Experiment
+from deployment import Deployment
+from collections import defaultdict
+from copy import deepcopy
+import json
 
 class PSLStorageExperiment(Experiment):
     """
@@ -84,6 +88,146 @@ sleep 60
 
             with open(os.path.join(self.local_workdir, f"arbiter_{repeat_num}.sh"), "w") as f:
                 f.write(_script + "\n\n")
+
+
+    def generate_configs(self, deployment: Deployment, config_dir, log_dir):
+        # If config_dir is not empty, assume the configs have already been generated
+        if len(os.listdir(config_dir)) > 0:
+            print("Skipping config generation for experiment", self.name)
+            return
+        # Number of nodes in deployment may be < number of nodes in deployment
+        # So we reuse nodes.
+        # As a default, each deployed node gets its unique port number
+        # So there will be no port clash.
+
+        rr_cnt = 0
+        nodelist = []
+        nodes = {}
+        node_configs = {}
+        vms = []
+        node_list_for_crypto = {}
+        self.binary_mapping = defaultdict(list)
+
+        # TODO: Do this separately for node, storage, and sequencer.
+
+        if self.node_distribution == "uniform":
+            vms = deployment.get_all_node_vms()
+        elif self.node_distribution == "sev_only":
+            vms = deployment.get_nodes_with_tee("sev")
+        elif self.node_distribution == "tdx_only":
+            vms = deployment.get_nodes_with_tee("tdx")
+        elif self.node_distribution == "nontee_only":
+            vms = deployment.get_nodes_with_tee("nontee")
+        elif self.node_distribution.startswith("tag:"):
+            vms = deployment.get_nodes_with_tag(self.node_distribution.split(":")[1])
+        else:
+            vms = deployment.get_wan_setup(self.node_distribution)
+        
+
+        for node_num in range(1, self.num_nodes+1):
+            port = deployment.node_port_base + node_num
+            listen_addr = f"0.0.0.0:{port}"
+            name = f"node{node_num}"
+            domain = f"{name}.pft.org"
+
+            _vm = vms[rr_cnt % len(vms)]
+            self.binary_mapping[_vm].append(name)
+            
+            private_ip = _vm.private_ip
+            rr_cnt += 1
+            connect_addr = f"{private_ip}:{port}"
+
+            nodelist.append(name[:])
+            nodes[name] = {
+                "addr": connect_addr,
+                "domain": domain
+            }
+
+            node_list_for_crypto[name] = (connect_addr, domain)
+
+            config = deepcopy(self.base_node_config)
+            config["net_config"]["name"] = name
+            config["net_config"]["addr"] = listen_addr
+            # config["consensus_config"]["log_storage_config"]["RocksDB"]["db_path"] = f"{log_dir}/{name}-db"
+            config["consensus_config"]["log_storage_config"]["RocksDB"]["db_path"] = f"/data/{name}-db"
+
+
+            node_configs[name] = config
+
+        if self.client_region == -1:
+            client_vms = deployment.get_all_client_vms()
+        else:
+            client_vms = deployment.get_all_client_vms_in_region(self.client_region)
+
+        crypto_info = self.gen_crypto(config_dir, node_list_for_crypto, len(client_vms))
+        
+
+        for k, v in node_configs.items():
+            tls_cert_path, tls_key_path, tls_root_ca_cert_path,\
+            allowed_keylist_path, signing_priv_key_path = crypto_info[k]
+
+            v["net_config"]["nodes"] = deepcopy(nodes)
+            v["consensus_config"]["node_list"] = nodelist[:]
+            v["consensus_config"]["learner_list"] = []
+            v["net_config"]["tls_cert_path"] = tls_cert_path
+            v["net_config"]["tls_key_path"] = tls_key_path
+            v["net_config"]["tls_root_ca_cert_path"] = tls_root_ca_cert_path
+            v["rpc_config"]["allowed_keylist_path"] = allowed_keylist_path
+            v["rpc_config"]["signing_priv_key_path"] = signing_priv_key_path
+
+            # Only simulate Byzantine behavior in node1.
+            if "evil_config" in v and v["evil_config"]["simulate_byzantine_behavior"] and k != "node1":
+                v["evil_config"]["simulate_byzantine_behavior"] = False
+                v["evil_config"]["byzantine_start_block"] = 0
+
+            with open(os.path.join(config_dir, f"{k}_config.json"), "w") as f:
+                json.dump(v, f, indent=4)
+
+        num_clients_per_vm = [self.num_clients // len(client_vms) for _ in range(len(client_vms))]
+        num_clients_per_vm[-1] += (self.num_clients - sum(num_clients_per_vm))
+
+        for client_num in range(len(client_vms)):
+            config = deepcopy(self.base_client_config)
+            client = "client" + str(client_num + 1)
+            config["net_config"]["name"] = client
+            config["net_config"]["nodes"] = deepcopy(nodes)
+
+            tls_cert_path, tls_key_path, tls_root_ca_cert_path,\
+            allowed_keylist_path, signing_priv_key_path = crypto_info[client]
+
+            config["net_config"]["tls_root_ca_cert_path"] = tls_root_ca_cert_path
+            config["rpc_config"] = {"signing_priv_key_path": signing_priv_key_path}
+
+            config["workload_config"]["num_clients"] = num_clients_per_vm[client_num]
+            config["workload_config"]["duration"] = self.duration
+
+            self.binary_mapping[client_vms[client_num]].append(client)
+
+            with open(os.path.join(config_dir, f"{client}_config.json"), "w") as f:
+                json.dump(config, f, indent=4)
+
+        # Controller config
+        config = deepcopy(self.base_client_config)
+        name = "controller"
+        config["net_config"]["name"] = name
+        config["net_config"]["nodes"] = deepcopy(nodes)
+
+        tls_cert_path, tls_key_path, tls_root_ca_cert_path,\
+        allowed_keylist_path, signing_priv_key_path = crypto_info[name]
+
+        config["net_config"]["tls_root_ca_cert_path"] = tls_root_ca_cert_path
+        config["rpc_config"] = {"signing_priv_key_path": signing_priv_key_path}
+
+        config["workload_config"]["num_clients"] = 1
+        config["workload_config"]["duration"] = self.duration
+
+        with open(os.path.join(config_dir, f"{name}_config.json"), "w") as f:
+            json.dump(config, f, indent=4)
+
+        if self.controller_must_run:
+            self.binary_mapping[client_vms[0]].append(name)
+
+
 
 
 

@@ -12,6 +12,7 @@ class Node:
     region_id: int
     is_client: bool
     is_coordinator: bool
+    tag: str
 
     def __hash__(self) -> int:
         return hash(self.name)

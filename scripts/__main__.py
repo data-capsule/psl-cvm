@@ -166,10 +166,13 @@ def parse_config(path, workdir=None, existing_experiments=None):
                     int(_e["repeats"]),
                     int(_e["duration"]),
                     int(_e["num_nodes"]),
+                    int(_e.get("num_storage_nodes", 0)),
                     int(_e["num_clients"]),
                     _node_config,
                     _client_config,
                     _e.get("node_distribution", "uniform"),
+                    _e.get("storage_distribution", "uniform"),
+                    _e.get("sequencer_distribution", "uniform"),
                     _e.get("client_region", -1),    # -1 means use all clients
                     _e.get("build_command", "make"),
                     git_hash_override,
@@ -185,6 +188,7 @@ def parse_config(path, workdir=None, existing_experiments=None):
                 int(e["repeats"]),
                 int(e["duration"]),
                 int(e["num_nodes"]),
+                int(e.get("num_storage_nodes", 0)),
                 int(e["num_clients"]),
                 node_config,
                 client_config,
@@ -278,7 +282,29 @@ def all(config, workdir):
             
         result.output()
 
-    
+
+
+@main.command()
+@click.option(
+    "-c", "--config", required=True,
+    type=click.Path(exists=True, file_okay=True, resolve_path=True)
+)
+@click.option(
+    "-d", "--workdir", required=False,
+    type=click.Path(file_okay=False, resolve_path=True),
+    default=None
+)
+def deploy_configs(config, workdir):
+    deployment, experiments, results = parse_config(config, workdir=workdir)
+
+    deployment.deploy()
+
+    for experiment in experiments:
+        try:
+            experiment.deploy_only_configs(deployment)
+        except Exception as e:
+            print(f"Error deploying {experiment.name}. Continuing anyway: {e} {os.getcwd()}")
+
 
 
 @main.command()

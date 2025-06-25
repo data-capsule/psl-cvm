@@ -1,0 +1,139 @@
+workdir = "deployment_artifacts"
+project_home = "https://github.com/data-capsule/psl-cvm"
+
+[deployment_config]
+mode = "manual"
+ssh_key = "cluster_key.pem"
+ssh_user = "pftadmin"
+node_port_base = 3000
+
+
+[deployment_config.node_list]
+
+[deployment_config.node_list.nodepool_vm0] 
+private_ip = "127.0.0.1"
+public_ip = "127.0.0.1"
+tee_type = "nontee"
+region_id = 0
+tag = "worker"
+
+[deployment_config.node_list.nodepool_vm1]
+private_ip = "127.0.0.1"
+public_ip = "127.0.0.1"
+tee_type = "nontee"
+region_id = 0
+tag = "worker"
+
+[deployment_config.node_list.nodepool_vm2]
+private_ip = "127.0.0.1"
+public_ip = "127.0.0.1"
+tee_type = "nontee"
+region_id = 0
+tag = "storage"
+
+[deployment_config.node_list.nodepool_vm3]
+private_ip = "127.0.0.1"
+public_ip = "127.0.0.1"
+tee_type = "nontee"
+region_id = 0
+tag = "sequencer"
+
+[deployment_config.node_list.clientpool_vm0]
+private_ip = "127.0.0.1"
+public_ip = "127.0.0.1"
+
+
+[node_config]
+
+[node_config.net_config]
+client_max_retry = 10
+
+[node_config.rpc_config]
+recv_buffer_size = 32768
+channel_depth = 1000
+
+[node_config.consensus_config]
+commit_index_gap_soft = 250
+commit_index_gap_hard = 5000
+liveness_u = 2
+max_backlog_batch_size = 1000
+signature_max_delay_blocks = 10
+signature_max_delay_ms = 10000
+num_crypto_workers = 5
+view_timeout_ms = 4000
+batch_max_delay_ms = 2
+
+[node_config.consensus_config.log_storage_config.RocksDB]
+write_buffer_size = 2147483648
+max_write_buffer_number = 1
+max_write_buffers_to_merge = 1
+
+[node_config.worker_config]
+all_writes_max_batch_size = 1000
+self_writes_max_batch_size = 1000
+batch_max_delay_ms = 2
+signature_max_delay_ms = 20000
+signature_max_delay_blocks = 50
+num_crypto_workers = 5
+num_worker_threads_per_worker = 4
+num_replier_threads_per_worker = 20
+
+
+[node_config.app_config]
+logger_stats_report_ms = 100
+checkpoint_interval_ms = 1000
+
+[node_config.evil_config]
+simulate_byzantine_behavior = false
+byzantine_start_block = 0
+
+
+[client_config]
+full_duplex = true
+client_sub_id = 0       # This is filled up later by the caller code.
+
+
+[client_config.net_config]
+client_max_retry = 10
+
+[client_config.workload_config]
+max_concurrent_requests = 1
+rate = 100.0 # 100 requests per second input rate.
+
+
+[client_config.workload_config.request_config.Blanks]
+payload_size = 1_048_576 # 1 MiB
+
+
+
+[[experiments]]
+name = "storage_sig_1"
+type = "psl_storage"
+repeats = 1
+num_nodes = 2
+num_storage_nodes = 1
+node_distribution = "tag:worker"
+storage_distribution = "tag:storage"
+sequencer_distribution = "tag:sequencer"
+build_command = "make"
+duration = 60
+
+[experiments.client_config.workload_config.request_config.AEBlanks]
+signature_interval = 1
+
+[experiments.sweeping_parameters]
+num_clients = [1]
+
+[[results]]
+name = "throughput_client_sweep"
+plotter = "throughput_client_sweep"
+ramp_up = 0
+ramp_down = 0
+output = "storage.pdf"
+force_parse = true
+
+# input_rate_slope = 100.0 # 100 rps x 1 MiB = 100 MiB/s
+
+
+[results.legends]
+storage_sig_1 = "sig\\_interval=1"
