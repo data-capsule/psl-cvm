@@ -4,7 +4,7 @@ use hashbrown::HashMap;
 use log::{info, warn};
 use tokio::sync::{oneshot, Mutex};
 
-use crate::{config::{AtomicConfig, AtomicPSLWorkerConfig}, crypto::{default_hash, CachedBlock, CryptoServiceConnector, FutureHash, HashType}, proto::{consensus::ProtoBlock, execution::{ProtoTransaction, ProtoTransactionOp, ProtoTransactionOpType, ProtoTransactionPhase}}, rpc::SenderType, utils::{channel::{Receiver, Sender}, timer::ResettableTimer}};
+use crate::{config::{AtomicConfig, AtomicPSLWorkerConfig}, crypto::{default_hash, CachedBlock, CryptoServiceConnector, FutureHash, HashType}, proto::{consensus::{ProtoBlock, ProtoVectorClock, ProtoVectorClockEntry}, execution::{ProtoTransaction, ProtoTransactionOp, ProtoTransactionOpType, ProtoTransactionPhase}}, rpc::SenderType, utils::{channel::{Receiver, Sender}, timer::ResettableTimer}};
 
 use super::cache_manager::{CacheKey, CachedValue};
 
@@ -75,6 +75,15 @@ impl VectorClock {
 
     pub fn get(&self, sender: &SenderType) -> u64 {
         *self.0.get(sender).unwrap_or(&0)
+    }
+
+    pub fn serialize(&self) -> ProtoVectorClock {
+        ProtoVectorClock {
+            entries: self.0.iter().map(|(sender, seq_num)| ProtoVectorClockEntry {
+                sender: sender.to_name_and_sub_id().0,
+                seq_num: *seq_num,
+            }).collect(),
+        }
     }
 }
 
@@ -204,14 +213,21 @@ impl BlockSequencer {
         let seq_num = self.curr_block_seq_num;
         self.curr_block_seq_num += 1;
 
+
+        let me = self.config.get().net_config.name.clone();
+        let me = SenderType::Auth(me, 0);
+        self.curr_vector_clock.advance(me, seq_num);
+
         let all_writes = Self::wrap_vec(
             Self::dedup_vec(self.all_write_op_bag.drain(..)),
             seq_num,
+            Some(self.curr_vector_clock.serialize()),
         );
 
         let self_writes = Self::wrap_vec(
             Self::dedup_vec(self.self_write_op_bag.drain(..)),
             seq_num,
+            None, // No vector for the block that goes to storage.
         );
 
 
@@ -238,15 +254,12 @@ impl BlockSequencer {
         self.storage_broadcaster_tx.send(self_writes_rx).await;
 
         // TODO: Send hash_rx2 to client reply handler.
-
-        let me = self.config.get().net_config.name.clone();
-        let me = SenderType::Auth(me, 0);
-        self.curr_vector_clock.advance(me, seq_num);
     }
 
     fn wrap_vec(
         writes: Vec<(CacheKey, CachedValue)>,
         seq_num: u64,
+        vector_clock: Option<ProtoVectorClock>,
     ) -> ProtoBlock {
         ProtoBlock {
             tx_list: writes.into_iter()
@@ -271,6 +284,7 @@ impl BlockSequencer {
             view_is_stable: true,
             config_num: 1,
             sig: None,
+            vector_clock,
         }
     }
 

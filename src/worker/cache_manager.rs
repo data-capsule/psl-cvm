@@ -255,18 +255,21 @@ impl CacheManager {
     }
 
     async fn log_stats(&mut self) {
-        let (max_seq_num, max_key) = self.cache.iter()
-        .fold((0u64, CacheKey::new()), |acc, (key, val)| {
-            if acc.0 < val.seq_num {
-                (val.seq_num, key.clone())
+        let (max_seq_num, max2_seq_num, max_key, max2_key) = self.cache.iter()
+        .fold((0u64, 0u64, CacheKey::new(), CacheKey::new()), |acc, (key, val)| {
+            if val.seq_num > acc.0 {
+                (val.seq_num, acc.0, key.clone(), acc.2)
+            } else if val.seq_num > acc.1 {
+                (acc.0, val.seq_num, acc.2, key.clone())
             } else {
                 acc
             }
         });
 
-        info!("Cache size: {}, Max seq num: {} with Key: {}",
+        info!("Cache size: {}, Max seq num: {} with Key: {}, Second max seq num: {} with Key: {}",
             self.cache.len(),
-            max_seq_num, String::from_utf8(max_key.clone()).unwrap_or(hex::encode(max_key))
+            max_seq_num, String::from_utf8(max_key.clone()).unwrap_or(hex::encode(max_key)),
+            max2_seq_num, String::from_utf8(max2_key.clone()).unwrap_or(hex::encode(max2_key))
         );
     }
 
@@ -368,6 +371,14 @@ impl CacheManager {
             sender: sender.clone(),
             block_seq_num,
         }).await;
+
+        if block.block.vector_clock.is_some() {
+            let vector_clock = block.block.vector_clock.as_ref().unwrap();
+            for entry in vector_clock.entries.iter() {
+                let sender = SenderType::Auth(entry.sender.clone(), 0);
+                self.block_sequencer_tx.send(SequencerCommand::AdvanceVC { sender, block_seq_num: entry.seq_num }).await;
+            }
+        }
 
 
         // A new block can be formed now.

@@ -353,6 +353,7 @@ impl BlockSequencer {
             sig: Some(crate::proto::consensus::proto_block::Sig::NoSig(
                 DefferedSignature {},
             )),
+            vector_clock: None,
         };
 
         let parent_hash_rx = self.parent_hash_rx.take();

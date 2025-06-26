@@ -52,6 +52,15 @@ message ProtoTransactionList {
     repeated proto.execution.ProtoTransaction tx_list = 1;
 }
 
+message ProtoVectorClockEntry {
+    string sender = 1;
+    uint64 seq_num = 2;
+}
+
+message ProtoVectorClock {
+    repeated ProtoVectorClockEntry entries = 1;
+}
+
 message ProtoBlock {
     repeated proto.execution.ProtoTransaction tx_list = 1;
     // oneof tx {
@@ -71,7 +80,7 @@ message ProtoBlock {
         bytes proposer_sig = 10;
     }
 
-
+    ProtoVectorClock vector_clock = 11;
 }
 
 message HalfSerializedBlock {

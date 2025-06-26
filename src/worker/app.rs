@@ -1,13 +1,13 @@
-use std::{future::Future, marker::PhantomData, sync::Arc};
+use std::{future::Future, marker::PhantomData, pin::Pin, sync::Arc, time::Duration};
 
 use anyhow::Ok;
 use futures::{channel::oneshot, stream::FuturesUnordered, StreamExt};
-use log::{error, warn};
+use log::{error, info, warn};
 use num_bigint::{BigInt, Sign};
 use prost::{DecodeError, Message as _};
 use tokio::{sync::Mutex, task::JoinSet};
 
-use crate::{config::{AtomicConfig, AtomicPSLWorkerConfig}, consensus::batch_proposal::{MsgAckChanWithTag, TxWithAckChanTag}, crypto::{default_hash, hash, HashType}, proto::{client::{ProtoClientReply, ProtoTransactionReceipt}, execution::{ProtoTransactionOp, ProtoTransactionOpResult, ProtoTransactionOpType, ProtoTransactionResult}}, rpc::{server::LatencyProfile, PinnedMessage, SenderType}, utils::channel::{make_channel, Receiver, Sender}, worker::block_sequencer::BlockSeqNumQuery};
+use crate::{config::{AtomicConfig, AtomicPSLWorkerConfig}, consensus::batch_proposal::{MsgAckChanWithTag, TxWithAckChanTag}, crypto::{default_hash, hash, HashType}, proto::{client::{ProtoClientReply, ProtoTransactionReceipt}, execution::{ProtoTransactionOp, ProtoTransactionOpResult, ProtoTransactionOpType, ProtoTransactionResult}}, rpc::{server::LatencyProfile, PinnedMessage, SenderType}, utils::{channel::{make_channel, Receiver, Sender}, timer::ResettableTimer}, worker::block_sequencer::BlockSeqNumQuery};
 
 use super::cache_manager::{CacheCommand, CacheError};
 
@@ -91,7 +91,8 @@ pub trait ClientHandlerTask {
     fn new(cache_tx: Sender<CacheCommand>, id: usize) -> Self;
     fn get_cache_connector(&self) -> &CacheConnector;
     fn get_id(&self) -> usize;
-    fn on_client_request(&self, request: TxWithAckChanTag, reply_handler_tx: &Sender<UncommittedResultSet>) -> impl Future<Output = Result<(), anyhow::Error>> + Send + Sync;
+    fn get_total_work(&self) -> usize; // Useful for throghput calculation.
+    fn on_client_request(&mut self, request: TxWithAckChanTag, reply_handler_tx: &Sender<UncommittedResultSet>) -> impl Future<Output = Result<(), anyhow::Error>> + Send + Sync;
 }
 
 pub struct PSLAppEngine<T: ClientHandlerTask> {
@@ -101,10 +102,12 @@ pub struct PSLAppEngine<T: ClientHandlerTask> {
     commit_tx_spawner: tokio::sync::broadcast::Sender<u64>,
     handles: JoinSet<()>,
     client_handler_phantom: PhantomData<T>,
+    log_timer: Arc<Pin<Box<ResettableTimer>>>,
 }
 
 impl<T: ClientHandlerTask + Send + Sync + 'static> PSLAppEngine<T> {
     pub fn new(config: AtomicPSLWorkerConfig, cache_tx: Sender<CacheCommand>, client_command_rx: Receiver<TxWithAckChanTag>, commit_tx_spawner: tokio::sync::broadcast::Sender<u64>) -> Self {
+        let log_timer = ResettableTimer::new(Duration::from_millis(config.get().app_config.logger_stats_report_ms));
         Self {
             config,
             cache_tx,
@@ -112,6 +115,7 @@ impl<T: ClientHandlerTask + Send + Sync + 'static> PSLAppEngine<T> {
             commit_tx_spawner,
             handles: JoinSet::new(),
             client_handler_phantom: PhantomData,
+            log_timer,
         }
     }
 
@@ -123,15 +127,29 @@ impl<T: ClientHandlerTask + Send + Sync + 'static> PSLAppEngine<T> {
         // tokio channel won't work here.
         let (reply_tx, reply_rx) = make_channel(_chan_depth);
 
+        let mut total_work_txs: Vec<crate::utils::channel::AsyncSenderWrapper<tokio::sync::oneshot::Sender<usize>>> = Vec::new();
+
+        app.log_timer.run().await;
+
         for id in 0..app.config.get().worker_config.num_worker_threads_per_worker {
             let cache_tx = app.cache_tx.clone();
             let _reply_tx = reply_tx.clone();
             let client_command_rx = app.client_command_rx.clone();
+            let (total_work_tx, total_work_rx) = make_channel(_chan_depth);
+            total_work_txs.push(total_work_tx);
 
             app.handles.spawn(async move {
-                let handler_task = T::new(cache_tx, id);
-                while let Some(command) = client_command_rx.recv().await {
-                    handler_task.on_client_request(command, &_reply_tx).await;
+                let mut handler_task = T::new(cache_tx, id);
+
+                loop {
+                    tokio::select! {
+                        Some(command) = client_command_rx.recv() => {
+                            handler_task.on_client_request(command, &_reply_tx).await;
+                        }
+                        Some(_tx) = total_work_rx.recv() => {
+                            _tx.send(handler_task.get_total_work());
+                        }
+                    }
                 }
             });
         }
@@ -189,6 +207,20 @@ impl<T: ClientHandlerTask + Send + Sync + 'static> PSLAppEngine<T> {
                 }  
             });
         }
+
+        loop {
+            app.log_timer.wait().await;
+
+            let mut total_work = 0;
+            for tx in &total_work_txs {
+                let (_tx, _rx) = tokio::sync::oneshot::channel();
+                tx.send(_tx).await.unwrap();
+
+                total_work += _rx.await.unwrap();
+            }
+
+            info!("Total requests processed: {}", total_work);
+        }
         Ok(())
     }
 }
@@ -197,6 +229,7 @@ impl<T: ClientHandlerTask + Send + Sync + 'static> PSLAppEngine<T> {
 pub struct KVSTask {
     cache_connector: CacheConnector,
     id: usize,
+    total_work: usize,
 }
 
 impl ClientHandlerTask for KVSTask {
@@ -204,6 +237,7 @@ impl ClientHandlerTask for KVSTask {
         Self {
             cache_connector: CacheConnector::new(cache_tx),
             id,
+            total_work: 0,
         }
     }
 
@@ -211,11 +245,15 @@ impl ClientHandlerTask for KVSTask {
         &self.cache_connector
     }
 
+    fn get_total_work(&self) -> usize {
+        self.total_work
+    }
+
     fn get_id(&self) -> usize {
         self.id
     }
 
-    async fn on_client_request(&self, request: TxWithAckChanTag, reply_handler_tx: &Sender<UncommittedResultSet>) -> anyhow::Result<()> {
+    async fn on_client_request(&mut self, request: TxWithAckChanTag, reply_handler_tx: &Sender<UncommittedResultSet>) -> anyhow::Result<()> {
         let req = &request.0;
         let resp = &request.1;
         if req.is_none() {
@@ -235,6 +273,7 @@ impl ClientHandlerTask for KVSTask {
 
 
         if let std::result::Result::Ok((results, seq_num)) = self.execute_ops(on_receive.ops.as_ref()).await {
+            self.total_work += 1;
             return self.reply_receipt(resp, results, seq_num, reply_handler_tx).await;
         }
 

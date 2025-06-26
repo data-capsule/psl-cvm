@@ -299,6 +299,7 @@ impl<Gen: PerWorkerWorkloadGenerator + Send + Sync + 'static> ClientWorker<Gen> 
             view_is_stable: true,
             config_num: 0,
             sig: None,
+            vector_clock: None,
         };
 
         let mut buf = serialize_proto_block_nascent(&block).unwrap();
