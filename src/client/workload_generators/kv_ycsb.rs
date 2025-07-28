@@ -110,9 +110,9 @@ impl KVReadWriteYCSBGenerator {
     }
 
     fn get_next_val(&mut self) -> Vec<u8> {
-        (0..self.config.val_size)
-            .map(|_| self.val_gen_dist.sample(&mut self.rng))
-            .collect()
+        let mut payload = vec![0u8; self.config.val_size];
+        self.rng.fill(&mut payload[..]);
+        payload
     }
 
     fn transform_key_num(&self, key_num: usize) -> usize {
