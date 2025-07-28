@@ -145,13 +145,23 @@ resource "aws_instance" "sevpool" {
     amd_sev_snp = "enabled"
   }
 
-  instance_market_options {
-    market_type = "spot"
-    spot_options {
-      max_price = 1.6 # Set it to the on-demand price. For SEV SNP, they charge 10% higher.
-      # This way the chance of getting evicted is lower.
+  dynamic "instance_market_options" {
+    for_each = var.use_spot ? [1] : []
+    content {
+      market_type = "spot"
+      spot_options {
+        max_price = 1.6 # Set it to the on-demand price. For SEV SNP, they charge 10% higher.
+        # This way the chance of getting evicted is lower.
+      }
     }
   }
+  # instance_market_options {
+  #   market_type = "spot"
+  #   spot_options {
+  #     max_price = 1.6 # Set it to the on-demand price. For SEV SNP, they charge 10% higher.
+  #     # This way the chance of getting evicted is lower.
+  #   }
+  # }
 
   root_block_device {
     volume_size = 64 # GiB. Disk is not important for worker nodes. Still needed to save logs.
@@ -198,14 +208,23 @@ resource "aws_instance" "storagepool" {
     Project = local.project_name
   }
 
-
-  instance_market_options {
-    market_type = "spot"
-    spot_options {
-      max_price = 1.6 # Set it to the on-demand price.
-      # This way the chance of getting evicted is lower.
+  dynamic "instance_market_options" {
+    for_each = var.use_spot ? [1] : []
+    content {
+      market_type = "spot"
+      spot_options {
+        max_price = 1.6 # Set it to the on-demand price.
+        # This way the chance of getting evicted is lower.
+      }
     }
   }
+  # instance_market_options {
+  #   market_type = "spot"
+  #   spot_options {
+  #     max_price = 1.6 # Set it to the on-demand price.
+  #     # This way the chance of getting evicted is lower.
+  #   }
+  # }
 
   root_block_device {
     volume_size = 64 # GiB. This will only be used for logs.
@@ -249,14 +268,23 @@ resource "aws_instance" "clientpool" {
     Project = local.project_name
   }
 
-
-  instance_market_options {
-    market_type = "spot"
-    spot_options {
-      max_price = 1.6 # Set it to the on-demand price.
-      # This way the chance of getting evicted is lower.
+  dynamic "instance_market_options" {
+    for_each = var.use_spot ? [1] : []
+    content {
+      market_type = "spot"
+      spot_options {
+        max_price = 1.6 # Set it to the on-demand price.
+        # This way the chance of getting evicted is lower.
+      }
     }
   }
+  # instance_market_options {
+  #   market_type = "spot"
+  #   spot_options {
+  #     max_price = 1.6 # Set it to the on-demand price.
+  #     # This way the chance of getting evicted is lower.
+  #   }
+  # }
 
   root_block_device {
     volume_size = 64 # GiB. Disk is not important for client nodes. Still needed to save logs.

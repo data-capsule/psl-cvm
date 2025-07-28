@@ -35,6 +35,11 @@ variable "username" {
   # Username will be changed in the init.sh script to psladmin.
 }
 
+variable "use_spot" {
+  type = bool
+  default = true
+}
+
 locals {
   project_name = random_pet.rg_name.id
   vpc_name = "${local.project_name}-vpc"

@@ -4,7 +4,7 @@ import shutil
 from time import sleep
 import time
 from typing import List
-from psl_experiments import PSLStorageExperiment
+from psl_experiments import PSLExperiment
 import tomli
 import click
 from click_default_group import DefaultGroup
@@ -147,7 +147,7 @@ def parse_config(path, workdir=None, existing_experiments=None):
         elif experiment_type == "autobahn":
             klass = AutobahnExperiment
         elif experiment_type == "psl_storage":
-            klass = PSLStorageExperiment
+            klass = PSLExperiment
         project_home = toml_dict["project_home"]
 
         if "sweeping_parameters" in e:
@@ -466,18 +466,18 @@ def deploy_experiments(config, workdir):
     cached_diff = ""
     cached_build_cmd = ""
     for experiment in experiments:
-        try:
+        # try:
             experiment.deploy(deployment, last_git_hash=cached_git_hash, last_git_diff=cached_diff, last_build_command=cached_build_cmd)
             hash, diff, build_cmd = experiment.get_build_details()
             cached_git_hash = hash
             cached_diff = diff
             cached_build_cmd = build_cmd
-        except Exception as e:
-            print(f"Error deploying {experiment.name}. Continuing anyway: {e} {os.getcwd()}")
-            cached_git_hash = ""
-            cached_diff = ""
-            cached_build_cmd = ""
-            # Force build on the next try
+        # except Exception as e:
+        #     print(f"Error deploying {experiment.name}. Continuing anyway: {e} {os.getcwd()}")
+        #     cached_git_hash = ""
+        #     cached_diff = ""
+        #     cached_build_cmd = ""
+        #     # Force build on the next try
 
 
     # Copy over the entire directory to all nodes

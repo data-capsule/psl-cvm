@@ -6,10 +6,12 @@ from collections import defaultdict
 from copy import deepcopy
 import json
 
-class PSLStorageExperiment(Experiment):
+class PSLExperiment(Experiment):
     """
     Everything is the same as Experiment, except that the servers are run as:
     ./server storage config.json
+    ./server worker config.json
+    ./server sequencer config.json
     """
 
     def generate_arbiter_script(self):
@@ -36,7 +38,11 @@ SCP_CMD="scp -o StrictHostKeyChecking=no -i {self.dev_ssh_key}"
             for vm, bin_list in self.binary_mapping.items():
                 for bin in bin_list:
                     if "node" in bin:
+                        binary_name = "server worker"
+                    elif "storage" in bin:
                         binary_name = "server storage"
+                    elif "sequencer" in bin:
+                        binary_name = "server sequencer"
                     elif "client" in bin:
                         binary_name = "client"
                     elif "controller" in bin:
@@ -106,7 +112,7 @@ sleep 60
             node_vms = deployment.get_wan_setup(self.node_distribution)
         
         if self.storage_distribution == "uniform":
-            storage_vms = deployment.get_all_node_vms()
+            storage_vms = deployment.get_all_storage_vms()
         elif self.storage_distribution == "sev_only":
             storage_vms = deployment.get_nodes_with_tee("sev")
         elif self.storage_distribution == "tdx_only":
@@ -180,6 +186,10 @@ sleep 60
         # TODO: Do this separately for node, storage, and sequencer.
 
         (node_vms, storage_vms, sequencer_vms) = self.get_vms(deployment)
+        print("Node vms", node_vms)
+        print("Storage vms", storage_vms)
+        print("Sequencer vms", sequencer_vms)
+        print("Client vms", deployment.get_all_client_vms())
         worker_names = []
         storage_names = []
         sequencer_names = []
