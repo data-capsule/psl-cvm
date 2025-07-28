@@ -2,15 +2,22 @@
 // Licensed under the MIT License.
 
 use actix_web::{get, post, web, App, HttpResponse, HttpServer, Responder};
+use base64::engine::general_purpose;
+use base64::Engine as _;
 use gluesql::core::ast_builder::num;
 use log::{debug, error, info};
+use prost::Message;
 use psl::config::{self, Config, PSLWorkerConfig};
 use psl::consensus::batch_proposal::TxWithAckChanTag;
+use psl::proto::client::ProtoClientReply;
+use psl::proto::execution::{ProtoTransaction, ProtoTransactionOp, ProtoTransactionOpType, ProtoTransactionPhase};
+use psl::rpc::SenderType;
 use psl::utils::channel::{make_channel, Receiver, Sender};
 use psl::{consensus, storage_server, worker};
 use serde::Deserialize;
 use tokio::{runtime, signal};
 use std::process::exit;
+use std::sync::atomic::AtomicU64;
 use std::{env, fs, io, path, sync::{atomic::AtomicUsize, Arc, Mutex}};
 use psl::consensus::engines::kvs::KVSAppEngine;
 use std::io::Write;
@@ -88,31 +95,107 @@ macro_rules! handle_signal_till_end {
     };
 }
 
+
+#[derive(Deserialize)]
+enum Encoding {
+    plain,
+    base64,
+}
+
 #[derive(Deserialize)]
 struct Key {
     key: String,
+    encoding: Encoding,
 }
 
 #[derive(Deserialize)]
 struct KeyValue {
     key: String,
     value: String,
+    encoding: Encoding,
+}
+
+struct SharedState {
+    tx_sender: Sender<TxWithAckChanTag>,
+    config: PSLWorkerConfig,
+    tag_counter: AtomicU64,
 }
 
 #[get("/")]
-async fn http_get(data: web::Data<Sender<TxWithAckChanTag>>, key: web::Json<Key>) -> impl Responder {
+async fn http_get(data: web::Data<SharedState>, key: web::Json<Key>) -> impl Responder {
+    let key = match key.encoding {
+        Encoding::plain => key.key.clone().into_bytes(),
+        Encoding::base64 => general_purpose::STANDARD.decode(&key.key).unwrap(),
+    };
+    let tx = ProtoTransaction {
+        on_receive: Some(ProtoTransactionPhase {
+            ops: vec![
+                ProtoTransactionOp {
+                    op_type: ProtoTransactionOpType::Read as i32,
+                    operands: vec![key],
+                }
+            ]
+        }),
+        on_crash_commit: None,
+        on_byzantine_commit: None,
+        is_reconfiguration: false,
+        is_2pc: false,
+    };
+    let tag = data.tag_counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let sender = data.config.net_config.name.clone();
+    let sender = SenderType::Auth(sender, 0);
 
-    HttpResponse::Ok().json(serde_json::json!({
-        "message": format!("hello from {}", key.key),
-    }))
+    let (act_tx, mut act_rx) = tokio::sync::mpsc::channel(1);
+    data.tx_sender.send((Some(tx), (act_tx, tag, sender))).await.unwrap();
+
+    let result = act_rx.recv().await.unwrap();
+    let result = result.0.as_ref();
+
+    let result = ProtoClientReply::decode(&result.0.as_slice()[0..result.1]).unwrap();
+
+    
+    HttpResponse::Ok().json(serde_json::json!(result))
 }
 
 #[post("/")]
-async fn http_post(data: web::Data<Sender<TxWithAckChanTag>>, key_value: web::Json<KeyValue>) -> impl Responder {
+async fn http_post(data: web::Data<SharedState>, key_value: web::Json<KeyValue>) -> impl Responder {
 
-    HttpResponse::Ok().json(serde_json::json!({
-        "message": format!("hello from {} {}", key_value.key, key_value.value),
-    }))
+    let key = match key_value.encoding {
+        Encoding::plain => key_value.key.clone().into_bytes(),
+        Encoding::base64 => general_purpose::STANDARD.decode(&key_value.key).unwrap(),
+    };
+    let value = match key_value.encoding {
+        Encoding::plain => key_value.value.clone().into_bytes(),
+        Encoding::base64 => general_purpose::STANDARD.decode(&key_value.value).unwrap(),
+    };
+    let tx = ProtoTransaction {
+        on_receive: Some(ProtoTransactionPhase {
+            ops: vec![
+                ProtoTransactionOp {
+                    op_type: ProtoTransactionOpType::Write as i32,
+                    operands: vec![key, value],
+                }
+            ]
+        }),
+        on_crash_commit: None,
+        on_byzantine_commit: None,
+        is_reconfiguration: false,
+        is_2pc: false,
+    };
+    let tag = data.tag_counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let sender = data.config.net_config.name.clone();
+    let sender = SenderType::Auth(sender, 0);
+
+    let (act_tx, mut act_rx) = tokio::sync::mpsc::channel(1);
+    data.tx_sender.send((Some(tx), (act_tx, tag, sender))).await.unwrap();
+
+    let result = act_rx.recv().await.unwrap();
+    let result = result.0.as_ref();
+
+    let result = ProtoClientReply::decode(&result.0.as_slice()[0..result.1]).unwrap();
+
+    
+    HttpResponse::Ok().json(serde_json::json!(result))
 }
 
 
@@ -123,10 +206,14 @@ async fn run_main(cfg: PSLWorkerConfig, client_request_tx: Sender<TxWithAckChanT
     Ok(())
 }
 
-async fn run_actix_server(client_request_tx: Sender<TxWithAckChanTag>, port: usize) -> Result<(), io::Error> {
+async fn run_actix_server(client_request_tx: Sender<TxWithAckChanTag>, port: usize, config: PSLWorkerConfig) -> Result<(), io::Error> {
     let server = HttpServer::new(move || {
         App::new()
-            .app_data(web::Data::new(client_request_tx.clone()))
+            .app_data(web::Data::new(SharedState {
+                tx_sender: client_request_tx.clone(),
+                config: config.clone(),
+                tag_counter: AtomicU64::new(0),
+            }))
             .service(http_get)
             .service(http_post)
     });
@@ -192,7 +279,7 @@ fn main() {
         .worker_threads(num_threads / 2) 
         .build()
         .unwrap();
-    match frontend_runtime.block_on(run_actix_server(client_request_tx, port)) {
+    match frontend_runtime.block_on(run_actix_server(client_request_tx, port, cfg.clone())) {
         Ok(_) => println!("Frontend server ran successfully."),
         Err(e) => eprintln!("Frontend server error: {:?}", e),
     };

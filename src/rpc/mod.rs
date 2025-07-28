@@ -43,7 +43,7 @@ pub struct Message(Arc<Vec<u8>>, usize, SenderType);
 #[derive(Clone)]
 pub struct MessageRef<'a>(pub &'a Vec<u8>, pub usize, pub &'a SenderType);
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct PinnedMessage(Arc<Pin<Box<(Vec<u8>, usize, SenderType)>>>);
 
 impl Message {

@@ -74,7 +74,6 @@ impl CacheConnector {
         self.cache_tx.send(command).await;
 
         let result = response_rx.await.unwrap()?;
-
         std::result::Result::Ok((result, rx))
     }
 
