@@ -77,7 +77,7 @@ read_ratio = 0.0
 [[experiments]]
 name = "ycsb"
 type = "psl_storage"
-git_hash = "78e9d176218d57b94851bdaf8be6169ac5d8a19a"
+git_hash = "c75573c73e5f70640e62c1f8a092f5d8eb417b44"
 repeats = 1
 num_clients = 2000
 num_storage_nodes = 3

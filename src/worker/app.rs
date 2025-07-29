@@ -78,8 +78,7 @@ impl CacheConnector {
         let command = CacheCommand::Put(key, value, val_hash, BlockSeqNumQuery::DontBother, response_tx);
 
         self.cache_tx.send(command).await;
-        tx.send(1).unwrap();
-
+        tx.send(1);
         // let result = response_rx.await.unwrap()?;
         // std::result::Result::Ok((result, rx))
         std::result::Result::Ok((1, rx))
