@@ -40,6 +40,13 @@ variable "use_spot" {
   default = true
 }
 
+variable "use_spot_for_clientpool" {
+  type = bool
+  default = false
+}
+
+
+
 locals {
   project_name = random_pet.rg_name.id
   vpc_name = "${local.project_name}-vpc"

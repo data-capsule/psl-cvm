@@ -269,7 +269,7 @@ resource "aws_instance" "clientpool" {
   }
 
   dynamic "instance_market_options" {
-    for_each = var.use_spot ? [1] : []
+    for_each = var.use_spot_for_clientpool ? [1] : []
     content {
       market_type = "spot"
       spot_options {
