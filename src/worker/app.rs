@@ -86,7 +86,7 @@ impl CacheConnector {
     pub async fn dispatch_commit_request(&self) {
         let command = CacheCommand::Commit;
 
-        self.cache_tx.send(command).await;
+        // self.cache_tx.send(command).await;
     }
 }
 
