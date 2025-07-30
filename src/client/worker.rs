@@ -93,7 +93,7 @@ impl<Gen: PerWorkerWorkloadGenerator + Send + Sync + 'static> ClientWorker<Gen> 
         let (backpressure_tx, backpressure_rx) = make_channel(max_outstanding_requests);
 
         // This is to let the checker task know about new requests.
-        let (generator_tx, generator_rx) = make_channel(max_outstanding_requests);
+        let (generator_tx, generator_rx) = make_channel(10000000);
 
         let _client = worker.client.clone();
         let _stat_tx = worker.stat_tx.clone();

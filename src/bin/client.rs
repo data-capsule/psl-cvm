@@ -30,7 +30,8 @@ fn process_args() -> ClientConfig {
     ClientConfig::deserialize(&cfg_contents)
 }
 
-#[tokio::main(flavor = "multi_thread", worker_threads = 1000)]
+// #[tokio::main(flavor = "multi_thread", worker_threads = 1000)]
+#[tokio::main]
 async fn main() -> std::io::Result<()> {
     log4rs::init_config(default_log4rs_config()).unwrap();
     let config = process_args();
