@@ -105,8 +105,8 @@ pub struct BlockSequencer {
 
     curr_block_seq_num: u64,
     last_block_hash: FutureHash,
-    self_write_op_bag: Vec<(CacheKey, CachedValue)>,
-    all_write_op_bag: Vec<(CacheKey, CachedValue)>,
+    self_write_op_bag: HashMap<CacheKey, CachedValue>,
+    all_write_op_bag: HashMap<CacheKey, CachedValue>,
     curr_vector_clock: VectorClock,
 
     cache_manager_rx: Receiver<SequencerCommand>,
@@ -129,8 +129,8 @@ impl BlockSequencer {
             config, crypto,
             curr_block_seq_num: 1,
             last_block_hash: FutureHash::Immediate(default_hash()),
-            self_write_op_bag: Vec::new(),
-            all_write_op_bag: Vec::new(),
+            self_write_op_bag: HashMap::new(),
+            all_write_op_bag: HashMap::new(),
             curr_vector_clock: VectorClock::new(),
             cache_manager_rx,
             node_broadcaster_tx,
@@ -166,8 +166,8 @@ impl BlockSequencer {
     async fn handle_command(&mut self, command: SequencerCommand) {
         match command {
             SequencerCommand::SelfWriteOp { key, value, seq_num_query } => {
-                self.self_write_op_bag.push((key.clone(), value.clone()));
-                self.all_write_op_bag.push((key, value));
+                self.self_write_op_bag.insert(key.clone(), value.clone());
+                self.all_write_op_bag.insert(key, value);
 
                 match seq_num_query {
                     BlockSeqNumQuery::DontBother => {}
@@ -177,7 +177,7 @@ impl BlockSequencer {
                 }
             },
             SequencerCommand::OtherWriteOp { key, value } => {
-                self.all_write_op_bag.push((key, value));
+                self.all_write_op_bag.insert(key, value);
             },
             SequencerCommand::AdvanceVC { sender, block_seq_num } => {
                 self.curr_vector_clock.advance(sender, block_seq_num);
@@ -223,13 +223,15 @@ impl BlockSequencer {
         self.curr_vector_clock.advance(me, seq_num);
 
         let all_writes = Self::wrap_vec(
-            Self::dedup_vec(self.all_write_op_bag.drain(..)),
+            // Self::dedup_vec(self.all_write_op_bag.drain(..)),
+            self.all_write_op_bag.drain().collect(),
             seq_num,
             Some(self.curr_vector_clock.serialize()),
         );
 
         let self_writes = Self::wrap_vec(
-            Self::dedup_vec(self.self_write_op_bag.drain(..)),
+            // Self::dedup_vec(self.self_write_op_bag.drain(..)),
+            self.self_write_op_bag.drain().collect(),
             seq_num,
             None, // No vector for the block that goes to storage.
         );

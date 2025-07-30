@@ -26,7 +26,7 @@ signature_max_delay_blocks = 10
 signature_max_delay_ms = 10000
 num_crypto_workers = 10
 view_timeout_ms = 4000
-batch_max_delay_ms = 1000
+batch_max_delay_ms = 20
 
 [node_config.consensus_config.log_storage_config.RocksDB]
 write_buffer_size = 67_108_864 # 64 MiB
@@ -36,12 +36,12 @@ max_write_buffers_to_merge = 1
 [node_config.worker_config]
 all_writes_max_batch_size = 1000
 self_writes_max_batch_size = 1000
-batch_max_delay_ms = 100
+batch_max_delay_ms = 20
 signature_max_delay_ms = 20000
 signature_max_delay_blocks = 50
 num_crypto_workers = 10
-num_worker_threads_per_worker = 4
-num_replier_threads_per_worker = 20
+num_worker_threads_per_worker = 1
+num_replier_threads_per_worker = 1
 
 
 [node_config.app_config]
@@ -62,7 +62,7 @@ client_sub_id = 0       # This is filled up later by the caller code.
 client_max_retry = 10
 
 [client_config.workload_config]
-max_concurrent_requests = 100
+max_concurrent_requests = 5
 
 [client_config.workload_config.request_config.KVReadWriteYCSB]
 num_keys = 1_000_000
@@ -77,9 +77,9 @@ read_ratio = 0.0
 [[experiments]]
 name = "ycsb"
 type = "psl_storage"
-git_hash = "b4bb07061d7a2044e99483cb021afa29ff6f684e"
+git_hash = "fc16784d2ae387fba6b8d5043a6584de2225e31a"
 repeats = 1
-num_clients = 10000
+num_clients = 1200
 num_storage_nodes = 0
 num_sequencer_nodes = 0
 node_distribution = "uniform"
