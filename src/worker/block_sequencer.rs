@@ -205,7 +205,7 @@ impl BlockSequencer {
     }
 
     async fn force_prepare_new_block(&mut self) {
-        info!("Force making new block 3. All write op bag: {}", self.all_write_op_bag.len());
+        info!("Force making new block 3. All write op bag: {} Self write op bag: {}", self.all_write_op_bag.len(), self.self_write_op_bag.len());
         if self.all_write_op_bag.is_empty() {
             return;
         }

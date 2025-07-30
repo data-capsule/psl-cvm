@@ -314,7 +314,9 @@ impl CacheManager {
         }
     }
 
+    #[allow(unused)]
     async fn handle_block(&mut self, sender: SenderType, block: CachedBlock) {
+        return;
         for tx in &block.block.tx_list {
             if tx.on_crash_commit.is_none() {
                 continue;
