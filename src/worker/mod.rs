@@ -268,7 +268,7 @@ impl<E: ClientHandlerTask + Send + Sync + 'static> PSLWorker<E> {
         ));
 
         let (commit_tx_spawner, __commit_rx_spawner) =
-            tokio::sync::broadcast::channel(_chan_depth as usize);
+            tokio::sync::broadcast::channel(_chan_depth * 10000 as usize);
 
         let app = Arc::new(Mutex::new(PSLAppEngine::<E>::new(
             config.clone(),
