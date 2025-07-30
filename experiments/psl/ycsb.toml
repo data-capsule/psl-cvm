@@ -65,7 +65,7 @@ client_max_retry = 10
 max_concurrent_requests = 100
 
 [client_config.workload_config.request_config.KVReadWriteYCSB]
-num_keys = 10_000_000
+num_keys = 1_000_000
 num_fields = 100
 val_size = 100 # 8 KiB
 linearizable_reads = false
@@ -77,16 +77,16 @@ read_ratio = 0.0
 [[experiments]]
 name = "ycsb"
 type = "psl_storage"
-git_hash = "603d4b83a3329f5a0bfc85d68a4cc7796cd30180"
+git_hash = "367ce197732eb1aa6134d54f0dff89a8a314a3bc"
 repeats = 1
-num_clients = 2000
+num_clients = 10000
 num_storage_nodes = 0
 num_sequencer_nodes = 0
 node_distribution = "uniform"
 storage_distribution = "uniform"
 sequencer_distribution = "tag:sequencer"
 build_command = "make"
-duration = 300
+duration = 90
 data_dir = "/data/"
 
 [experiments.sweeping_parameters]
