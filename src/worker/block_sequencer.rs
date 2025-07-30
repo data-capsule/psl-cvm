@@ -261,7 +261,7 @@ impl BlockSequencer {
         self.last_block_hash = FutureHash::Future(hash_rx);
 
         // Nodes get all writes so as to virally send writes from other nodes.
-        self.node_broadcaster_tx.send(all_writes_rx).await;
+        // self.node_broadcaster_tx.send(all_writes_rx).await;
 
         // Storage only gets self writes.
         // Strong convergence will ensure that the checkpoint state matches the state using all_writes above.
