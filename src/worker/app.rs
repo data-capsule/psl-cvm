@@ -5,7 +5,7 @@ use futures::{channel::oneshot, stream::FuturesUnordered, StreamExt};
 use log::{error, info, warn};
 use num_bigint::{BigInt, Sign};
 use prost::{DecodeError, Message as _};
-use tokio::{sync::Mutex, task::JoinSet};
+use tokio::{sync::{mpsc::{unbounded_channel, UnboundedReceiver}, Mutex}, task::JoinSet};
 
 use crate::{config::{AtomicConfig, AtomicPSLWorkerConfig}, consensus::batch_proposal::{MsgAckChanWithTag, TxWithAckChanTag}, crypto::{default_hash, hash, HashType}, proto::{client::{ProtoClientReply, ProtoTransactionReceipt}, execution::{ProtoTransactionOp, ProtoTransactionOpResult, ProtoTransactionOpType, ProtoTransactionResult}}, rpc::{server::LatencyProfile, PinnedMessage, SenderType}, utils::{channel::{make_channel, Receiver, Sender}, timer::ResettableTimer}, worker::block_sequencer::BlockSeqNumQuery};
 
@@ -104,23 +104,22 @@ pub struct PSLAppEngine<T: ClientHandlerTask> {
     config: AtomicPSLWorkerConfig,
     cache_tx: tokio::sync::mpsc::Sender<CacheCommand>,
     client_command_rx: Receiver<TxWithAckChanTag>,
-    commit_tx_spawner: tokio::sync::broadcast::Sender<u64>,
+    commit_rx: UnboundedReceiver<u64>,
     handles: JoinSet<()>,
     client_handler_phantom: PhantomData<T>,
-    log_timer: Arc<Pin<Box<ResettableTimer>>>,
+    // log_timer: Arc<Pin<Box<ResettableTimer>>>,
 }
 
 impl<T: ClientHandlerTask + Send + Sync + 'static> PSLAppEngine<T> {
-    pub fn new(config: AtomicPSLWorkerConfig, cache_tx: tokio::sync::mpsc::Sender<CacheCommand>, client_command_rx: Receiver<TxWithAckChanTag>, commit_tx_spawner: tokio::sync::broadcast::Sender<u64>) -> Self {
-        let log_timer = ResettableTimer::new(Duration::from_millis(config.get().app_config.logger_stats_report_ms));
+    pub fn new(config: AtomicPSLWorkerConfig, cache_tx: tokio::sync::mpsc::Sender<CacheCommand>, client_command_rx: Receiver<TxWithAckChanTag>, commit_rx: UnboundedReceiver<u64>) -> Self {
         Self {
             config,
             cache_tx,
             client_command_rx,
-            commit_tx_spawner,
+            commit_rx,
             handles: JoinSet::new(),
             client_handler_phantom: PhantomData,
-            log_timer,
+            // log_timer,
         }
     }
 
@@ -134,7 +133,9 @@ impl<T: ClientHandlerTask + Send + Sync + 'static> PSLAppEngine<T> {
 
         let mut total_work_txs: Vec<crate::utils::channel::AsyncSenderWrapper<tokio::sync::oneshot::Sender<usize>>> = Vec::new();
 
-        app.log_timer.run().await;
+        //app.log_timer.run().await;
+        let log_timer = ResettableTimer::new(Duration::from_millis(app.config.get().app_config.logger_stats_report_ms));
+        log_timer.run().await;
 
         for id in 0..app.config.get().worker_config.num_worker_threads_per_worker {
             let cache_tx = app.cache_tx.clone();
@@ -159,18 +160,28 @@ impl<T: ClientHandlerTask + Send + Sync + 'static> PSLAppEngine<T> {
             });
         }
 
+        let mut _commit_tx_vec = Vec::new();
+
         for _ in 0..app.config.get().worker_config.num_replier_threads_per_worker {
             let _reply_rx = reply_rx.clone();
-            let mut _commit_rx = app.commit_tx_spawner.subscribe();
+            let (_commit_tx, mut _commit_rx) = unbounded_channel();
+            _commit_tx_vec.push(_commit_tx);
 
             app.handles.spawn(async move {
                 let mut commit_seq_num = 0;
                 let mut pending_results = Vec::new();
-
+                let mut ci_vec = Vec::new();
                 loop {
+                    ci_vec.clear();
+                    let msgs_pending = _commit_rx.len();
                     tokio::select! {
-                        std::result::Result::Ok(seq_num) = _commit_rx.recv() => {
-                            commit_seq_num = seq_num;
+                        _ = _commit_rx.recv_many(&mut ci_vec, msgs_pending) => {
+                            let max_ci = ci_vec.iter().max().unwrap_or(&0);
+                            commit_seq_num = if *max_ci > commit_seq_num {
+                                *max_ci
+                            } else {
+                                commit_seq_num
+                            };
                             
                         },
                         Some(result) = _reply_rx.recv() => {
@@ -179,6 +190,8 @@ impl<T: ClientHandlerTask + Send + Sync + 'static> PSLAppEngine<T> {
                             pending_results.push((result, ack_chan, seq_num));
                         }
                     }
+
+
 
                     for (result, ack_chan, seq_num) in &pending_results {
                         if *seq_num > commit_seq_num {
@@ -214,17 +227,27 @@ impl<T: ClientHandlerTask + Send + Sync + 'static> PSLAppEngine<T> {
         }
 
         loop {
-            app.log_timer.wait().await;
+            let mut ci_vec = Vec::new();
+            let msgs_pending = app.commit_rx.len();
+            tokio::select! {
+                _ = app.commit_rx.recv_many(&mut ci_vec, msgs_pending) => {
+                    let max_ci = ci_vec.iter().max().unwrap_or(&0);
 
-            let mut total_work = 0;
-            for tx in &total_work_txs {
-                let (_tx, _rx) = tokio::sync::oneshot::channel();
-                tx.send(_tx).await.unwrap();
+                    for tx in &_commit_tx_vec {
+                        let _ = tx.send(*max_ci);
+                    }
+                },
+                _ = log_timer.wait() => {
+                    let mut total_work = 0;
+                    for tx in &total_work_txs {
+                        let (_tx, _rx) = tokio::sync::oneshot::channel();
+                        tx.send(_tx).await.unwrap();
 
-                total_work += _rx.await.unwrap();
+                        total_work += _rx.await.unwrap();
+                    }
+                    info!("Total requests processed: {}", total_work);
+                }
             }
-
-            info!("Total requests processed: {}", total_work);
         }
         Ok(())
     }

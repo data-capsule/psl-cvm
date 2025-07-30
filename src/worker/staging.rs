@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use tokio::sync::mpsc::UnboundedSender;
 use hashbrown::{HashMap, HashSet};
 use log::{info, warn};
 use tokio::sync::Mutex;
@@ -30,7 +31,7 @@ pub struct Staging {
 
     block_broadcaster_to_other_workers_tx: Sender<u64>,
     logserver_tx: Sender<(SenderType, CachedBlock)>,
-    client_reply_tx: tokio::sync::broadcast::Sender<u64>,
+    client_reply_tx: UnboundedSender<u64>,
 
     vote_buffer: HashMap<u64, Vec<VoteWithSender>>,
     block_buffer: Vec<CachedBlock>,
@@ -41,7 +42,7 @@ pub struct Staging {
 }
 
 impl Staging {
-    pub fn new(config: AtomicPSLWorkerConfig, crypto: CryptoServiceConnector, vote_rx: Receiver<VoteWithSender>, block_rx: Receiver<CachedBlock>, block_broadcaster_to_other_workers_tx: Sender<u64>, logserver_tx: Sender<(SenderType, CachedBlock)>, client_reply_tx: tokio::sync::broadcast::Sender<u64>, gc_tx: Sender<(SenderType, u64)>) -> Self {
+    pub fn new(config: AtomicPSLWorkerConfig, crypto: CryptoServiceConnector, vote_rx: Receiver<VoteWithSender>, block_rx: Receiver<CachedBlock>, block_broadcaster_to_other_workers_tx: Sender<u64>, logserver_tx: Sender<(SenderType, CachedBlock)>, client_reply_tx: UnboundedSender<u64>, gc_tx: Sender<(SenderType, u64)>) -> Self {
         Self {
             config,
             crypto,

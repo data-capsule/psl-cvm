@@ -178,7 +178,6 @@ pub struct PSLWorker<E: ClientHandlerTask + Send + Sync + 'static> {
     staging: Arc<Mutex<Staging>>,
 
     app: Arc<Mutex<PSLAppEngine<E>>>,
-    __commit_rx_spawner: tokio::sync::broadcast::Receiver<u64>,
     __black_hole_storage: Arc<Mutex<StorageService<BlackHoleStorageEngine>>>,
 }
 
@@ -267,14 +266,13 @@ impl<E: ClientHandlerTask + Send + Sync + 'static> PSLWorker<E> {
             keystore.clone(),
         ));
 
-        let (commit_tx_spawner, __commit_rx_spawner) =
-            tokio::sync::broadcast::channel(_chan_depth * 10000 as usize);
+        let (commit_tx_spawner, __commit_rx_spawner) = unbounded_channel();
 
         let app = Arc::new(Mutex::new(PSLAppEngine::<E>::new(
             config.clone(),
             cache_tx,
             client_request_rx,
-            commit_tx_spawner.clone(),
+            __commit_rx_spawner,
         )));
 
         let __black_hole_storage = StorageService::new(og_config.clone(), BlackHoleStorageEngine {}, _chan_depth);
@@ -373,8 +371,6 @@ impl<E: ClientHandlerTask + Send + Sync + 'static> PSLWorker<E> {
             block_broadcaster_to_other_workers,
             staging,
             app,
-
-            __commit_rx_spawner,
             __black_hole_storage: Arc::new(Mutex::new(__black_hole_storage)),
         }
     }
