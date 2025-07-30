@@ -164,7 +164,7 @@ impl<T: ClientHandlerTask + Send + Sync + 'static> PSLAppEngine<T> {
 
         for _ in 0..app.config.get().worker_config.num_replier_threads_per_worker {
             let _reply_rx = reply_rx.clone();
-            let (_commit_tx, mut _commit_rx) = unbounded_channel();
+            let (_commit_tx, mut _commit_rx) = tokio::sync::mpsc::channel(_chan_depth);
             _commit_tx_vec.push(_commit_tx);
 
             app.handles.spawn(async move {
@@ -234,7 +234,7 @@ impl<T: ClientHandlerTask + Send + Sync + 'static> PSLAppEngine<T> {
                     let max_ci = ci_vec.iter().max().unwrap_or(&0);
 
                     for tx in &_commit_tx_vec {
-                        let _ = tx.send(*max_ci);
+                        let _ = tx.send(*max_ci).await;
                     }
                 },
                 _ = log_timer.wait() => {
