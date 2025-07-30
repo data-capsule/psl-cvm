@@ -261,7 +261,7 @@ impl ClientHandlerTask for KVSTask {
     #[allow(unreachable_code)]
     async fn on_client_request(&mut self, request: TxWithAckChanTag, reply_handler_tx: &Sender<UncommittedResultSet>) -> anyhow::Result<()> {
         let req = &request.0;
-        let resp = &request.1;
+        let resp = request.1;
         self.total_work += 1;
 
         // // Short circuit for now.
@@ -384,15 +384,15 @@ impl KVSTask {
         Ok((results, None))
     }
 
-    async fn reply_receipt(&self, resp: &MsgAckChanWithTag, results: Vec<ProtoTransactionOpResult>, seq_num: Option<u64>, reply_handler_tx: &Sender<UncommittedResultSet>) -> anyhow::Result<()> {
-        reply_handler_tx.send((results, resp.clone(), seq_num)).await;
+    async fn reply_receipt(&self, resp: MsgAckChanWithTag, results: Vec<ProtoTransactionOpResult>, seq_num: Option<u64>, reply_handler_tx: &Sender<UncommittedResultSet>) -> anyhow::Result<()> {
+        reply_handler_tx.send((results, resp, seq_num)).await;
         Ok(())
     }
 
-    async fn reply_invalid(&self, resp: &MsgAckChanWithTag, reply_handler_tx: &Sender<UncommittedResultSet>) -> anyhow::Result<()> {
+    async fn reply_invalid(&self, resp: MsgAckChanWithTag, reply_handler_tx: &Sender<UncommittedResultSet>) -> anyhow::Result<()> {
         // For now, just send a blank result.
         
-        reply_handler_tx.send((vec![], resp.clone(), None)).await;
+        reply_handler_tx.send((vec![], resp, None)).await;
         Ok(())
     }
 
