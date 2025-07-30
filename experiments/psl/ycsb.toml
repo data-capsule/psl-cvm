@@ -62,7 +62,7 @@ client_sub_id = 0       # This is filled up later by the caller code.
 client_max_retry = 10
 
 [client_config.workload_config]
-max_concurrent_requests = 1
+max_concurrent_requests = 5
 
 [client_config.workload_config.request_config.KVReadWriteYCSB]
 num_keys = 10_000_000
@@ -77,7 +77,7 @@ read_ratio = 0.0
 [[experiments]]
 name = "ycsb"
 type = "psl_storage"
-git_hash = "d17171468af56b6b5c3128dc1f0af090051d38cd"
+git_hash = "871d1de9434256ba7d954ac3ff9d152e84915b73"
 repeats = 1
 num_clients = 2000
 num_storage_nodes = 3
