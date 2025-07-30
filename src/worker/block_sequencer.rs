@@ -1,4 +1,4 @@
-use std::{fmt::{self, Display}, ops::{Deref, DerefMut}, pin::Pin, sync::Arc, time::Duration};
+use std::{fmt::{self, Display}, ops::{Deref, DerefMut}, pin::Pin, sync::Arc, time::{Duration, Instant}};
 
 use hashbrown::HashMap;
 use log::{info, warn};
@@ -116,6 +116,8 @@ pub struct BlockSequencer {
 
     log_timer: Arc<Pin<Box<ResettableTimer>>>,
     last_signed_seq_num: u64,
+
+    last_block_time: Instant,
 }
 
 impl BlockSequencer {
@@ -137,6 +139,7 @@ impl BlockSequencer {
             storage_broadcaster_tx,
             log_timer,
             last_signed_seq_num: 0,
+            last_block_time: Instant::now(),
         }
     }
 
@@ -202,15 +205,24 @@ impl BlockSequencer {
         }
 
         self.do_prepare_new_block().await;
+        self.last_block_time = Instant::now();
     }
 
     async fn force_prepare_new_block(&mut self) {
+        let _batch_timeout = Duration::from_millis(self.config.get().worker_config.batch_max_delay_ms);
+
+        if self.last_block_time.elapsed() < _batch_timeout {
+            return;
+        }
+
+        
         info!("Force making new block 3. All write op bag: {} Self write op bag: {}", self.all_write_op_bag.len(), self.self_write_op_bag.len());
         if self.all_write_op_bag.is_empty() {
             return;
         }
         
         self.do_prepare_new_block().await;
+        self.last_block_time = Instant::now();
     }
 
     async fn do_prepare_new_block(&mut self) {
