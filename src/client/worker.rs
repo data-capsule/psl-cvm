@@ -172,6 +172,7 @@ impl<Gen: PerWorkerWorkloadGenerator + Send + Sync + 'static> ClientWorker<Gen> 
                             if res.is_err() {
                                 // We need to try again.
                                 let _ = backpressure_tx.send(CheckerResponse::TryAgain(req, None, None)).await;
+                                error!("Tryagain fired 1!");
                                 continue;
                             }
                             let msg = res.unwrap();
@@ -180,6 +181,7 @@ impl<Gen: PerWorkerWorkloadGenerator + Send + Sync + 'static> ClientWorker<Gen> 
                             if resp.is_err() {
                                 // We need to try again.
                                 let _ = backpressure_tx.send(CheckerResponse::TryAgain(req, None, None)).await;
+                                error!("Tryagain fired 2!");
                                 continue;
                             }
 
@@ -227,6 +229,7 @@ impl<Gen: PerWorkerWorkloadGenerator + Send + Sync + 'static> ClientWorker<Gen> 
                         },
                         Some(client::proto_client_reply::Reply::TryAgain(_try_again)) => {
                             let _ = backpressure_tx.send(CheckerResponse::TryAgain(req, None, None)).await;
+                            error!("Tryagain fired 3!");
                         },
                         Some(client::proto_client_reply::Reply::TentativeReceipt(_tentative_receipt)) => {
                             // We treat tentative receipt as a success.
