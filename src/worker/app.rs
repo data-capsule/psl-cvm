@@ -218,16 +218,18 @@ impl<T: ClientHandlerTask + Send + Sync + 'static> PSLAppEngine<T> {
         }
 
         let mut ci_vec = Vec::new();
-        let msgs_pending = app.commit_rx.len();
         let mut known_ci = 0;
         let mut reply_vec = Vec::new();
-
+        
         loop {
             ci_vec.clear();
             reply_vec.clear();
+            
+            let msgs_pending_ci_vec = app.commit_rx.len();
+            let msgs_pending_reply_vec = reply_rx.len();
 
             tokio::select! {
-                _ = app.commit_rx.recv_many(&mut ci_vec, msgs_pending) => {
+                _ = app.commit_rx.recv_many(&mut ci_vec, msgs_pending_ci_vec) => {
                     let max_ci = ci_vec.iter().max().unwrap_or(&0);
 
                     if *max_ci > known_ci {
@@ -238,7 +240,7 @@ impl<T: ClientHandlerTask + Send + Sync + 'static> PSLAppEngine<T> {
 
 
                 },
-                _ = reply_rx.recv_many(&mut reply_vec, msgs_pending) => {
+                _ = reply_rx.recv_many(&mut reply_vec, msgs_pending_reply_vec) => {
                     for (result, ack_chan, seq_num) in reply_vec.drain(..) {
                         let seq_num = seq_num.unwrap_or(0);
                         app.pending_replies.entry(seq_num)
