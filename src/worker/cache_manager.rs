@@ -245,10 +245,11 @@ impl CacheManager {
 
                 // This is safe to do here.
                 // The tick won't interrupt handle_command or handle_block's logic.
-                if self.last_batch_time.elapsed() > Duration::from_millis(self.config.get().worker_config.batch_max_delay_ms) {
-                    self.last_batch_time = Instant::now();
-                    self.block_sequencer_tx.send(SequencerCommand::ForceMakeNewBlock).await;
-                }
+                // if self.last_batch_time.elapsed() > Duration::from_millis(self.config.get().worker_config.batch_max_delay_ms) {
+                //     self.last_batch_time = Instant::now();
+                info!("Force making new block");
+                self.block_sequencer_tx.send(SequencerCommand::ForceMakeNewBlock).await;
+                // }
             }
             _ = self.log_timer.wait() => {
                 self.log_stats().await;
@@ -291,7 +292,7 @@ impl CacheManager {
                         response_tx.send(Ok(seq_num));
                             // .unwrap();
                         
-                        // self.block_sequencer_tx.send(SequencerCommand::SelfWriteOp { key, value: CachedValue::new_with_seq_num(value, seq_num, val_hash), seq_num_query }).await;
+                        self.block_sequencer_tx.send(SequencerCommand::SelfWriteOp { key, value: CachedValue::new_with_seq_num(value, seq_num, val_hash), seq_num_query }).await;
                         continue;
                     }
 
@@ -299,7 +300,7 @@ impl CacheManager {
                     self.cache.insert(key.clone(), cached_value);
                     response_tx.send(Ok(1));
                     // .unwrap();
-                    // self.block_sequencer_tx.send(SequencerCommand::SelfWriteOp { key, value: CachedValue::new(value, val_hash), seq_num_query }).await;
+                    self.block_sequencer_tx.send(SequencerCommand::SelfWriteOp { key, value: CachedValue::new(value, val_hash), seq_num_query }).await;
 
                 }
                 CacheCommand::Cas(key, value, expected_seq_num, response_tx) => {
@@ -307,7 +308,7 @@ impl CacheManager {
                 }
                 CacheCommand::Commit => {
                     // self.last_batch_time = Instant::now();
-                    // self.block_sequencer_tx.send(SequencerCommand::MakeNewBlock).await;
+                    self.block_sequencer_tx.send(SequencerCommand::MakeNewBlock).await;
                 }
             }
         }

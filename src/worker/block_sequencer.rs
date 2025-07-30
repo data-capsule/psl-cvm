@@ -186,6 +186,7 @@ impl BlockSequencer {
                 self.maybe_prepare_new_block().await;
             },
             SequencerCommand::ForceMakeNewBlock => {
+                info!("Force making new block 2");
                 self.force_prepare_new_block().await;
             }
         }
@@ -204,6 +205,7 @@ impl BlockSequencer {
     }
 
     async fn force_prepare_new_block(&mut self) {
+        info!("Force making new block 3. All write op bag: {}", self.all_write_op_bag.len());
         if self.all_write_op_bag.is_empty() {
             return;
         }
