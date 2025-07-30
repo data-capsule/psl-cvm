@@ -148,7 +148,7 @@ impl Staging {
         let me = SenderType::Auth(me, 0);
         for block in &self.block_buffer {
 
-            trace!("Block n = {} size = {}", block.block.n, block.block.tx_list.len());
+            info!("Block n = {} size = {}", block.block.n, block.block.tx_list.len());
             if block.block.n > self.commit_index && block.block.n <= new_ci {
                 let _ = self.logserver_tx.send((me.clone(), block.clone())).await;
             }
