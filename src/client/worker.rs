@@ -349,7 +349,7 @@ impl<Gen: PerWorkerWorkloadGenerator + Send + Sync + 'static> ClientWorker<Gen> 
 
         let my_name = self.config.net_config.name.clone();
 
-        sleep(Duration::from_secs(10)).await;
+        sleep(Duration::from_secs(1)).await;
 
         let mut backoff_time = Duration::from_millis(1000);
         let mut curr_complaining_requests = 0;
