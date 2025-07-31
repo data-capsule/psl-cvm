@@ -336,6 +336,8 @@ impl ClientHandlerTask for KVSTask {
 }
 
 impl KVSTask {
+
+    #[allow(unreachable_code)]
     async fn execute_ops(&self, ops: &Vec<ProtoTransactionOp>) -> Result<(Vec<ProtoTransactionOpResult>, Option<u64>), anyhow::Error> {
         let mut atleast_one_write = false;
         let mut last_write_index = 0;
@@ -368,6 +370,8 @@ impl KVSTask {
                 ProtoTransactionOpType::Write => {
                     let key = op.operands[0].clone();
                     let value = op.operands[1].clone();
+                    continue;
+
                     let res = self.cache_connector.dispatch_write_request(key, value).await;
                     if let std::result::Result::Err(e) = res {
                         return Err(e.into());
