@@ -71,7 +71,7 @@ impl TwoPCHandler {
     pub async fn run(twopc: Arc<Mutex<Self>>) {
         let mut twopc = twopc.lock().await;
         let storage = twopc.storage.take().unwrap();
-        let phase_message_rx = twopc.phase_message_rx.take().unwrap();
+        let mut phase_message_rx = twopc.phase_message_rx.take().unwrap();
         tokio::spawn(async move {
             let mut storage = storage;
             while let Some((tx, result_sender)) = phase_message_rx.recv().await {

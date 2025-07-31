@@ -51,7 +51,7 @@ pub struct PSLWorkerServerContext {
     keystore: AtomicKeyStore,
     backfill_request_tx: Sender<ProtoBackfillQuery>,
     fork_receiver_tx: Sender<(ProtoAppendEntries, SenderType)>,
-    client_request_tx: Sender<TxWithAckChanTag>,
+    client_request_tx: async_channel::Sender<TxWithAckChanTag>,
     staging_tx: Sender<VoteWithSender>,
 }
 
@@ -64,7 +64,7 @@ impl PinnedPSLWorkerServerContext {
         keystore: AtomicKeyStore,
         backfill_request_tx: Sender<ProtoBackfillQuery>,
         fork_receiver_tx: Sender<(ProtoAppendEntries, SenderType)>,
-        client_request_tx: Sender<TxWithAckChanTag>,
+        client_request_tx: async_channel::Sender<TxWithAckChanTag>,
         staging_tx: Sender<VoteWithSender>,
     ) -> Self {
         let context = PSLWorkerServerContext {
@@ -184,7 +184,7 @@ pub struct PSLWorker<E: ClientHandlerTask + Send + Sync + 'static> {
 impl<E: ClientHandlerTask + Send + Sync + 'static> PSLWorker<E> {
     pub fn new(config: PSLWorkerConfig) -> Self {
         let (client_request_tx, client_request_rx) =
-            make_channel(config.rpc_config.channel_depth as usize);
+            async_channel::bounded(config.rpc_config.channel_depth as usize);
         Self::mew(config, client_request_tx, client_request_rx)
     }
 
@@ -197,8 +197,8 @@ impl<E: ClientHandlerTask + Send + Sync + 'static> PSLWorker<E> {
     /// ```
     pub fn mew(
         config: PSLWorkerConfig,
-        client_request_tx: Sender<TxWithAckChanTag>,
-        client_request_rx: Receiver<TxWithAckChanTag>,
+        client_request_tx: async_channel::Sender<TxWithAckChanTag>,
+        client_request_rx: async_channel::Receiver<TxWithAckChanTag>,
     ) -> Self {
         let _chan_depth = config.rpc_config.channel_depth as usize;
         let _num_crypto_tasks = config.worker_config.num_crypto_workers;

@@ -126,7 +126,7 @@ impl<Gen: PerWorkerWorkloadGenerator + Send + Sync + 'static> ClientWorker<Gen> 
 
     }
 
-    async fn checker_task(config: ClientConfig, backpressure_tx: Sender<CheckerResponse>, generator_rx: Receiver<CheckerTask>, client: PinnedClient, stat_tx: Sender<ClientWorkerStat>, id: usize) {
+    async fn checker_task(config: ClientConfig, mut backpressure_tx: Sender<CheckerResponse>, mut generator_rx: Receiver<CheckerTask>, client: PinnedClient, stat_tx: Sender<ClientWorkerStat>, id: usize) {
         // let mut waiting_for_byz_response = HashMap::<u64, CheckerTask>::new();
         // let mut out_of_order_byz_response = HashMap::<u64, Instant>::new();
         let mut alleged_leader = String::new();
@@ -335,7 +335,7 @@ impl<Gen: PerWorkerWorkloadGenerator + Send + Sync + 'static> ClientWorker<Gen> 
         (*ae_n, buf)
     }
 
-    async fn generator_task(&mut self, generator_tx: Sender<CheckerTask>, backpressure_rx: Receiver<CheckerResponse>, backpressure_tx: Sender<CheckerResponse>, client_id: usize, keystore: AtomicKeyStore) {
+    async fn generator_task(&mut self, generator_tx: Sender<CheckerTask>, mut backpressure_rx: Receiver<CheckerResponse>, backpressure_tx: Sender<CheckerResponse>, client_id: usize, keystore: AtomicKeyStore) {
         let mut outstanding_requests = HashMap::<u64, OutstandingRequest>::new();
 
         let mut total_requests = 0;

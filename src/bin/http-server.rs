@@ -116,7 +116,7 @@ struct KeyValue {
 }
 
 struct SharedState {
-    tx_sender: Sender<TxWithAckChanTag>,
+    tx_sender: async_channel::Sender<TxWithAckChanTag>,
     config: PSLWorkerConfig,
     tag_counter: AtomicU64,
 }
@@ -271,14 +271,14 @@ async fn http_post(data: web::Data<SharedState>, key_value: web::Json<KeyValue>)
 }
 
 
-async fn run_main(cfg: PSLWorkerConfig, client_request_tx: Sender<TxWithAckChanTag>, client_request_rx: Receiver<TxWithAckChanTag>) -> Result<(), io::Error> {
+async fn run_main(cfg: PSLWorkerConfig, client_request_tx: async_channel::Sender<TxWithAckChanTag>, client_request_rx: async_channel::Receiver<TxWithAckChanTag>) -> Result<(), io::Error> {
     let mut node = worker::PSLWorker::<worker::app::KVSTask>::mew(cfg, client_request_tx.clone(), client_request_rx);
     handle_signal_till_end!(node);
 
     Ok(())
 }
 
-async fn run_actix_server(client_request_tx: Sender<TxWithAckChanTag>, port: usize, config: PSLWorkerConfig) -> Result<(), io::Error> {
+async fn run_actix_server(client_request_tx: async_channel::Sender<TxWithAckChanTag>, port: usize, config: PSLWorkerConfig) -> Result<(), io::Error> {
     let server = HttpServer::new(move || {
         App::new()
             .app_data(web::Data::new(SharedState {
@@ -322,7 +322,7 @@ fn main() {
         }
     }
 
-    let (client_request_tx, client_request_rx) = make_channel(cfg.rpc_config.channel_depth as usize);
+    let (client_request_tx, client_request_rx) = async_channel::bounded(cfg.rpc_config.channel_depth as usize);
 
     let i = Box::pin(AtomicUsize::new(0));
     let runtime = runtime::Builder::new_multi_thread()

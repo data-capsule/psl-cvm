@@ -108,7 +108,7 @@ pub trait ClientHandlerTask {
 pub struct PSLAppEngine<T: ClientHandlerTask> {
     config: AtomicPSLWorkerConfig,
     cache_tx: Sender<CacheCommand>,
-    client_command_rx: Receiver<TxWithAckChanTag>,
+    client_command_rx: async_channel::Receiver<TxWithAckChanTag>,
     commit_rx: UnboundedReceiver<u64>,
     handles: JoinSet<()>,
     client_handler_phantom: PhantomData<T>,
@@ -118,7 +118,7 @@ pub struct PSLAppEngine<T: ClientHandlerTask> {
 }
 
 impl<T: ClientHandlerTask + Send + Sync + 'static> PSLAppEngine<T> {
-    pub fn new(config: AtomicPSLWorkerConfig, cache_tx: Sender<CacheCommand>, client_command_rx: Receiver<TxWithAckChanTag>, commit_rx: UnboundedReceiver<u64>) -> Self {
+    pub fn new(config: AtomicPSLWorkerConfig, cache_tx: Sender<CacheCommand>, client_command_rx: async_channel::Receiver<TxWithAckChanTag>, commit_rx: UnboundedReceiver<u64>) -> Self {
         Self {
             config,
             cache_tx,
@@ -156,7 +156,7 @@ impl<T: ClientHandlerTask + Send + Sync + 'static> PSLAppEngine<T> {
 
     }
 
-    async fn client_reply_handler(reply_processor_rx: Receiver<Vec<((Vec<ProtoTransactionOpResult>, MsgAckChanWithTag, u64), Instant)>>) {
+    async fn client_reply_handler(mut reply_processor_rx: Receiver<Vec<((Vec<ProtoTransactionOpResult>, MsgAckChanWithTag, u64), Instant)>>) {
         while let Some(results) = reply_processor_rx.recv().await {
             for ((result, ack_chan, seq_num), start_time) in results {
                 trace!("Reply latency: {} us", start_time.elapsed().as_micros());
@@ -186,7 +186,7 @@ impl<T: ClientHandlerTask + Send + Sync + 'static> PSLAppEngine<T> {
 
         let (reply_tx, mut reply_rx) = unbounded_channel();
 
-        let mut total_work_txs: Vec<crate::utils::channel::AsyncSenderWrapper<tokio::sync::oneshot::Sender<usize>>> = Vec::new();
+        let mut total_work_txs: Vec<Sender<tokio::sync::oneshot::Sender<usize>>> = Vec::new();
 
         //app.log_timer.run().await;
         let log_timer = ResettableTimer::new(Duration::from_millis(app.config.get().app_config.logger_stats_report_ms));
@@ -205,12 +205,12 @@ impl<T: ClientHandlerTask + Send + Sync + 'static> PSLAppEngine<T> {
                 loop {
                     tokio::select! {
                         biased;
-                        Some(command) = client_command_rx.recv() => {
+                        std::result::Result::Ok(command) = client_command_rx.recv() => {
                             handler_task.on_client_request(command, &_reply_tx).await;
                         }
-                        Some(_tx) = total_work_rx.recv() => {
-                            _tx.send(handler_task.get_total_work());
-                        }
+                        // Some(_tx) = total_work_rx.recv() => {
+                        //     _tx.send(handler_task.get_total_work());
+                        // }
                     }
                 }
             });

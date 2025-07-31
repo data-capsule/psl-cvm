@@ -106,7 +106,7 @@ impl BlockBroadcaster {
                         let block = block_rx.await.unwrap();
                         self.block_buffer.insert(block.block.n, block);
                     }
-                    Some(idx) = self.wait_rx.as_ref().unwrap().recv() => {
+                    Some(idx) = self.wait_rx.as_mut().unwrap().recv() => {
                         if idx > self.deliver_index {
                             self.deliver_index = idx;
                         }

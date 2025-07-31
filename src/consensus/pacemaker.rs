@@ -47,7 +47,7 @@ pub struct Pacemaker {
 macro_rules! ask_logserver {
     ($me:expr, $query:expr, $($args:expr),+) => {
         {
-            let (tx, rx) = make_channel(1);
+            let (tx, mut rx) = make_channel(1);
             $me.logserver_query_tx.send($query($($args),+, tx)).await.unwrap();
             rx.recv().await.unwrap()
         }

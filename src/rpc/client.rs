@@ -721,7 +721,7 @@ impl PinnedClient {
             }.boxed());
         }
 
-        let (tx, rx) = make_channel(quorum);
+        let (tx, mut rx) = make_channel(quorum);
 
         tokio::spawn(async move {
             let mut count = 0;
