@@ -65,6 +65,7 @@ impl CacheConnector {
         &self,
         key: Vec<u8>,
         value: Vec<u8>,
+        // must_wait_for_seq_num: bool,
     ) -> anyhow::Result<(u64 /* lamport ts */, tokio::sync::oneshot::Receiver<u64 /* block seq num */>), CacheError> {
         let (tx, rx) = tokio::sync::oneshot::channel();
         let (response_tx, response_rx) = tokio::sync::oneshot::channel();

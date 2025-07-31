@@ -295,7 +295,7 @@ impl CacheManager {
                         match seq_num_query {
                             BlockSeqNumQuery::DontBother => {}
                             BlockSeqNumQuery::WaitForSeqNum(sender) => {
-                                sender.send(0).unwrap();
+                                sender.send(0); //.unwrap();
                             }
                         }
                         
@@ -309,7 +309,7 @@ impl CacheManager {
                     match seq_num_query {
                         BlockSeqNumQuery::DontBother => {}
                         BlockSeqNumQuery::WaitForSeqNum(sender) => {
-                            sender.send(0).unwrap();
+                            sender.send(0); //.unwrap();
                         }
                     }
                     // .unwrap();
