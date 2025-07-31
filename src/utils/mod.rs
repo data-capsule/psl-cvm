@@ -130,6 +130,6 @@ pub mod channel {
         }
     }
 
-    pub use channel_async::*;
+    pub use channel_tokio::*;
 
 }
