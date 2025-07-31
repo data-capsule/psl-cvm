@@ -230,6 +230,7 @@ impl CacheManager {
         let mut commands_vec = Vec::with_capacity(_chan_depth);
         
         tokio::select! {
+            biased;
             cmd = self.command_rx.recv() => {
                 if let Some(cmd) = cmd {
                     commands_vec.push(cmd);
@@ -244,18 +245,18 @@ impl CacheManager {
                     warn!("Failed to get block from block_rx");
                 }
             }
-            _ = self.batch_timer.wait() => {
+            // _ = self.batch_timer.wait() => {
 
-                // This is safe to do here.
-                // The tick won't interrupt handle_command or handle_block's logic.
+            //     // This is safe to do here.
+            //     // The tick won't interrupt handle_command or handle_block's logic.
 
-                debug!("Force making new block");
-                self.block_sequencer_tx.send(SequencerCommand::ForceMakeNewBlock).await;
-                // }
-            }
-            _ = self.log_timer.wait() => {
-                self.log_stats().await;
-            }
+            //     debug!("Force making new block");
+            //     self.block_sequencer_tx.send(SequencerCommand::ForceMakeNewBlock).await;
+            //     // }
+            // }
+            // _ = self.log_timer.wait() => {
+            //     self.log_stats().await;
+            // }
         }
         Ok(())
     }

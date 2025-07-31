@@ -81,7 +81,7 @@ read_ratio = 0.0
 [[experiments]]
 name = "ycsb"
 type = "psl_storage"
-git_hash = "26167757d2205c2e5198e5001eee4798b0f9df76"
+git_hash = "e9d70fc64dc2c3b20cab5389f7ffad7c453fa807"
 repeats = 1
 # num_clients = 80 <=== This saturates 1 node when fully short circuited.
 num_clients = 80
