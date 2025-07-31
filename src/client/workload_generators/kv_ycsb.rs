@@ -124,7 +124,7 @@ impl KVReadWriteYCSBGenerator {
 
     fn get_next_val(&mut self) -> Vec<u8> {
         let mut payload = vec![0u8; self.config.val_size];
-        // self.rng.fill(&mut payload[..]);
+        self.rng.fill(&mut payload[..]);
         payload
     }
 
