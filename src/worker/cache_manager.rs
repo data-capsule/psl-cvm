@@ -27,6 +27,7 @@ pub enum CacheCommand {
         BigInt /* Val Hash */,
         BlockSeqNumQuery,
         oneshot::Sender<Result<u64 /* seq_num */, CacheError>>,
+        Instant,
     ),
     // Cas(
     //     CacheKey /* Key */,
@@ -78,16 +79,16 @@ impl CacheConnector {
         Ok(res)
     }
 
-    pub async fn put(
-        &self,
-        key: Vec<u8>,
-        value: Vec<u8>,
-        val_hash: BigInt,
-        seq_num_query: BlockSeqNumQuery,
-    ) -> anyhow::Result<()> {
-        dispatch!(self, CacheCommand::Put, key, value, val_hash, seq_num_query);
-        Ok(())
-    }
+    // pub async fn put(
+    //     &self,
+    //     key: Vec<u8>,
+    //     value: Vec<u8>,
+    //     val_hash: BigInt,
+    //     seq_num_query: BlockSeqNumQuery,
+    // ) -> anyhow::Result<()> {
+    //     dispatch!(self, CacheCommand::Put, key, value, val_hash, seq_num_query);
+    //     Ok(())
+    // }
 
 
 }
@@ -281,6 +282,8 @@ impl CacheManager {
     }
 
     async fn handle_command(&mut self, commands: Vec<CacheCommand>) {
+        let start_time = Instant::now();
+        let sz = commands.len();
         for command in commands {
             match command {
                 CacheCommand::Get(key, response_tx) => {
@@ -289,7 +292,9 @@ impl CacheManager {
 
                     // TODO: Fill from checkpoint if key not found.
                 }
-                CacheCommand::Put(key, value, val_hash, seq_num_query, response_tx) => {
+                CacheCommand::Put(key, value, val_hash, seq_num_query, response_tx, insert_time) => {
+                    info!("Spent {} us inside channel", insert_time.elapsed().as_micros());
+                    
                     if self.cache.contains_key(&key) {
                         let seq_num = self.cache.get_mut(&key).unwrap().blind_update(value.clone(), val_hash.clone());
                         response_tx.send(Ok(seq_num));
@@ -329,6 +334,8 @@ impl CacheManager {
                 }
             }
         }
+
+        info!("One iteration with {} commands took {} us", sz, start_time.elapsed().as_micros());
     }
 
     #[allow(unused)]

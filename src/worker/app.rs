@@ -74,8 +74,8 @@ impl CacheConnector {
         // TODO: Use the actual hash.
         let val_hash = BigInt::from(1);
         // let command = CacheCommand::Put(key, value, val_hash, BlockSeqNumQuery::WaitForSeqNum(tx), response_tx);
-        let command = CacheCommand::Put(key, vec![], val_hash, BlockSeqNumQuery::WaitForSeqNum(tx), response_tx);
-        // let command = CacheCommand::Put(key, vec![], val_hash, BlockSeqNumQuery::DontBother, response_tx);
+        // let command = CacheCommand::Put(key, vec![], val_hash, BlockSeqNumQuery::WaitForSeqNum(tx), response_tx);
+        let command = CacheCommand::Put(key, vec![], val_hash, BlockSeqNumQuery::DontBother, response_tx, Instant::now());
         
         // Short circuit for now.
         // let command = CacheCommand::Put(key, value, val_hash, BlockSeqNumQuery::WaitForSeqNum(tx), response_tx);
