@@ -127,8 +127,8 @@ impl<Gen: PerWorkerWorkloadGenerator + Send + Sync + 'static> ClientWorker<Gen> 
     }
 
     async fn checker_task(config: ClientConfig, backpressure_tx: Sender<CheckerResponse>, generator_rx: Receiver<CheckerTask>, client: PinnedClient, stat_tx: Sender<ClientWorkerStat>, id: usize) {
-        let mut waiting_for_byz_response = HashMap::<u64, CheckerTask>::new();
-        let mut out_of_order_byz_response = HashMap::<u64, Instant>::new();
+        // let mut waiting_for_byz_response = HashMap::<u64, CheckerTask>::new();
+        // let mut out_of_order_byz_response = HashMap::<u64, Instant>::new();
         let mut alleged_leader = String::new();
         let mut sleep_time = Duration::from_secs(1).div_f64(config.workload_config.rate);
         loop {
@@ -143,26 +143,26 @@ impl<Gen: PerWorkerWorkloadGenerator + Send + Sync + 'static> ClientWorker<Gen> 
                         trace!("Leader changed from {} to {}. This may be a bug.", alleged_leader, req.wait_from);
                     }
                     // This is a new request.
-                    if let Some(byz_resp_time) = out_of_order_byz_response.remove(&req.id) {
-                        // Got the response before, Nice!
-                        if byz_resp_time > req.start_time {
-                            let latency = byz_resp_time - req.start_time;
-                            let _ = stat_tx.send(ClientWorkerStat::ByzCommitLatency(latency)).await;
-                        } else {
-                            error!("Byzantine response received before the request was sent. This is a bug.");
-                        }
-                    } else {
+                    // if let Some(byz_resp_time) = out_of_order_byz_response.remove(&req.id) {
+                    //     // Got the response before, Nice!
+                    //     if byz_resp_time > req.start_time {
+                    //         let latency = byz_resp_time - req.start_time;
+                    //         let _ = stat_tx.send(ClientWorkerStat::ByzCommitLatency(latency)).await;
+                    //     } else {
+                    //         error!("Byzantine response received before the request was sent. This is a bug.");
+                    //     }
+                    // } else {
 
-                        if req.executor_mode == Executor::Leader && req.rate_control == RateControl::CloseLoop {
-                            // If it is Executor::Any, it it probably a read request. There will be no byz commit.
-                            // There will be no reply for open loop requests either.
-                            waiting_for_byz_response.insert(req.id, req.clone());
-                        }
-                    }
+                    //     if req.executor_mode == Executor::Leader && req.rate_control == RateControl::CloseLoop {
+                    //         // If it is Executor::Any, it it probably a read request. There will be no byz commit.
+                    //         // There will be no reply for open loop requests either.
+                    //         waiting_for_byz_response.insert(req.id, req.clone());
+                    //     }
+                    // }
 
-                    if req.executor_mode == Executor::Leader {
-                        let _ = stat_tx.send(ClientWorkerStat::ByzCommitPending(id, waiting_for_byz_response.len())).await;
-                    }
+                    // if req.executor_mode == Executor::Leader {
+                    //     let _ = stat_tx.send(ClientWorkerStat::ByzCommitPending(id, waiting_for_byz_response.len())).await;
+                    // }
                     
 
                     let resp = match req.rate_control {
@@ -227,13 +227,13 @@ impl<Gen: PerWorkerWorkloadGenerator + Send + Sync + 'static> ClientWorker<Gen> 
                                 debug!("Got reply for read request from {} with latency {} us", req.wait_from, req.start_time.elapsed().as_micros());
                             }
 
-                            for byz_resp in receipt.byz_responses.iter() {
-                                if let Some(task) = waiting_for_byz_response.remove(&byz_resp.client_tag) {
-                                    let _ = stat_tx.send(ClientWorkerStat::ByzCommitLatency(task.start_time.elapsed())).await;
-                                } else {
-                                    out_of_order_byz_response.insert(byz_resp.client_tag, Instant::now());
-                                }
-                            }
+                            // for byz_resp in receipt.byz_responses.iter() {
+                            //     if let Some(task) = waiting_for_byz_response.remove(&byz_resp.client_tag) {
+                            //         let _ = stat_tx.send(ClientWorkerStat::ByzCommitLatency(task.start_time.elapsed())).await;
+                            //     } else {
+                            //         out_of_order_byz_response.insert(byz_resp.client_tag, Instant::now());
+                            //     }
+                            // }
                         },
                         Some(client::proto_client_reply::Reply::TryAgain(_try_again)) => {
                             let _ = backpressure_tx.send(CheckerResponse::TryAgain(req, None, None)).await;
@@ -270,8 +270,8 @@ impl<Gen: PerWorkerWorkloadGenerator + Send + Sync + 'static> ClientWorker<Gen> 
                             // There is no point in waiting for responses for older requests.
                             if alleged_leader != curr_leader {
                                 info!("Leader changed to {}", curr_leader);
-                                waiting_for_byz_response.clear();
-                                out_of_order_byz_response.clear();
+                                // waiting_for_byz_response.clear();
+                                // out_of_order_byz_response.clear();
                                 alleged_leader = curr_leader;
                             }
 

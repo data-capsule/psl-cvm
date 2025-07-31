@@ -63,21 +63,25 @@ client_max_retry = 10
 
 [client_config.workload_config]
 max_concurrent_requests = 10
+num_requests = 100_000_000
+# request_config = "Blanks"
 
 [client_config.workload_config.request_config.KVReadWriteYCSB]
 num_keys = 100_000
 num_fields = 1
-val_size = 100 # 8 KiB
+val_size = 512 # 8 KiB
 linearizable_reads = false
 byz_commit_ratio = 0.0
 load_phase = true
 zipf_exponent = 0.99
 read_ratio = 0.0
 
+
+
 [[experiments]]
 name = "ycsb"
 type = "psl_storage"
-git_hash = "d063f7ce8f0d23df66df03cce7878903c3083577"
+git_hash = "0abc4d9af3025a5bb79d106a351fe1de0f0428e0"
 repeats = 1
 num_clients = 1000
 num_storage_nodes = 0
