@@ -74,8 +74,8 @@ impl CacheConnector {
         // TODO: Use the actual hash.
         let val_hash = BigInt::from(1);
         // let command = CacheCommand::Put(key, value, val_hash, BlockSeqNumQuery::WaitForSeqNum(tx), response_tx);
-        // let command = CacheCommand::Put(key, vec![], val_hash, BlockSeqNumQuery::WaitForSeqNum(tx), response_tx);
-        let command = CacheCommand::Put(key, vec![], val_hash, BlockSeqNumQuery::DontBother, response_tx);
+        let command = CacheCommand::Put(key, vec![], val_hash, BlockSeqNumQuery::WaitForSeqNum(tx), response_tx);
+        // let command = CacheCommand::Put(key, vec![], val_hash, BlockSeqNumQuery::DontBother, response_tx);
         
         // Short circuit for now.
         // let command = CacheCommand::Put(key, value, val_hash, BlockSeqNumQuery::WaitForSeqNum(tx), response_tx);
@@ -83,9 +83,9 @@ impl CacheConnector {
         // let __cache_tx_time = Instant::now();
         self.cache_tx.send(command); // .await;
         // info!("Cache tx time: {} us", __cache_tx_time.elapsed().as_micros());
-        // let result = response_rx.await.unwrap()?;
-        let result = 1;
-        tx.send(0);
+        let result = response_rx.await.unwrap()?;
+        // let result = 1;
+        // tx.send(0);
         std::result::Result::Ok((result, rx))
         // std::result::Result::Ok((1, rx))
     }
