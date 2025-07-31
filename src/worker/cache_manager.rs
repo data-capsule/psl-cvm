@@ -325,7 +325,7 @@ impl CacheManager {
                 }
                 CacheCommand::Commit => {
                     // self.last_batch_time = Instant::now();
-                    self.block_sequencer_tx.send(SequencerCommand::MakeNewBlock).await;
+                    // self.block_sequencer_tx.send(SequencerCommand::MakeNewBlock).await;
                 }
             }
         }
