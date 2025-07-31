@@ -2,7 +2,7 @@ use std::{collections::HashMap, future::Future, marker::PhantomData, pin::Pin, s
 
 use anyhow::Ok;
 use futures::{channel::oneshot, stream::FuturesUnordered, StreamExt};
-use log::{error, info, warn};
+use log::{error, info, trace, warn};
 use num_bigint::{BigInt, Sign};
 use prost::{DecodeError, Message as _};
 use tokio::{sync::{mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender}, Mutex}, task::JoinSet};
@@ -154,7 +154,7 @@ impl<T: ClientHandlerTask + Send + Sync + 'static> PSLAppEngine<T> {
     async fn client_reply_handler(reply_processor_rx: Receiver<Vec<((Vec<ProtoTransactionOpResult>, MsgAckChanWithTag, u64), Instant)>>) {
         while let Some(results) = reply_processor_rx.recv().await {
             for ((result, ack_chan, seq_num), start_time) in results {
-                info!("Reply latency: {} us", start_time.elapsed().as_micros());
+                trace!("Reply latency: {} us", start_time.elapsed().as_micros());
                 Self::send_reply(result, ack_chan, seq_num).await;
             }
         }

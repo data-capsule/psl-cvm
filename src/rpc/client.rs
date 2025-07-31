@@ -533,7 +533,7 @@ impl PinnedClient {
     ) -> Result<PinnedMessage, Error> {
         let __get_sock_start = Instant::now();
         let sock = Self::get_sock(client, name, client.0.full_duplex).await?;
-        info!("Get sock latency: {} us", __get_sock_start.elapsed().as_micros());
+        debug!("Get sock latency: {} us", __get_sock_start.elapsed().as_micros());
         let mut lsock = sock.0.lock().await;
         let mut resp_buf = vec![0u8; 4096];
         let sz = lsock.get_next_frame(&mut resp_buf).await? as usize;

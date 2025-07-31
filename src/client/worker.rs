@@ -170,7 +170,7 @@ impl<Gen: PerWorkerWorkloadGenerator + Send + Sync + 'static> ClientWorker<Gen> 
                             // We will wait for the response.
                             let __await_start = Instant::now();
                             let res = PinnedClient::await_reply(&client, &req.wait_from).await;
-                            info!("Await latency: {} us", __await_start.elapsed().as_micros());
+                            debug!("Await latency: {} us", __await_start.elapsed().as_micros());
                             if res.is_err() {
                                 // We need to try again.
                                 let _ = backpressure_tx.send(CheckerResponse::TryAgain(req, None, None)).await;
@@ -217,14 +217,14 @@ impl<Gen: PerWorkerWorkloadGenerator + Send + Sync + 'static> ClientWorker<Gen> 
                         Some(client::proto_client_reply::Reply::Receipt(receipt)) => {
                             let __log_start = Instant::now();
                             let _ = stat_tx.send(ClientWorkerStat::CrashCommitLatency(req.start_time.elapsed())).await;
-                            info!("Log latency: {} us", __log_start.elapsed().as_micros());
+                            debug!("Log latency: {} us", __log_start.elapsed().as_micros());
 
                             let __backpressure_start = Instant::now();
                             let _ = backpressure_tx.send(CheckerResponse::Success(req.id)).await;
-                            info!("Backpressure latency: {} us", __backpressure_start.elapsed().as_micros());
+                            debug!("Backpressure latency: {} us", __backpressure_start.elapsed().as_micros());
 
                             if req.executor_mode == Executor::Any {
-                                info!("Got reply for read request from {} with latency {} us", req.wait_from, req.start_time.elapsed().as_micros());
+                                debug!("Got reply for read request from {} with latency {} us", req.wait_from, req.start_time.elapsed().as_micros());
                             }
 
                             for byz_resp in receipt.byz_responses.iter() {
