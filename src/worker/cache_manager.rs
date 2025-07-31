@@ -1,4 +1,4 @@
-use std::{pin::Pin, sync::Arc, time::{Duration, Instant}};
+use std::{collections::BTreeMap, pin::Pin, sync::Arc, time::{Duration, Instant}};
 
 use hashbrown::HashMap;
 use log::{debug, error, info, warn};
@@ -180,7 +180,7 @@ pub struct CacheManager {
     block_rx: Receiver<(oneshot::Receiver<Result<CachedBlock, std::io::Error>>, SenderType)>,
     block_sequencer_tx: Sender<SequencerCommand>,
     fork_receiver_cmd_tx: UnboundedSender<ForkReceiverCommand>,
-    cache: HashMap<CacheKey, CachedValue>,
+    cache: BTreeMap<CacheKey, CachedValue>,
 
     last_committed_seq_num: u64,
     batch_timer: Arc<Pin<Box<ResettableTimer>>>,
@@ -206,7 +206,7 @@ impl CacheManager {
             block_rx,
             block_sequencer_tx,
             fork_receiver_cmd_tx,
-            cache: HashMap::new(),
+            cache: BTreeMap::new(),
             last_committed_seq_num: 0,
             batch_timer,
             last_batch_time: Instant::now(),
