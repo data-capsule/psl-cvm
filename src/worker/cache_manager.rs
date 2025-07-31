@@ -4,7 +4,7 @@ use hashbrown::HashMap;
 use log::{debug, error, info, warn};
 use num_bigint::{BigInt, Sign};
 use thiserror::Error;
-use tokio::sync::{mpsc::UnboundedSender, oneshot, Mutex};
+use tokio::sync::{mpsc::{UnboundedReceiver, UnboundedSender}, oneshot, Mutex};
 use crate::{config::AtomicPSLWorkerConfig, crypto::{hash, CachedBlock}, proto::execution::ProtoTransactionOpType, rpc::SenderType, storage_server::fork_receiver::ForkReceiverCommand, utils::{channel::{Receiver, Sender}, timer::ResettableTimer}, worker::block_sequencer::BlockSeqNumQuery};
 use crate::worker::block_sequencer::SequencerCommand;
 
@@ -176,7 +176,7 @@ pub type CacheKey = Vec<u8>;
 
 pub struct CacheManager {
     config: AtomicPSLWorkerConfig,
-    command_rx: Receiver<CacheCommand>,
+    command_rx: UnboundedReceiver<CacheCommand>,
     block_rx: Receiver<(oneshot::Receiver<Result<CachedBlock, std::io::Error>>, SenderType)>,
     block_sequencer_tx: Sender<SequencerCommand>,
     fork_receiver_cmd_tx: UnboundedSender<ForkReceiverCommand>,
@@ -192,7 +192,7 @@ pub struct CacheManager {
 impl CacheManager {
     pub fn new(
         config: AtomicPSLWorkerConfig,
-        command_rx: Receiver<CacheCommand>,
+        command_rx: UnboundedReceiver<CacheCommand>,
         block_rx: Receiver<(oneshot::Receiver<Result<CachedBlock, std::io::Error>>, SenderType)>,
         block_sequencer_tx: Sender<SequencerCommand>,
         fork_receiver_cmd_tx: UnboundedSender<ForkReceiverCommand>,
@@ -227,15 +227,12 @@ impl CacheManager {
 
     async fn worker(&mut self) -> Result<(), ()> {
         let _chan_depth = self.config.get().rpc_config.channel_depth as usize;
-        // let mut commands_vec = Vec::with_capacity(_chan_depth);
+        let mut commands_vec = Vec::with_capacity(self.command_rx.len());
         
         tokio::select! {
             biased;
-            cmd = self.command_rx.recv() => {
-                if let Some(cmd) = cmd {
-                    self.handle_command(cmd).await;
-                }
-                // self.handle_command(commands_vec).await;
+            _ = self.command_rx.recv_many(&mut commands_vec, self.command_rx.len()) => {
+                self.handle_command(commands_vec).await;
             }
             Some((block_rx, sender)) = self.block_rx.recv() => {
                 let block = block_rx.await.expect("Block rx error");
@@ -280,8 +277,8 @@ impl CacheManager {
         );
     }
 
-    async fn handle_command(&mut self, command: CacheCommand) {
-        // for command in commands {
+    async fn handle_command(&mut self, commands: Vec<CacheCommand>) {
+        for command in commands {
             match command {
                 CacheCommand::Get(key, response_tx) => {
                     let res = self.cache.get(&key).map(|v| (v.value.clone(), v.seq_num));
@@ -328,7 +325,7 @@ impl CacheManager {
                     // self.block_sequencer_tx.send(SequencerCommand::MakeNewBlock).await;
                 }
             }
-        // }
+        }
     }
 
     #[allow(unused)]
