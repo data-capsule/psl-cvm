@@ -300,7 +300,7 @@ impl CacheManager {
                             }
                         }
                         
-                        return;
+                        continue;
                     }
 
                     // let cached_value = CachedValue::new(value.clone(), val_hash.clone());
