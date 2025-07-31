@@ -227,15 +227,15 @@ impl CacheManager {
 
     async fn worker(&mut self) -> Result<(), ()> {
         let _chan_depth = self.config.get().rpc_config.channel_depth as usize;
-        let mut commands_vec = Vec::with_capacity(_chan_depth);
+        // let mut commands_vec = Vec::with_capacity(_chan_depth);
         
         tokio::select! {
             biased;
             cmd = self.command_rx.recv() => {
                 if let Some(cmd) = cmd {
-                    commands_vec.push(cmd);
+                    self.handle_command(cmd).await;
                 }
-                self.handle_command(commands_vec).await;
+                // self.handle_command(commands_vec).await;
             }
             Some((block_rx, sender)) = self.block_rx.recv() => {
                 let block = block_rx.await.expect("Block rx error");
@@ -280,8 +280,8 @@ impl CacheManager {
         );
     }
 
-    async fn handle_command(&mut self, commands: Vec<CacheCommand>) {
-        for command in commands {
+    async fn handle_command(&mut self, command: CacheCommand) {
+        // for command in commands {
             match command {
                 CacheCommand::Get(key, response_tx) => {
                     let res = self.cache.get(&key).map(|v| (v.value.clone(), v.seq_num));
@@ -303,7 +303,7 @@ impl CacheManager {
                             }
                         }
                         
-                        continue;
+                        return;
                     }
 
                     // let cached_value = CachedValue::new(value.clone(), val_hash.clone());
@@ -328,7 +328,7 @@ impl CacheManager {
                     // self.block_sequencer_tx.send(SequencerCommand::MakeNewBlock).await;
                 }
             }
-        }
+        // }
     }
 
     #[allow(unused)]
