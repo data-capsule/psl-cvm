@@ -301,11 +301,11 @@ impl ClientHandlerTask for KVSTask {
         let resp = request.1;
         self.total_work += 1;
 
-        // // Short circuit for now.
-        // return self.reply_receipt(resp, vec![ProtoTransactionOpResult {
-        //     success: true,
-        //     values: vec![],
-        // }], None, reply_handler_tx).await;
+        // Short circuit for now.
+        return self.reply_receipt(resp, vec![ProtoTransactionOpResult {
+            success: true,
+            values: vec![],
+        }], None, reply_handler_tx).await;
         
         
         if req.is_none() {
