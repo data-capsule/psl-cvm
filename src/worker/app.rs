@@ -100,6 +100,8 @@ impl CacheConnector {
                 break val;
             }
 
+            tokio::task::yield_now().await;
+
             // Busy wait.
         };
         info!("Response rx time: {} us", __result_rx_time.elapsed().as_micros());
