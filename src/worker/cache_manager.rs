@@ -231,6 +231,9 @@ impl CacheManager {
         // let mut commands_vec = Vec::with_capacity(self.command_rx.len());
 
         let commands = self.command_rx.drain().collect::<Vec<_>>();
+        if commands.is_empty() {
+            return Ok(());
+        }
         self.handle_command(commands).await;
         
         // tokio::select! {

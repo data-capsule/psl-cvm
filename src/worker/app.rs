@@ -83,9 +83,12 @@ impl CacheConnector {
         // let __cache_tx_time = Instant::now();
         self.cache_tx.send(command); // .await;
         // info!("Cache tx time: {} us", __cache_tx_time.elapsed().as_micros());
+
+        let __result_rx_time = Instant::now();
         let result = response_rx.await.unwrap()?;
+        info!("Response rx time: {} us", __result_rx_time.elapsed().as_micros());
         // let result = 1;
-        // tx.send(0);
+        tx.send(0);
         std::result::Result::Ok((result, rx))
         // std::result::Result::Ok((1, rx))
     }
