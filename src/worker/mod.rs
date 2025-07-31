@@ -238,7 +238,7 @@ impl<E: ClientHandlerTask + Send + Sync + 'static> PSLWorker<E> {
         let (backfill_request_tx, backfill_request_rx) = make_channel(_chan_depth as usize);
         let (fork_receiver_tx, fork_receiver_rx) = make_channel(_chan_depth as usize);
         let (vote_tx, vote_rx) = make_channel(_chan_depth as usize);
-        let (cache_tx, cache_rx) = make_channel(_chan_depth as usize);
+        let (cache_tx, cache_rx) = make_channel(_chan_depth * 1000 as usize);
         let (block_tx, block_rx) = make_channel(_chan_depth as usize);
         let (command_tx, command_rx) = unbounded_channel();
         let (block_sequencer_tx, block_sequencer_rx) = make_channel(_chan_depth as usize);
