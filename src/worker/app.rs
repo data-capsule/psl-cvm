@@ -12,7 +12,7 @@ use crate::{config::{AtomicConfig, AtomicPSLWorkerConfig}, consensus::batch_prop
 use super::cache_manager::{CacheCommand, CacheError};
 
 pub struct CacheConnector {
-    cache_tx: tokio::sync::mpsc::Sender<CacheCommand>,
+    cache_tx: Sender<CacheCommand>,
 }
 
 // const NUM_WORKER_THREADS: usize = 4;
@@ -43,7 +43,7 @@ impl FutureSeqNum {
 }
 
 impl CacheConnector {
-    pub fn new(cache_tx: tokio::sync::mpsc::Sender<CacheCommand>) -> Self {
+    pub fn new(cache_tx: Sender<CacheCommand>) -> Self {
         Self { cache_tx }
     }
 
@@ -78,7 +78,9 @@ impl CacheConnector {
         // Short circuit for now.
         // let command = CacheCommand::Put(key, value, val_hash, BlockSeqNumQuery::WaitForSeqNum(tx), response_tx);
 
+        let __cache_tx_time = Instant::now();
         self.cache_tx.send(command).await;
+        info!("Cache tx time: {} us", __cache_tx_time.elapsed().as_micros());
         let result = response_rx.await.unwrap()?;
         std::result::Result::Ok((result, rx))
         // std::result::Result::Ok((1, rx))
@@ -94,7 +96,7 @@ impl CacheConnector {
 pub type UncommittedResultSet = (Vec<ProtoTransactionOpResult>, MsgAckChanWithTag, Option<u64> /* Some(potential seq_num; wait till committed) | None(reply immediately) */);
 
 pub trait ClientHandlerTask {
-    fn new(cache_tx: tokio::sync::mpsc::Sender<CacheCommand>, id: usize) -> Self;
+    fn new(cache_tx: Sender<CacheCommand>, id: usize) -> Self;
     fn get_cache_connector(&self) -> &CacheConnector;
     fn get_id(&self) -> usize;
     fn get_total_work(&self) -> usize; // Useful for throghput calculation.
@@ -103,7 +105,7 @@ pub trait ClientHandlerTask {
 
 pub struct PSLAppEngine<T: ClientHandlerTask> {
     config: AtomicPSLWorkerConfig,
-    cache_tx: tokio::sync::mpsc::Sender<CacheCommand>,
+    cache_tx: Sender<CacheCommand>,
     client_command_rx: Receiver<TxWithAckChanTag>,
     commit_rx: UnboundedReceiver<u64>,
     handles: JoinSet<()>,
@@ -114,7 +116,7 @@ pub struct PSLAppEngine<T: ClientHandlerTask> {
 }
 
 impl<T: ClientHandlerTask + Send + Sync + 'static> PSLAppEngine<T> {
-    pub fn new(config: AtomicPSLWorkerConfig, cache_tx: tokio::sync::mpsc::Sender<CacheCommand>, client_command_rx: Receiver<TxWithAckChanTag>, commit_rx: UnboundedReceiver<u64>) -> Self {
+    pub fn new(config: AtomicPSLWorkerConfig, cache_tx: Sender<CacheCommand>, client_command_rx: Receiver<TxWithAckChanTag>, commit_rx: UnboundedReceiver<u64>) -> Self {
         Self {
             config,
             cache_tx,
@@ -276,7 +278,7 @@ pub struct KVSTask {
 }
 
 impl ClientHandlerTask for KVSTask {
-    fn new(cache_tx: tokio::sync::mpsc::Sender<CacheCommand>, id: usize) -> Self {
+    fn new(cache_tx: Sender<CacheCommand>, id: usize) -> Self {
         Self {
             cache_connector: CacheConnector::new(cache_tx),
             id,
@@ -370,7 +372,7 @@ impl KVSTask {
                 ProtoTransactionOpType::Write => {
                     let key = op.operands[0].clone();
                     let value = op.operands[1].clone();
-                    continue;
+                    // continue;
 
                     let res = self.cache_connector.dispatch_write_request(key, value).await;
                     if let std::result::Result::Err(e) = res {

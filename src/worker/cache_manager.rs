@@ -176,7 +176,7 @@ pub type CacheKey = Vec<u8>;
 
 pub struct CacheManager {
     config: AtomicPSLWorkerConfig,
-    command_rx: tokio::sync::mpsc::Receiver<CacheCommand>,
+    command_rx: Receiver<CacheCommand>,
     block_rx: Receiver<(oneshot::Receiver<Result<CachedBlock, std::io::Error>>, SenderType)>,
     block_sequencer_tx: Sender<SequencerCommand>,
     fork_receiver_cmd_tx: UnboundedSender<ForkReceiverCommand>,
@@ -192,7 +192,7 @@ pub struct CacheManager {
 impl CacheManager {
     pub fn new(
         config: AtomicPSLWorkerConfig,
-        command_rx: tokio::sync::mpsc::Receiver<CacheCommand>,
+        command_rx: Receiver<CacheCommand>,
         block_rx: Receiver<(oneshot::Receiver<Result<CachedBlock, std::io::Error>>, SenderType)>,
         block_sequencer_tx: Sender<SequencerCommand>,
         fork_receiver_cmd_tx: UnboundedSender<ForkReceiverCommand>,
@@ -230,7 +230,10 @@ impl CacheManager {
         let mut commands_vec = Vec::with_capacity(_chan_depth);
         
         tokio::select! {
-            _ = self.command_rx.recv_many(&mut commands_vec, _chan_depth) => {
+            cmd = self.command_rx.recv() => {
+                if let Some(cmd) = cmd {
+                    commands_vec.push(cmd);
+                }
                 self.handle_command(commands_vec).await;
             }
             Some((block_rx, sender)) = self.block_rx.recv() => {
