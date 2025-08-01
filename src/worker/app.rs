@@ -310,15 +310,15 @@ impl KVSTask {
             let op_type = op.op_type();
             match op_type {
                 ProtoTransactionOpType::Write => {
-                    // let value = op.operands.pop().unwrap();
-                    // let key = op.operands.pop().unwrap();
+                    let value = op.operands.pop().unwrap();
+                    let key = op.operands.pop().unwrap();
 
                     // let key_len = key.len();
                     // let value_len = value.len();
                     // continue;
 
                     // let __put_time = Instant::now();
-                    // self.cache.put_raw(vec![], vec![]).await;
+                    self.cache.put_raw(key, value).await;
                     // debug!("Put time: {} us. Key size: {} bytes. Value size: {} bytes.", __put_time.elapsed().as_micros(), key_len, value_len);
 
                     // let res = self.cache_connector.dispatch_write_request(key, value).await;
@@ -340,7 +340,8 @@ impl KVSTask {
                         Some(value) => {
                             results.push(ProtoTransactionOpResult {
                                 success: true,
-                                values: vec![value.value, value.seq_num.to_be_bytes().to_vec()],
+                                // values: vec![value.value, value.seq_num.to_be_bytes().to_vec()], // WARNINGTODO!!!!!
+                                values: vec![value],
                             });
                         }
                         None => {

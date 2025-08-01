@@ -325,7 +325,8 @@ impl BlockSequencer {
         for (key, value) in vec {
             let entry = seen.entry(key).or_insert(value.clone());
 
-            entry.merge_cached(&value);
+            // WARNINGTODO!!!!!!!
+            // entry.merge_cached(&value);
         }
 
         seen.into_iter().collect()
