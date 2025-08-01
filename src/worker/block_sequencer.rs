@@ -153,7 +153,9 @@ impl BlockSequencer {
         loop {
             tokio::select! {
                 command = self.cache_manager_rx.recv() => {
-                    self.handle_command(command.unwrap()).await;
+                    if let Some(command) = command {
+                        self.handle_command(command).await;
+                    }
                 }
                 _ = self.log_timer.wait() => {
                     self.log_stats().await;
