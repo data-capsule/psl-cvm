@@ -145,7 +145,69 @@ async fn run_main(run_mode: RunMode) -> Result<(), io::Error> {
 
 const NUM_THREADS: usize = 32;
 
-fn main() {
+// fn main() {
+//     log4rs::init_config(config::default_log4rs_config()).unwrap();
+
+//     let run_mode = process_args();
+
+//     let (protocol, app) = get_feature_set();
+//     info!("Protocol: {}, App: {}", protocol, app);
+
+//     #[cfg(feature = "evil")]
+//     if cfg.evil_config.simulate_byzantine_behavior {
+//         warn!("Will simulate Byzantine behavior!");
+//     }
+
+//     let core_ids = 
+//         Arc::new(Mutex::new(Box::pin(core_affinity::get_core_ids().unwrap())));
+
+//     let (node_list, my_name) = match &run_mode {
+//         RunMode::Storage(_cfg) | RunMode::Sequencer(_cfg) => {
+//             (_cfg.consensus_config.node_list.clone(), _cfg.net_config.name.clone())
+//         },
+//         RunMode::Worker(_cfg) => {
+//             (_cfg.worker_config.all_worker_list.clone(), _cfg.net_config.name.clone())
+//         },
+//     };
+
+//     let start_idx = node_list.iter().position(|r| r.eq(&my_name)).unwrap();
+//     let mut num_threads = NUM_THREADS;
+//     {
+//         let _num_cores = core_ids.lock().unwrap().len();
+//         if _num_cores - 1 < num_threads {
+//             // Leave one core for the storage compaction thread.
+//             num_threads = _num_cores - 1;
+//         }
+//     }
+
+//     let start_idx = start_idx * num_threads;
+    
+//     let i = Box::pin(AtomicUsize::new(0));
+//     let runtime = runtime::Builder::new_multi_thread()
+//         .enable_all()
+//         .worker_threads(num_threads)
+//         .on_thread_start(move || {
+//             let _cids = core_ids.clone();
+//             let lcores = _cids.lock().unwrap();
+//             let id = (start_idx + i.fetch_add(1, std::sync::atomic::Ordering::SeqCst)) % lcores.len();
+//             // let res = core_affinity::set_for_current(lcores[id]);
+    
+//             // if res {
+//             //     debug!("Thread pinned to core {:?}", id);
+//             // }else{
+//             //     debug!("Thread pinning to core {:?} failed", id);
+//             // }
+//             std::io::stdout().flush()
+//                 .unwrap();
+//         })
+//         .build()
+//         .unwrap();
+//     let _ = runtime.block_on(run_main(run_mode));
+// }
+
+
+#[tokio::main]
+async fn main() {
     log4rs::init_config(config::default_log4rs_config()).unwrap();
 
     let run_mode = process_args();
@@ -153,54 +215,5 @@ fn main() {
     let (protocol, app) = get_feature_set();
     info!("Protocol: {}, App: {}", protocol, app);
 
-    #[cfg(feature = "evil")]
-    if cfg.evil_config.simulate_byzantine_behavior {
-        warn!("Will simulate Byzantine behavior!");
-    }
-
-    let core_ids = 
-        Arc::new(Mutex::new(Box::pin(core_affinity::get_core_ids().unwrap())));
-
-    let (node_list, my_name) = match &run_mode {
-        RunMode::Storage(_cfg) | RunMode::Sequencer(_cfg) => {
-            (_cfg.consensus_config.node_list.clone(), _cfg.net_config.name.clone())
-        },
-        RunMode::Worker(_cfg) => {
-            (_cfg.worker_config.all_worker_list.clone(), _cfg.net_config.name.clone())
-        },
-    };
-
-    let start_idx = node_list.iter().position(|r| r.eq(&my_name)).unwrap();
-    let mut num_threads = NUM_THREADS;
-    {
-        let _num_cores = core_ids.lock().unwrap().len();
-        if _num_cores - 1 < num_threads {
-            // Leave one core for the storage compaction thread.
-            num_threads = _num_cores - 1;
-        }
-    }
-
-    let start_idx = start_idx * num_threads;
-    
-    let i = Box::pin(AtomicUsize::new(0));
-    let runtime = runtime::Builder::new_multi_thread()
-        .enable_all()
-        .worker_threads(num_threads)
-        .on_thread_start(move || {
-            let _cids = core_ids.clone();
-            let lcores = _cids.lock().unwrap();
-            let id = (start_idx + i.fetch_add(1, std::sync::atomic::Ordering::SeqCst)) % lcores.len();
-            // let res = core_affinity::set_for_current(lcores[id]);
-    
-            // if res {
-            //     debug!("Thread pinned to core {:?}", id);
-            // }else{
-            //     debug!("Thread pinning to core {:?} failed", id);
-            // }
-            std::io::stdout().flush()
-                .unwrap();
-        })
-        .build()
-        .unwrap();
-    let _ = runtime.block_on(run_main(run_mode));
+    run_main(run_mode).await.unwrap();
 }
