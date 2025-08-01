@@ -307,13 +307,10 @@ impl KVSTask {
 
         for mut op in ops {
             // continue;
-            let op_type: Result<ProtoTransactionOpType, DecodeError> = op.op_type.try_into();
-            if let Err(e) = op_type {
-                return Err(e.into());
-            }
+            let op_type = op.op_type;
 
-            match op_type.unwrap() {
-                ProtoTransactionOpType::Write => {
+            match op_type {
+                2 => {
                     let value = op.operands.pop().unwrap();
                     let key = op.operands.pop().unwrap();
 
@@ -337,7 +334,7 @@ impl KVSTask {
                         values: vec![],
                     });
                 },
-                ProtoTransactionOpType::Read => {
+                1 => {
                     continue;
                     let key = op.operands.pop().unwrap();
                     match self.cache.get(&key).await {
