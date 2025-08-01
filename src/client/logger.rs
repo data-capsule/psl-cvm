@@ -25,6 +25,8 @@ pub struct ClientStatLogger {
     byz_commit_pending_per_worker: HashMap<usize, usize>,
 
     total_signed_aes: usize,
+
+    total_crash_commits: usize,
 }
 
 impl ClientStatLogger {
@@ -39,6 +41,7 @@ impl ClientStatLogger {
             byz_commit_pending_per_worker: HashMap::new(),
             max_duration,
             total_signed_aes: 0,
+            total_crash_commits: 0,
         }
     }
 
@@ -79,6 +82,7 @@ impl ClientStatLogger {
                     }
                 }
                 self.crash_commit_latency_window.push_back((Instant::now(), latency));
+                self.total_crash_commits += 1;
             }
             ClientWorkerStat::ByzCommitLatency(latency) => {
                 while let Some((registered_time, _latency)) = self.byz_commit_latency_window.front() {
@@ -119,6 +123,8 @@ impl ClientStatLogger {
             (crash_commit_avg * 1.0e+6) as u64,
             (byz_commit_avg * 1.0e+6) as u64
         );
+
+        info!("Total crash commits: {}", self.total_crash_commits);
 
         let total_pending = self.byz_commit_pending_per_worker.iter().map(|(_, pending)| *pending).sum::<usize>();
         let max_pending = self.byz_commit_pending_per_worker.iter().map(|(_, pending)| *pending).max().unwrap_or(0);

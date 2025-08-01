@@ -69,7 +69,7 @@ num_requests = 100_000_000
 [client_config.workload_config.request_config.KVReadWriteYCSB]
 num_keys = 1_000_000
 num_fields = 10
-val_size = 4096 # 8 KiB
+val_size = 512 # 8 KiB
 linearizable_reads = false
 byz_commit_ratio = 0.0
 load_phase = true
@@ -81,7 +81,7 @@ read_ratio = 0.0
 [[experiments]]
 name = "ycsb"
 type = "psl_storage"
-git_hash = "1be01d514feb307fdf304bd6c179768a5f190e84"
+git_hash = "e92ede99dc59efd7049cf68bcedb570064d78a73"
 repeats = 1
 # num_clients = 80 <=== This saturates 1 node when fully short circuited.
 num_clients = 160
