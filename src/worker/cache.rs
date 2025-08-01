@@ -113,15 +113,21 @@ impl Cache {
     }
 
     pub async fn put_raw(&self, key: CacheKey, value: Vec<u8>) {
-        // let mut cache = self.cache.write().await;
-        // cache.insert(key, value);
-
+        
+        let n = {
+            let cache = self.cache.read().await;
+            let n = cache.get(&key).map(|v| v.seq_num).unwrap_or(0);
+            n
+        };
+        
         let val_hash = BigInt::from_bytes_be(Sign::Plus, &hash(&value));
-        // cache.entry(key)
-        //     .and_modify(|v| {
-        //         v.blind_update(&value, &val_hash);
-        //     })
-        //     .or_insert(CachedValue::new(value, val_hash));
+        let val = CachedValue::new_with_seq_num(value, n + 1, val_hash);
+
+        {
+            let mut cache = self.cache.write().await;
+            cache.insert(key, val);
+        }
+
     }
 
     pub async fn bulk_put(&self, key_value_pairs: Vec<(CacheKey, CachedValue)>) {
