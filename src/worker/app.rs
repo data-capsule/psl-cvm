@@ -225,9 +225,9 @@ pub struct KVSTask {
 }
 
 impl ClientHandlerTask for KVSTask {
-    fn new(_cache: Arc<Cache>, id: usize) -> Self {
+    fn new(cache: Arc<Cache>, id: usize) -> Self {
         Self {
-            cache: Arc::new(Cache::new()),
+            cache,
             id,
             total_work: 0,
         }
@@ -318,7 +318,7 @@ impl KVSTask {
                     // continue;
 
                     // let __put_time = Instant::now();
-                    self.cache.put_raw(key, value).await;
+                    self.cache.put_raw(key, value);
                     // debug!("Put time: {} us. Key size: {} bytes. Value size: {} bytes.", __put_time.elapsed().as_micros(), key_len, value_len);
 
                     // let res = self.cache_connector.dispatch_write_request(key, value).await;
@@ -336,7 +336,7 @@ impl KVSTask {
                 ProtoTransactionOpType::Read => {
                     continue;
                     let key = op.operands.pop().unwrap();
-                    match self.cache.get(&key).await {
+                    match self.cache.get(&key) {
                         Some(value) => {
                             results.push(ProtoTransactionOpResult {
                                 success: true,

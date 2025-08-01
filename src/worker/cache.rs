@@ -1,4 +1,4 @@
-use tokio::sync::RwLock;
+use std::sync::RwLock;
 
 use hashbrown::HashMap;
 use num_bigint::{BigInt, Sign};
@@ -109,12 +109,12 @@ impl Cache {
         }
     }
 
-    pub async fn get(&self, key: &CacheKey) -> Option<CachedValue> {
-        self.cache.read().await.get(key).cloned()
+    pub fn get(&self, key: &CacheKey) -> Option<CachedValue> {
+        self.cache.read().unwrap().get(key).cloned()
     }
 
-    pub async fn put(&self, key: CacheKey, value: CachedValue) {
-        self.cache.write().await
+    pub fn put(&self, key: CacheKey, value: CachedValue) {
+        self.cache.write().unwrap()
             .entry(key)
             .and_modify(|v| {
                 v.merge_cached(&value).unwrap();
@@ -122,10 +122,10 @@ impl Cache {
             .or_insert(value);
     }
 
-    pub async fn put_raw(&self, key: CacheKey, value: Vec<u8>) {
+    pub fn put_raw(&self, key: CacheKey, value: Vec<u8>) {
         
         let n = {
-            let cache = self.cache.read().await;
+            let cache = self.cache.read().unwrap();
             let n = cache.get(&key).map(|v| v.seq_num).unwrap_or(0);
             n
         };
@@ -134,14 +134,14 @@ impl Cache {
         let val = CachedValue::new_with_seq_num(value, n + 1);
 
         {
-            let mut cache = self.cache.write().await;
+            let mut cache = self.cache.write().unwrap();
             cache.insert(key, val);
         }
 
     }
 
-    pub async fn bulk_put(&self, key_value_pairs: Vec<(CacheKey, CachedValue)>) {
-        let mut cache = self.cache.write().await;
+    pub fn bulk_put(&self, key_value_pairs: Vec<(CacheKey, CachedValue)>) {
+        let mut cache = self.cache.write().unwrap();
         for (key, value) in key_value_pairs {
             cache.entry(key)
                 .and_modify(|v| {
