@@ -319,7 +319,7 @@ impl KVSTask {
                     // continue;
 
                     let __put_time = Instant::now();
-                    self.cache.put_raw(key, value);
+                    self.cache.put_raw(key, value).await;
                     info!("Put time: {} us. Key size: {} bytes. Value size: {} bytes.", __put_time.elapsed().as_micros(), key_len, value_len);
 
                     // let res = self.cache_connector.dispatch_write_request(key, value).await;
@@ -336,7 +336,7 @@ impl KVSTask {
                 },
                 ProtoTransactionOpType::Read => {
                     let key = op.operands.pop().unwrap();
-                    match self.cache.get(&key) {
+                    match self.cache.get(&key).await {
                         Some(value) => {
                             results.push(ProtoTransactionOpResult {
                                 success: true,
