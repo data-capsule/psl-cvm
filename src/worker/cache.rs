@@ -1,4 +1,4 @@
-use std::sync::Mutex;
+use std::sync::{Mutex, RwLock};
 
 use hashbrown::HashMap;
 use num_bigint::{BigInt, Sign};
@@ -88,22 +88,22 @@ impl CachedValue {
 }
 
 pub struct Cache {
-    cache: Mutex<HashMap<CacheKey, CachedValue>>,
+    cache: RwLock<HashMap<CacheKey, CachedValue>>,
 }
 
 impl Cache {
     pub fn new() -> Self {
         Self {
-            cache: Mutex::new(HashMap::new()),
+            cache: RwLock::new(HashMap::new()),
         }
     }
 
     pub fn get(&self, key: &CacheKey) -> Option<CachedValue> {
-        self.cache.lock().unwrap().get(key).cloned()
+        self.cache.read().unwrap().get(key).cloned()
     }
 
     pub fn put(&self, key: CacheKey, value: CachedValue) {
-        self.cache.lock().unwrap()
+        self.cache.write().unwrap()
             .entry(key)
             .and_modify(|v| {
                 v.merge_cached(&value).unwrap();
@@ -112,7 +112,7 @@ impl Cache {
     }
 
     pub fn put_raw(&self, key: CacheKey, value: Vec<u8>) {
-        let mut cache = self.cache.lock().unwrap();
+        let mut cache = self.cache.write().unwrap();
 
         let val_hash = BigInt::from_bytes_be(Sign::Plus, &hash(&value));
         cache.entry(key)
@@ -123,7 +123,7 @@ impl Cache {
     }
 
     pub fn bulk_put(&self, key_value_pairs: Vec<(CacheKey, CachedValue)>) {
-        let mut cache = self.cache.lock().unwrap();
+        let mut cache = self.cache.write().unwrap();
         for (key, value) in key_value_pairs {
             cache.entry(key)
                 .and_modify(|v| {

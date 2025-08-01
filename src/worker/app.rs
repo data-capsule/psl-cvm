@@ -241,7 +241,7 @@ impl ClientHandlerTask for KVSTask {
 
     #[allow(unreachable_code)]
     async fn on_client_request(&mut self, request: TxWithAckChanTag, reply_handler_tx: &UnboundedSender<UncommittedResultSet>) -> anyhow::Result<()> {
-        let req = &request.0;
+        let req = request.0;
         let resp = request.1;
         self.total_work += 1;
 
@@ -257,7 +257,7 @@ impl ClientHandlerTask for KVSTask {
         }
 
 
-        let req = req.as_ref().unwrap();
+        let req = req.unwrap();
         if req.on_receive.is_none() {
 
             // For PSL, all transactions must be on_receive.
@@ -265,10 +265,10 @@ impl ClientHandlerTask for KVSTask {
             return self.reply_invalid(resp, reply_handler_tx).await;
         }
 
-        let on_receive = req.on_receive.as_ref().unwrap();
+        let on_receive = req.on_receive.unwrap();
 
 
-        if let std::result::Result::Ok((results, seq_num)) = self.execute_ops(on_receive.ops.as_ref()).await {
+        if let std::result::Result::Ok((results, seq_num)) = self.execute_ops(on_receive.ops).await {
             return self.reply_receipt(resp, results, seq_num, reply_handler_tx).await;
         }
 
@@ -281,7 +281,7 @@ impl ClientHandlerTask for KVSTask {
 impl KVSTask {
 
     #[allow(unreachable_code)]
-    async fn execute_ops(&self, ops: &Vec<ProtoTransactionOp>) -> Result<(Vec<ProtoTransactionOpResult>, Option<u64>), anyhow::Error> {
+    async fn execute_ops(&self, ops: Vec<ProtoTransactionOp>) -> Result<(Vec<ProtoTransactionOpResult>, Option<u64>), anyhow::Error> {
         let mut atleast_one_write = false;
         let mut last_write_index = 0;
         let mut highest_committed_block_seq_num_needed = 0;
@@ -303,7 +303,7 @@ impl KVSTask {
             }
         }
 
-        for op in ops {
+        for mut op in ops {
             let op_type: Result<ProtoTransactionOpType, DecodeError> = op.op_type.try_into();
             if let Err(e) = op_type {
                 return Err(e.into());
@@ -311,11 +311,11 @@ impl KVSTask {
 
             match op_type.unwrap() {
                 ProtoTransactionOpType::Write => {
-                    let key = op.operands[0].clone();
-                    let value = op.operands[1].clone();
+                    let value = op.operands.pop().unwrap();
+                    let key = op.operands.pop().unwrap();
                     // continue;
 
-                    let res = self.cache.put_raw(key, value);
+                    self.cache.put_raw(key, value);
 
                     // let res = self.cache_connector.dispatch_write_request(key, value).await;
                     // if let std::result::Result::Err(e) = res {
@@ -330,7 +330,7 @@ impl KVSTask {
                     });
                 },
                 ProtoTransactionOpType::Read => {
-                    let key = op.operands[0].clone();
+                    let key = op.operands.pop().unwrap();
                     match self.cache.get(&key) {
                         Some(value) => {
                             results.push(ProtoTransactionOpResult {
