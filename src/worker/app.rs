@@ -174,8 +174,8 @@ impl<T: ClientHandlerTask + Send + Sync + 'static> PSLAppEngine<T> {
             ci_vec.clear();
             reply_vec.clear();
             
-            let msgs_pending_ci_vec = app.commit_rx.len();
-            let msgs_pending_reply_vec = reply_rx.len();
+            let msgs_pending_ci_vec = app.commit_rx.len().max(100);
+            let msgs_pending_reply_vec = reply_rx.len().max(100);
 
             tokio::select! {
                 _ = app.commit_rx.recv_many(&mut ci_vec, msgs_pending_ci_vec) => {

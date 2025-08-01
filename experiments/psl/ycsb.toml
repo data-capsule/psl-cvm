@@ -24,7 +24,7 @@ liveness_u = 0
 max_backlog_batch_size = 1000
 signature_max_delay_blocks = 10
 signature_max_delay_ms = 10000
-num_crypto_workers = 10
+num_crypto_workers = 5
 view_timeout_ms = 4000
 batch_max_delay_ms = 2
 
@@ -39,7 +39,7 @@ self_writes_max_batch_size = 1000
 batch_max_delay_ms = 2
 signature_max_delay_ms = 20000
 signature_max_delay_blocks = 50
-num_crypto_workers = 10
+num_crypto_workers = 5
 num_worker_threads_per_worker = 4
 num_replier_threads_per_worker = 4
 
@@ -81,7 +81,7 @@ read_ratio = 0.0
 [[experiments]]
 name = "ycsb"
 type = "psl_storage"
-git_hash = "1c5c8f2887d394d748e49f15c499745fa4e8f973"
+git_hash = "3a843b3824f37afec5d10d3179c84639a589cc58"
 repeats = 1
 # num_clients = 80 <=== This saturates 1 node when fully short circuited.
 num_clients = 160
