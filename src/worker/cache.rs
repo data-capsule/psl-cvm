@@ -123,10 +123,10 @@ impl Cache {
         let val_hash = BigInt::from_bytes_be(Sign::Plus, &hash(&value));
         let val = CachedValue::new_with_seq_num(value, n + 1, val_hash);
 
-        {
-            let mut cache = self.cache.write().await;
-            cache.insert(key, val);
-        }
+        // {
+        //     let mut cache = self.cache.write().await;
+        //     cache.insert(key, val);
+        // }
 
     }
 
