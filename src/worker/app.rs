@@ -340,8 +340,8 @@ impl KVSTask {
                         Some(value) => {
                             results.push(ProtoTransactionOpResult {
                                 success: true,
-                                // values: vec![value.value, value.seq_num.to_be_bytes().to_vec()], // WARNINGTODO!!!!!
-                                values: vec![value],
+                                values: vec![value.value, value.seq_num.to_be_bytes().to_vec()],
+                                // values: vec![value],
                             });
                         }
                         None => {
