@@ -248,10 +248,10 @@ impl ClientHandlerTask for KVSTask {
         self.total_work += 1;
 
         // Short circuit for now.
-        return self.reply_receipt(resp, vec![ProtoTransactionOpResult {
-            success: true,
-            values: vec![],
-        }], None, reply_handler_tx).await;
+        // return self.reply_receipt(resp, vec![ProtoTransactionOpResult {
+        //     success: true,
+        //     values: vec![],
+        // }], None, reply_handler_tx).await;
         
         
         if req.is_none() {
@@ -290,22 +290,23 @@ impl KVSTask {
         // let mut block_seq_num_rx_vec = FuturesUnordered::new();
         let mut results = Vec::new();
 
-        for (i, op) in ops.iter().enumerate() {
-            let op_type: Result<ProtoTransactionOpType, DecodeError> = op.op_type.try_into();
-            if let Err(e) = op_type {
-                return Err(e.into());
-            }
+        // for (i, op) in ops.iter().enumerate() {
+        //     let op_type: Result<ProtoTransactionOpType, DecodeError> = op.op_type.try_into();
+        //     if let Err(e) = op_type {
+        //         return Err(e.into());
+        //     }
 
-            match op_type.unwrap() {
-                ProtoTransactionOpType::Write  => {
-                    atleast_one_write = true;
-                    last_write_index = i;
-                },
-                _ => {}
-            }
-        }
+        //     match op_type.unwrap() {
+        //         ProtoTransactionOpType::Write  => {
+        //             atleast_one_write = true;
+        //             last_write_index = i;
+        //         },
+        //         _ => {}
+        //     }
+        // }
 
         for mut op in ops {
+            continue;
             let op_type: Result<ProtoTransactionOpType, DecodeError> = op.op_type.try_into();
             if let Err(e) = op_type {
                 return Err(e.into());
