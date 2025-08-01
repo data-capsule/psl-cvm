@@ -75,7 +75,7 @@ impl CacheConnector {
         // must_wait_for_seq_num: bool,
     ) -> anyhow::Result<(u64 /* lamport ts */, tokio::sync::oneshot::Receiver<u64 /* block seq num */>), CacheError> {
         let (tx, rx) = tokio::sync::oneshot::channel();
-        let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+        let (response_tx, response_rx) = make_channel(1);
 
         // let response_n = AtomicOptionalU64::new(OptionalU64 { val: None });
         // let val_hash = BigInt::from_bytes_be(Sign::Plus, &hash(&value));
@@ -94,7 +94,7 @@ impl CacheConnector {
         // info!("Cache tx time: {} us", __cache_tx_time.elapsed().as_micros());
 
         let __result_rx_time = Instant::now();
-        let result = response_rx.await.unwrap();
+        let result = response_rx.recv().await.unwrap();
         // let result = loop {
         //     if let Some(val) = response_n.get().val {
         //         break val;

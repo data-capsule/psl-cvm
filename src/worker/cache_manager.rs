@@ -27,7 +27,7 @@ pub enum CacheCommand {
         BigInt /* Val Hash */,
         BlockSeqNumQuery,
         // AtomicOptionalU64,
-        oneshot::Sender<u64>,
+        Sender<u64>,
         Instant,
     ),
     // Cas(
@@ -301,7 +301,7 @@ impl CacheManager {
                     
                     if self.cache.contains_key(&key) {
                         let seq_num = self.cache.get_mut(&key).unwrap().blind_update(value.clone(), val_hash.clone());
-                        response_tx.send(seq_num);
+                        response_tx.send(seq_num).await;
                             // .unwrap();
                         
                         // self.block_sequencer_tx.send(SequencerCommand::SelfWriteOp { key, value: CachedValue::new_with_seq_num(value, seq_num, val_hash), seq_num_query }).await;
@@ -317,7 +317,7 @@ impl CacheManager {
 
                     // let cached_value = CachedValue::new(value.clone(), val_hash.clone());
                     // self.cache.insert(key.clone(), cached_value);
-                    response_tx.send(1);
+                    response_tx.send(1).await;
 
                     match seq_num_query {
                         BlockSeqNumQuery::DontBother => {}
