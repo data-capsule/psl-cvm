@@ -3,7 +3,7 @@ use std::{
 };
 
 use app::PSLAppEngine;
-use cache_manager::{CacheCommand, CacheManager};
+// use cache_manager::{CacheCommand, CacheManager};
 use log::{debug, error, info, warn};
 use prost::Message as _;
 use tokio::{
@@ -31,18 +31,16 @@ use crate::{
         BlackHoleStorageEngine, RemoteStorageEngine, StorageService,
     },
     worker::{
-        app::ClientHandlerTask,
-        block_broadcaster::{BlockBroadcaster, BroadcastMode},
-        block_sequencer::BlockSequencer,
-        staging::VoteWithSender,
+        app::ClientHandlerTask, block_broadcaster::{BlockBroadcaster, BroadcastMode}, block_sequencer::BlockSequencer, cache::Cache, staging::VoteWithSender
     },
 };
 
 pub mod app;
 mod block_broadcaster;
 mod block_sequencer;
-mod cache_manager;
+// mod cache_manager;
 mod staging;
+mod cache;
 
 use staging::Staging;
 
@@ -169,7 +167,7 @@ pub struct PSLWorker<E: ClientHandlerTask + Send + Sync + 'static> {
     server: Arc<Server<PinnedPSLWorkerServerContext>>,
     crypto: CryptoService,
 
-    cache_manager: Arc<Mutex<CacheManager>>,
+    // cache_manager: Arc<Mutex<CacheManager>>,
     logserver: Arc<Mutex<LogServer>>,
     fork_receiver: Arc<Mutex<crate::storage_server::fork_receiver::ForkReceiver>>,
     block_sequencer: Arc<Mutex<BlockSequencer>>,
@@ -238,7 +236,7 @@ impl<E: ClientHandlerTask + Send + Sync + 'static> PSLWorker<E> {
         let (backfill_request_tx, backfill_request_rx) = make_channel(_chan_depth as usize);
         let (fork_receiver_tx, fork_receiver_rx) = make_channel(_chan_depth as usize);
         let (vote_tx, vote_rx) = make_channel(_chan_depth as usize);
-        let (cache_tx, cache_rx) = flume::unbounded(); // unbounded_channel(); // This feeds from multiple app threads. We don't want to pay the cost of coordination.
+        // let (cache_tx, cache_rx) = flume::unbounded(); // unbounded_channel(); // This feeds from multiple app threads. We don't want to pay the cost of coordination.
         let (block_tx, block_rx) = make_channel(_chan_depth as usize);
         let (command_tx, command_rx) = unbounded_channel();
         let (block_sequencer_tx, block_sequencer_rx) = make_channel(_chan_depth as usize);
@@ -268,9 +266,11 @@ impl<E: ClientHandlerTask + Send + Sync + 'static> PSLWorker<E> {
 
         let (commit_tx_spawner, __commit_rx_spawner) = unbounded_channel();
 
+        let cache = Arc::new(Cache::new());
+
         let app = Arc::new(Mutex::new(PSLAppEngine::<E>::new(
             config.clone(),
-            cache_tx,
+            cache,
             client_request_rx,
             __commit_rx_spawner,
         )));
@@ -289,13 +289,13 @@ impl<E: ClientHandlerTask + Send + Sync + 'static> PSLWorker<E> {
             ),
         ));
 
-        let cache_manager = Arc::new(Mutex::new(CacheManager::new(
-            config.clone(),
-            cache_rx,
-            block_rx,
-            block_sequencer_tx,
-            command_tx,
-        )));
+        // let cache_manager = Arc::new(Mutex::new(CacheManager::new(
+        //     config.clone(),
+        //     cache_rx,
+        //     block_rx,
+        //     block_sequencer_tx,
+        //     command_tx,
+        // )));
 
         let block_sequencer = Arc::new(Mutex::new(BlockSequencer::new(
             config.clone(),
@@ -363,7 +363,7 @@ impl<E: ClientHandlerTask + Send + Sync + 'static> PSLWorker<E> {
             server,
             crypto,
 
-            cache_manager,
+            // cache_manager,
             logserver,
             fork_receiver,
             block_sequencer,
@@ -379,7 +379,7 @@ impl<E: ClientHandlerTask + Send + Sync + 'static> PSLWorker<E> {
         let mut handles = JoinSet::new();
 
         let server = self.server.clone();
-        let cache_manager = self.cache_manager.clone();
+        // let cache_manager = self.cache_manager.clone();
         let logserver = self.logserver.clone();
         let fork_receiver = self.fork_receiver.clone();
         let staging = self.staging.clone();
@@ -394,9 +394,9 @@ impl<E: ClientHandlerTask + Send + Sync + 'static> PSLWorker<E> {
             let _ = Server::<PinnedPSLWorkerServerContext>::run(server).await;
         });
 
-        handles.spawn(async move {
-            let _ = CacheManager::run(cache_manager).await;
-        });
+        // handles.spawn(async move {
+        //     let _ = CacheManager::run(cache_manager).await;
+        // });
 
         handles.spawn(async move {
             let _ = BlockSequencer::run(block_sequencer).await;

@@ -7,13 +7,9 @@ use num_bigint::{BigInt, Sign};
 use prost::{DecodeError, Message as _};
 use tokio::{sync::{mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender}, Mutex}, task::JoinSet};
 
-use crate::{config::{AtomicConfig, AtomicPSLWorkerConfig}, consensus::batch_proposal::{MsgAckChanWithTag, TxWithAckChanTag}, crypto::{default_hash, hash, HashType}, proto::{client::{ProtoClientReply, ProtoTransactionReceipt}, execution::{ProtoTransactionOp, ProtoTransactionOpResult, ProtoTransactionOpType, ProtoTransactionResult}}, rpc::{server::LatencyProfile, PinnedMessage, SenderType}, utils::{channel::{make_channel, Receiver, Sender}, timer::ResettableTimer, AtomicStruct}, worker::block_sequencer::BlockSeqNumQuery};
+use crate::{config::{AtomicConfig, AtomicPSLWorkerConfig}, consensus::batch_proposal::{MsgAckChanWithTag, TxWithAckChanTag}, crypto::{default_hash, hash, HashType}, proto::{client::{ProtoClientReply, ProtoTransactionReceipt}, execution::{ProtoTransactionOp, ProtoTransactionOpResult, ProtoTransactionOpType, ProtoTransactionResult}}, rpc::{server::LatencyProfile, PinnedMessage, SenderType}, utils::{channel::{make_channel, Receiver, Sender}, timer::ResettableTimer, AtomicStruct}, worker::{block_sequencer::BlockSeqNumQuery, cache::Cache}};
 
-use super::cache_manager::{CacheCommand, CacheError};
 
-pub struct CacheConnector {
-    cache_tx: flume::Sender<CacheCommand>,
-}
 
 // const NUM_WORKER_THREADS: usize = 4;
 // const NUM_REPLIER_THREADS: usize = 20;
@@ -42,87 +38,10 @@ impl FutureSeqNum {
     }
 }
 
-pub struct OptionalU64 {
-    pub val: Option<u64>,
-}
-
-pub type AtomicOptionalU64 = AtomicStruct<OptionalU64>;
-
-
-impl CacheConnector {
-    pub fn new(cache_tx: flume::Sender<CacheCommand>) -> Self {
-        Self { cache_tx }
-    }
-
-    pub async fn dispatch_read_request(
-        &self,
-        key: Vec<u8>,
-    ) -> anyhow::Result<(Vec<u8>, u64), CacheError> {
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        let command = CacheCommand::Get(key, tx);
-
-        self.cache_tx.send(command); // .await;
-
-        let result = rx.await.unwrap();
-
-        result
-    }
-
-    pub async fn dispatch_write_request(
-        &self,
-        key: Vec<u8>,
-        value: Vec<u8>,
-        // must_wait_for_seq_num: bool,
-    ) -> anyhow::Result<(u64 /* lamport ts */, tokio::sync::oneshot::Receiver<u64 /* block seq num */>), CacheError> {
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        let (response_tx, response_rx) = make_channel(1);
-
-        // let response_n = AtomicOptionalU64::new(OptionalU64 { val: None });
-        // let val_hash = BigInt::from_bytes_be(Sign::Plus, &hash(&value));
-
-        // TODO: Use the actual hash.
-        let val_hash = BigInt::from(1);
-        // let command = CacheCommand::Put(key, value, val_hash, BlockSeqNumQuery::WaitForSeqNum(tx), response_tx);
-        // let command = CacheCommand::Put(key, vec![], val_hash, BlockSeqNumQuery::WaitForSeqNum(tx), response_tx);
-        let command = CacheCommand::Put(key, vec![], val_hash, BlockSeqNumQuery::DontBother, response_tx, Instant::now());
-        
-        // Short circuit for now.
-        // let command = CacheCommand::Put(key, value, val_hash, BlockSeqNumQuery::WaitForSeqNum(tx), response_tx);
-
-        // let __cache_tx_time = Instant::now();
-        self.cache_tx.send(command); // .await;
-        // info!("Cache tx time: {} us", __cache_tx_time.elapsed().as_micros());
-
-        let __result_rx_time = Instant::now();
-        let result = response_rx.recv().await.unwrap();
-        // let result = loop {
-        //     if let Some(val) = response_n.get().val {
-        //         break val;
-        //     }
-
-        //     tokio::task::yield_now().await;
-
-        //     // Busy wait.
-        // };
-        info!("Response rx time: {} us", __result_rx_time.elapsed().as_micros());
-        // let result = 1;
-        tx.send(0);
-        std::result::Result::Ok((result, rx))
-        // std::result::Result::Ok((1, rx))
-    }
-
-    pub async fn dispatch_commit_request(&self) {
-        let command = CacheCommand::Commit;
-
-        self.cache_tx.send(command); // .await;
-    }
-}
-
 pub type UncommittedResultSet = (Vec<ProtoTransactionOpResult>, MsgAckChanWithTag, Option<u64> /* Some(potential seq_num; wait till committed) | None(reply immediately) */);
 
 pub trait ClientHandlerTask {
-    fn new(cache_tx: flume::Sender<CacheCommand>, id: usize) -> Self;
-    fn get_cache_connector(&self) -> &CacheConnector;
+    fn new(cache: Arc<Cache>, id: usize) -> Self;
     fn get_id(&self) -> usize;
     fn get_total_work(&self) -> usize; // Useful for throghput calculation.
     fn on_client_request(&mut self, request: TxWithAckChanTag, reply_handler_tx: &UnboundedSender<UncommittedResultSet>) -> impl Future<Output = Result<(), anyhow::Error>> + Send + Sync;
@@ -130,7 +49,7 @@ pub trait ClientHandlerTask {
 
 pub struct PSLAppEngine<T: ClientHandlerTask> {
     config: AtomicPSLWorkerConfig,
-    cache_tx: flume::Sender<CacheCommand>,
+    cache: Arc<Cache>,
     client_command_rx: async_channel::Receiver<TxWithAckChanTag>,
     commit_rx: UnboundedReceiver<u64>,
     handles: JoinSet<()>,
@@ -141,10 +60,10 @@ pub struct PSLAppEngine<T: ClientHandlerTask> {
 }
 
 impl<T: ClientHandlerTask + Send + Sync + 'static> PSLAppEngine<T> {
-    pub fn new(config: AtomicPSLWorkerConfig, cache_tx: flume::Sender<CacheCommand>, client_command_rx: async_channel::Receiver<TxWithAckChanTag>, commit_rx: UnboundedReceiver<u64>) -> Self {
+    pub fn new(config: AtomicPSLWorkerConfig, cache: Arc<Cache>, client_command_rx: async_channel::Receiver<TxWithAckChanTag>, commit_rx: UnboundedReceiver<u64>) -> Self {
         Self {
             config,
-            cache_tx,
+            cache,
             client_command_rx,
             commit_rx,
             handles: JoinSet::new(),
@@ -216,14 +135,14 @@ impl<T: ClientHandlerTask + Send + Sync + 'static> PSLAppEngine<T> {
         log_timer.run().await;
 
         for id in 0..app.config.get().worker_config.num_worker_threads_per_worker {
-            let cache_tx = app.cache_tx.clone();
+            let cache = app.cache.clone();
             let _reply_tx = reply_tx.clone();
             let client_command_rx = app.client_command_rx.clone();
             let (total_work_tx, total_work_rx) = make_channel(_chan_depth);
             total_work_txs.push(total_work_tx);
 
             app.handles.spawn(async move {
-                let mut handler_task = T::new(cache_tx, id);
+                let mut handler_task = T::new(cache, id);
 
                 loop {
                     tokio::select! {
@@ -298,22 +217,18 @@ impl<T: ClientHandlerTask + Send + Sync + 'static> PSLAppEngine<T> {
 
 
 pub struct KVSTask {
-    cache_connector: CacheConnector,
+    cache: Arc<Cache>,
     id: usize,
     total_work: usize,
 }
 
 impl ClientHandlerTask for KVSTask {
-    fn new(cache_tx: flume::Sender<CacheCommand>, id: usize) -> Self {
+    fn new(cache: Arc<Cache>, id: usize) -> Self {
         Self {
-            cache_connector: CacheConnector::new(cache_tx),
+            cache,
             id,
             total_work: 0,
         }
-    }
-
-    fn get_cache_connector(&self) -> &CacheConnector {
-        &self.cache_connector
     }
 
     fn get_total_work(&self) -> usize {
@@ -370,7 +285,7 @@ impl KVSTask {
         let mut atleast_one_write = false;
         let mut last_write_index = 0;
         let mut highest_committed_block_seq_num_needed = 0;
-        let mut block_seq_num_rx_vec = FuturesUnordered::new();
+        // let mut block_seq_num_rx_vec = FuturesUnordered::new();
         let mut results = Vec::new();
 
         for (i, op) in ops.iter().enumerate() {
@@ -400,13 +315,15 @@ impl KVSTask {
                     let value = op.operands[1].clone();
                     // continue;
 
-                    let res = self.cache_connector.dispatch_write_request(key, value).await;
-                    if let std::result::Result::Err(e) = res {
-                        return Err(e.into());
-                    }
+                    let res = self.cache.put_raw(key, value);
 
-                    let (_, block_seq_num_rx) = res.unwrap();
-                    block_seq_num_rx_vec.push(block_seq_num_rx);
+                    // let res = self.cache_connector.dispatch_write_request(key, value).await;
+                    // if let std::result::Result::Err(e) = res {
+                    //     return Err(e.into());
+                    // }
+
+                    // let (_, block_seq_num_rx) = res.unwrap();
+                    // block_seq_num_rx_vec.push(block_seq_num_rx);
                     results.push(ProtoTransactionOpResult {
                         success: true,
                         values: vec![],
@@ -414,14 +331,14 @@ impl KVSTask {
                 },
                 ProtoTransactionOpType::Read => {
                     let key = op.operands[0].clone();
-                    match self.cache_connector.dispatch_read_request(key).await {
-                        std::result::Result::Ok((value, seq_num)) => {
+                    match self.cache.get(&key) {
+                        Some(value) => {
                             results.push(ProtoTransactionOpResult {
                                 success: true,
-                                values: vec![value, seq_num.to_be_bytes().to_vec()],
+                                values: vec![value.value, value.seq_num.to_be_bytes().to_vec()],
                             });
                         }
-                        std::result::Result::Err(_e) => {
+                        None => {
                             results.push(ProtoTransactionOpResult {
                                 success: false,
                                 values: vec![],
@@ -434,7 +351,7 @@ impl KVSTask {
             
         }
 
-        self.cache_connector.dispatch_commit_request().await;
+        // self.cache_connector.dispatch_commit_request().await;
 
         if atleast_one_write {
 

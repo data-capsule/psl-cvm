@@ -119,6 +119,21 @@ data "aws_ami" "ubuntu_24_04" {
   }
 }
 
+data "aws_ami" "ubuntu_22_04" {
+  most_recent = true
+  owners      = ["099720109477"]
+
+  filter {
+    name   = "name"
+    values = ["ubuntu/images/hvm-ssd-gp3/ubuntu-jammy-22.04-amd64-server-*"]
+  }
+
+  filter {
+    name   = "virtualization-type"
+    values = ["hvm"]
+  }
+}
+
 resource "aws_instance" "sevpool" {
   ami = data.aws_ami.ubuntu_24_04.id
 

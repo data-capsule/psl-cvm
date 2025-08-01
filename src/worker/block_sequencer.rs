@@ -6,7 +6,7 @@ use tokio::sync::{oneshot, Mutex};
 
 use crate::{config::{AtomicConfig, AtomicPSLWorkerConfig}, crypto::{default_hash, CachedBlock, CryptoServiceConnector, FutureHash, HashType}, proto::{consensus::{ProtoBlock, ProtoVectorClock, ProtoVectorClockEntry}, execution::{ProtoTransaction, ProtoTransactionOp, ProtoTransactionOpType, ProtoTransactionPhase}}, rpc::SenderType, utils::{channel::{Receiver, Sender}, timer::ResettableTimer}};
 
-use super::cache_manager::{CacheKey, CachedValue};
+use super::cache::{CacheKey, CachedValue};
 
 pub enum BlockSeqNumQuery {
     DontBother,
@@ -323,7 +323,7 @@ impl BlockSequencer {
         for (key, value) in vec {
             let entry = seen.entry(key).or_insert(value.clone());
 
-            entry.merge_cached(value);
+            entry.merge_cached(&value);
         }
 
         seen.into_iter().collect()
