@@ -141,9 +141,9 @@ resource "aws_instance" "sevpool" {
     Project = local.project_name
   }
 
-  cpu_options {
-    amd_sev_snp = "enabled"
-  }
+  # cpu_options {
+  #   amd_sev_snp = "enabled"
+  # }
 
   dynamic "instance_market_options" {
     for_each = var.use_spot ? [1] : []
