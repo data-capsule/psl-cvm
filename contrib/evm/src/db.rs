@@ -118,11 +118,12 @@ impl PslKvDb {
     // }
 
     async fn get_key(&self, key: CacheKey) -> Result<Vec<u8>, Infallible> {
+        // info!("Getting key: {}", String::from_utf8(key.clone()).unwrap());
         let (ack_tx, mut ack_rx) = tokio::sync::mpsc::channel(1);
         self.db_chan.as_ref().unwrap().send((Some(Self::make_read_transaction(key)), (ack_tx, self.client_tag.fetch_add(1, Ordering::Relaxed), SenderType::Auth("node1".to_string(), 0)))).await.unwrap();
         let res = ack_rx.recv().await.unwrap();
         let res = Self::deserialize_response(res.0);
-        Ok(res.first().unwrap().clone())
+        Ok(res.first().unwrap_or(&vec![]).clone())
     }
 
     async fn put_key(&self, key: CacheKey, value: Vec<u8>) -> Result<(), Infallible> {

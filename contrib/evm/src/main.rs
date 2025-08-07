@@ -6,12 +6,13 @@ use psl::config::{self, Config, PSLWorkerConfig};
 use psl::utils::channel::{make_channel, Receiver, Sender};
 use psl::worker::TxWithAckChanTag;
 use psl::{consensus, storage_server, worker};
+use rand::{thread_rng, RngCore};
 use revm::context::ContextTr;
 use revm::database::async_db::DatabaseAsyncRef;
 use revm::database::WrapDatabaseAsync;
 use revm::handler::EvmTr;
 use revm::primitives::ruint::Uint;
-use revm::primitives::{address, Address};
+use revm::primitives::{address, hex, Address, TxKind};
 use revm::state::{Account, AccountInfo};
 use revm::{context::TxEnv,
     handler::{ExecuteCommitEvm, ExecuteEvm, Handler}, Context, MainContext};
@@ -22,7 +23,7 @@ use std::sync::atomic::AtomicU64;
 use std::time::Duration;
 use std::{env, fs, io, path, sync::{atomic::AtomicUsize, Arc, Mutex}};
 use psl::consensus::engines::kvs::KVSAppEngine;
-use std::io::Write;
+use std::io::{Bytes, Write};
 use serde::{Deserialize, Serialize};
 
 mod evm;
@@ -37,16 +38,16 @@ static ALLOC: snmalloc_rs::SnMalloc = snmalloc_rs::SnMalloc;
 
 /// Fetch json config file from command line path.
 /// Panic if not found or parsed properly.
-fn process_args() -> PSLWorkerConfig {
+fn process_args() -> (PSLWorkerConfig, String) {
     macro_rules! usage_str {
         () => {
-            "\x1b[31;1mUsage: {} path/to/config.json\x1b[0m"
+            "\x1b[31;1mUsage: {} path/to/config.json path/to/smart_contract.json\x1b[0m"
         };
     }
 
     let args: Vec<_> = env::args().collect();
 
-    if args.len() != 2 {
+    if args.len() != 3 {
         panic!(usage_str!(), args[0]);
     }
     
@@ -57,7 +58,10 @@ fn process_args() -> PSLWorkerConfig {
     
     let cfg_contents = fs::read_to_string(cfg_path).expect("Invalid file path");
     
-    PSLWorkerConfig::deserialize(&cfg_contents)
+    let cfg = PSLWorkerConfig::deserialize(&cfg_contents);
+    let smart_contract_path = args[2].clone();
+
+    (cfg, smart_contract_path)
 }
 
 #[allow(unused_assignments)]
@@ -123,7 +127,7 @@ const NUM_THREADS: usize = 32;
 fn main() {
     log4rs::init_config(config::default_log4rs_config()).unwrap();
 
-    let config = process_args();
+    let (config, smart_contract_path) = process_args();
 
     let (protocol, app) = get_feature_set();
     info!("Protocol: {}, App: {}", protocol, app);
@@ -179,12 +183,12 @@ fn main() {
     };
 
     runtime.spawn(run_main(config, client_request_tx, client_request_rx));
-    let _ = runtime.block_on(run_evm(state));
+    let _ = runtime.block_on(run_evm(state, smart_contract_path));
 
 }
 
 
-async fn run_evm(mut state: PslKvDb) {
+async fn run_evm(mut state: PslKvDb, smart_contract_path: String) {
     sleep(Duration::from_secs(2)).await;
     state.insert_account_info(address!("0xcafebabecafebabecafebabecafebabecafebabe"), AccountInfo::from_balance(Uint::<256, 4>::from(1000000000000000000000000u128))).await;
     state.insert_account_info(address!("0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"), AccountInfo::from_balance(Uint::<256, 4>::from(0u64))).await;
@@ -206,6 +210,35 @@ async fn run_evm(mut state: PslKvDb) {
 
     let _res = my_evm.transact_commit(tx);
     info!("EVM result: {:?}", _res);
+
+    
+    let build_json = fs::read_to_string(smart_contract_path).unwrap();
+    let build_json: serde_json::Value = serde_json::from_str(&build_json).unwrap();
+
+    let contract_list = build_json["contracts"].as_object().unwrap();
+
+    let mut nonce = 0;
+
+    for (name, val) in contract_list {
+        // info!("Contract: {:?} {}", name, val["evm"]["deployedBytecode"]["object"].to_string());
+        info!("Deploying contract: {:?}", name);
+
+        let bytecode = val["evm"]["deployedBytecode"]["object"].as_str().unwrap().to_string();
+        let bytecode = hex::decode(bytecode).unwrap();
+        let bytecode = revm::primitives::Bytes::from(bytecode);
+
+        let contract_tx = TxEnv::builder()
+            .kind(TxKind::Create)
+            .data(bytecode)
+            .nonce(nonce)
+            .build()
+            .unwrap();
+        nonce += 1;
+    
+        let _res = my_evm.transact_commit(contract_tx);
+        info!("EVM result: {:?}", _res);
+    }
+
     let ctx = my_evm.ctx();
     let state = ctx.db();
 
@@ -214,5 +247,8 @@ async fn run_evm(mut state: PslKvDb) {
 
     let account1 = state.load_account(address!("0xcafebabecafebabecafebabecafebabecafebabe")).await.unwrap();
     info!("Account 1: {:?}", account1.info.balance);
+
+
+
     sleep(Duration::from_secs(2)).await;
 }

@@ -17,6 +17,7 @@ anyhow = "1.0.98"
 num-bigint = "0.4.5"
 prost = "0.12"
 prost-types = "0.12"
+rand = "0.8.5"
 
 
 [features]

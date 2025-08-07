@@ -2057,6 +2057,7 @@ dependencies = [
  "prost",
  "prost-types",
  "psl",
+ "rand 0.8.5",
  "revm",
  "serde",
  "serde_json",
