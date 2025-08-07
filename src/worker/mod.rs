@@ -11,9 +11,11 @@ use tokio::{
     task::JoinSet,
 };
 
+pub use crate::consensus::batch_proposal::TxWithAckChanTag;
+
+
 use crate::{
     config::{AtomicConfig, AtomicPSLWorkerConfig, Config, PSLWorkerConfig},
-    consensus::batch_proposal::TxWithAckChanTag,
     crypto::{AtomicKeyStore, CryptoService, KeyStore},
     proto::{
         checkpoint::{ProtoBackfillNack, ProtoBackfillQuery},
@@ -41,7 +43,7 @@ use crate::{
 pub mod app;
 mod block_broadcaster;
 mod block_sequencer;
-mod cache_manager;
+pub mod cache_manager;
 mod staging;
 
 use staging::Staging;

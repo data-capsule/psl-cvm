@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["wasm_test"]
+members = ["evm"]
 
 # [package]
 # name = "contrib"
