@@ -2,6 +2,7 @@ use std::{fmt::{self, Display}, ops::{Deref, DerefMut}, pin::Pin, sync::Arc, tim
 
 use hashbrown::HashMap;
 use log::{info, warn};
+use prost::Message;
 use tokio::sync::{oneshot, Mutex};
 
 use crate::{config::{AtomicConfig, AtomicPSLWorkerConfig}, crypto::{default_hash, CachedBlock, CryptoServiceConnector, FutureHash, HashType}, proto::{consensus::{ProtoBlock, ProtoVectorClock, ProtoVectorClockEntry}, execution::{ProtoTransaction, ProtoTransactionOp, ProtoTransactionOpType, ProtoTransactionPhase}}, rpc::SenderType, utils::{channel::{Receiver, Sender}, timer::ResettableTimer}};
@@ -42,10 +43,13 @@ pub enum SequencerCommand {
     /// Force a new block to be formed.
     /// Only if there is at least one write in the bag.
     ForceMakeNewBlock,
+
+    /// Buffer this request, send ack once the VC is >= the one asked for.
+    WaitForVC(VectorClock, oneshot::Sender<()>),
 }
 
-
-struct VectorClock(HashMap<SenderType, u64>);
+#[derive(Clone)]
+pub struct VectorClock(HashMap<SenderType, u64>);
 
 impl Deref for VectorClock {
     type Target = HashMap<SenderType, u64>;
@@ -87,6 +91,57 @@ impl VectorClock {
     }
 }
 
+impl PartialEq for VectorClock {
+    fn eq(&self, other: &Self) -> bool {
+        self.partial_cmp(other) == Some(std::cmp::Ordering::Equal)
+    }
+}
+
+impl Eq for VectorClock {}
+
+impl PartialOrd for VectorClock {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        // Logic:
+        // 1. If all entries of self are <= entries of other, return <=
+        // 2. If all entries of other are <= entries of self, return >=
+        // 3. If there is a mix, return None
+
+        let mut all_self_entries_are_geq = true;
+        let mut all_self_entries_are_leq = true;
+
+        for (sender, self_seq_num) in self.0.iter() {
+            let other_seq_num = other.get(sender);
+            if *self_seq_num > other_seq_num {
+                all_self_entries_are_leq = false;
+            }
+
+            if *self_seq_num < other_seq_num {
+                all_self_entries_are_geq = false;
+            }
+        }
+
+        if all_self_entries_are_geq && all_self_entries_are_leq {
+            return Some(std::cmp::Ordering::Equal);
+        }
+
+        if all_self_entries_are_geq {
+            return Some(std::cmp::Ordering::Greater);
+        }
+
+        if all_self_entries_are_leq {
+            return Some(std::cmp::Ordering::Less);
+        }
+
+        return None;
+    }
+}
+
+impl std::hash::Hash for VectorClock {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.serialize().encode_to_vec().hash(state);
+    }
+}
+
 impl Display for VectorClock {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         for (sender, seq_num) in self.0.iter() {
@@ -115,6 +170,8 @@ pub struct BlockSequencer {
     storage_broadcaster_tx: Sender<oneshot::Receiver<CachedBlock>>,
 
     log_timer: Arc<Pin<Box<ResettableTimer>>>,
+
+    vc_wait_buffer: HashMap<VectorClock, Vec<oneshot::Sender<()>>>,
 }
 
 impl BlockSequencer {
@@ -135,6 +192,7 @@ impl BlockSequencer {
             node_broadcaster_tx,
             storage_broadcaster_tx,
             log_timer,
+            vc_wait_buffer: HashMap::new(),
         }
     }
 
@@ -179,12 +237,16 @@ impl BlockSequencer {
             },
             SequencerCommand::AdvanceVC { sender, block_seq_num } => {
                 self.curr_vector_clock.advance(sender, block_seq_num);
+                self.flush_vc_wait_buffer().await;
             },
             SequencerCommand::MakeNewBlock => {
                 self.maybe_prepare_new_block().await;
             },
             SequencerCommand::ForceMakeNewBlock => {
                 self.force_prepare_new_block().await;
+            },
+            SequencerCommand::WaitForVC(vc, sender) => {
+                self.buffer_vc_wait(vc, sender).await;
             }
         }
     }
@@ -298,5 +360,30 @@ impl BlockSequencer {
         }
 
         seen.into_iter().collect()
+    }
+
+
+    async fn flush_vc_wait_buffer(&mut self) {
+        let mut to_remove = Vec::new();
+
+        for (vc, senders) in self.vc_wait_buffer.iter() {
+            if self.curr_vector_clock >= *vc {
+                to_remove.push(vc.clone());
+            }
+        }
+
+        for vc in to_remove.iter() {
+            let mut senders = self.vc_wait_buffer.remove(vc).unwrap();
+            for sender in senders.drain(..) {
+                let _ = sender.send(());
+            }
+        }
+    }
+
+    async fn buffer_vc_wait(&mut self, vc: VectorClock, sender: oneshot::Sender<()>) {
+        let buffer = self.vc_wait_buffer.entry(vc).or_insert(Vec::new());
+        buffer.push(sender);
+
+        self.flush_vc_wait_buffer().await;
     }
 }

@@ -9,6 +9,7 @@ pub mod worker;
 pub mod crypto;
 pub mod rpc;
 pub mod proto;
+pub mod sequencer;
 
 
 pub mod client;

@@ -5,7 +5,7 @@ use log::{error, info, warn};
 use num_bigint::{BigInt, Sign};
 use thiserror::Error;
 use tokio::sync::{mpsc::UnboundedSender, oneshot, Mutex};
-use crate::{config::AtomicPSLWorkerConfig, crypto::{hash, CachedBlock}, proto::execution::ProtoTransactionOpType, rpc::SenderType, storage_server::fork_receiver::ForkReceiverCommand, utils::{channel::{Receiver, Sender}, timer::ResettableTimer}, worker::block_sequencer::BlockSeqNumQuery};
+use crate::{config::AtomicPSLWorkerConfig, crypto::{hash, CachedBlock}, proto::execution::ProtoTransactionOpType, rpc::SenderType, storage_server::fork_receiver::ForkReceiverCommand, utils::{channel::{Receiver, Sender}, timer::ResettableTimer}, worker::block_sequencer::{BlockSeqNumQuery, VectorClock}};
 use crate::worker::block_sequencer::SequencerCommand;
 
 #[derive(Error, Debug)]
@@ -34,7 +34,8 @@ pub enum CacheCommand {
         u64 /* Expected SeqNum */,
         oneshot::Sender<Result<u64 /* seq_num */, CacheError>>,
     ),
-    Commit
+    Commit,
+    WaitForVC(VectorClock),
 }
 
 
@@ -187,6 +188,8 @@ pub struct CacheManager {
     last_batch_time: Instant,
 
     log_timer: Arc<Pin<Box<ResettableTimer>>>,
+
+    blocked_on_vc_wait: Option<oneshot::Receiver<()>>,
 }
 
 impl CacheManager {
@@ -211,6 +214,7 @@ impl CacheManager {
             batch_timer,
             last_batch_time: Instant::now(),
             log_timer,
+            blocked_on_vc_wait: None,
         }
     }
 
@@ -226,31 +230,60 @@ impl CacheManager {
     }
 
     async fn worker(&mut self) -> Result<(), ()> {
-        tokio::select! {
-            Some(command) = self.command_rx.recv() => {
-                self.handle_command(command).await;
-            }
-            Some((block_rx, sender)) = self.block_rx.recv() => {
-                let block = block_rx.await.expect("Block rx error");
-                if let Ok(block) = block {
-                    self.handle_block(sender, block).await;
-                } else {
-                    warn!("Failed to get block from block_rx");
+        if self.blocked_on_vc_wait.is_some() {
+            tokio::select! {
+                Ok(_) = self.blocked_on_vc_wait.as_mut().unwrap() => {
+                    self.blocked_on_vc_wait = None;
+                }
+                Some((block_rx, sender)) = self.block_rx.recv() => {
+                    let block = block_rx.await.expect("Block rx error");
+                    if let Ok(block) = block {
+                        self.handle_block(sender, block).await;
+                    } else {
+                        warn!("Failed to get block from block_rx");
+                    }
+                }
+                _ = self.batch_timer.wait() => {
+    
+                    // This is safe to do here.
+                    // The tick won't interrupt handle_command or handle_block's logic.
+                    if self.last_batch_time.elapsed() > Duration::from_millis(self.config.get().worker_config.batch_max_delay_ms) {
+                        self.last_batch_time = Instant::now();
+                        self.block_sequencer_tx.send(SequencerCommand::ForceMakeNewBlock).await;
+                    }
+                }
+                _ = self.log_timer.wait() => {
+                    self.log_stats().await;
                 }
             }
-            _ = self.batch_timer.wait() => {
-
-                // This is safe to do here.
-                // The tick won't interrupt handle_command or handle_block's logic.
-                if self.last_batch_time.elapsed() > Duration::from_millis(self.config.get().worker_config.batch_max_delay_ms) {
-                    self.last_batch_time = Instant::now();
-                    self.block_sequencer_tx.send(SequencerCommand::ForceMakeNewBlock).await;
+        } else {
+            tokio::select! {
+                Some(command) = self.command_rx.recv() => {
+                    self.handle_command(command).await;
                 }
-            }
-            _ = self.log_timer.wait() => {
-                self.log_stats().await;
+                Some((block_rx, sender)) = self.block_rx.recv() => {
+                    let block = block_rx.await.expect("Block rx error");
+                    if let Ok(block) = block {
+                        self.handle_block(sender, block).await;
+                    } else {
+                        warn!("Failed to get block from block_rx");
+                    }
+                }
+                _ = self.batch_timer.wait() => {
+    
+                    // This is safe to do here.
+                    // The tick won't interrupt handle_command or handle_block's logic.
+                    if self.last_batch_time.elapsed() > Duration::from_millis(self.config.get().worker_config.batch_max_delay_ms) {
+                        self.last_batch_time = Instant::now();
+                        self.block_sequencer_tx.send(SequencerCommand::ForceMakeNewBlock).await;
+                    }
+                }
+                _ = self.log_timer.wait() => {
+                    self.log_stats().await;
+                }
             }
         }
+        
         Ok(())
     }
 
@@ -302,6 +335,11 @@ impl CacheManager {
             CacheCommand::Commit => {
                 self.last_batch_time = Instant::now();
                 self.block_sequencer_tx.send(SequencerCommand::MakeNewBlock).await;
+            }
+            CacheCommand::WaitForVC(vc) => {
+                let (tx, rx) = oneshot::channel();
+                self.blocked_on_vc_wait = Some(rx);
+                let _ = self.block_sequencer_tx.send(SequencerCommand::WaitForVC(vc, tx)).await;
             }
         }
     }
