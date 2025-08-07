@@ -2053,6 +2053,7 @@ dependencies = [
  "core_affinity",
  "log",
  "log4rs",
+ "num-bigint",
  "psl",
  "revm",
  "serde",

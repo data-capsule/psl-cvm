@@ -42,7 +42,7 @@ use crate::{
 
 pub mod app;
 mod block_broadcaster;
-mod block_sequencer;
+pub mod block_sequencer;
 pub mod cache_manager;
 mod staging;
 

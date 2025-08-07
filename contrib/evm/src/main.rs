@@ -4,6 +4,13 @@
 use log::{debug, error, info};
 use psl::config::{self, Config, PSLWorkerConfig};
 use psl::{consensus, storage_server, worker};
+use revm::context::ContextTr;
+use revm::handler::EvmTr;
+use revm::primitives::ruint::Uint;
+use revm::primitives::{address, Address};
+use revm::state::{Account, AccountInfo};
+use revm::{context::TxEnv,
+    handler::{ExecuteCommitEvm, ExecuteEvm, Handler}, Context, MainContext};
 use tokio::{runtime, signal};
 use std::process::exit;
 use std::{env, fs, io, path, sync::{atomic::AtomicUsize, Arc, Mutex}};
@@ -12,6 +19,10 @@ use std::io::Write;
 use serde::{Deserialize, Serialize};
 
 mod evm;
+mod db;
+
+
+use crate::db::PslKvDb;
 
 #[global_allocator]
 static ALLOC: snmalloc_rs::SnMalloc = snmalloc_rs::SnMalloc;
@@ -150,22 +161,58 @@ fn main() {
     let i = Box::pin(AtomicUsize::new(0));
     let runtime = runtime::Builder::new_multi_thread()
         .enable_all()
-        .worker_threads(num_threads)
+        .worker_threads(num_threads / 2)
         .on_thread_start(move || {
-            let _cids = core_ids.clone();
-            let lcores = _cids.lock().unwrap();
-            let id = (start_idx + i.fetch_add(1, std::sync::atomic::Ordering::SeqCst)) % lcores.len();
-            let res = core_affinity::set_for_current(lcores[id]);
+            // let _cids = core_ids.clone();
+            // let lcores = _cids.lock().unwrap();
+            // let id = (start_idx + i.fetch_add(1, std::sync::atomic::Ordering::SeqCst)) % lcores.len();
+            // let res = core_affinity::set_for_current(lcores[id]);
     
-            if res {
-                debug!("Thread pinned to core {:?}", id);
-            }else{
-                debug!("Thread pinning to core {:?} failed", id);
-            }
-            std::io::stdout().flush()
-                .unwrap();
+            // if res {
+            //     debug!("Thread pinned to core {:?}", id);
+            // }else{
+            //     debug!("Thread pinning to core {:?} failed", id);
+            // }
+            // std::io::stdout().flush()
+            //     .unwrap();
         })
         .build()
         .unwrap();
-    let _ = runtime.block_on(run_main(run_mode));
+
+
+    let _ = runtime.spawn(run_main(run_mode));
+
+    let mut state = PslKvDb::new();
+    let rx = state.init();
+    runtime.spawn(PslKvDb::run(rx));
+
+    state.insert_account_info(address!("0xcafebabecafebabecafebabecafebabecafebabe"), AccountInfo::from_balance(Uint::<256, 4>::from(1000000000000000000000000u128)));
+    state.insert_account_info(address!("0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"), AccountInfo::from_balance(Uint::<256, 4>::from(0u64)));
+
+
+    {
+        let account1 = state.load_account(address!("0xcafebabecafebabecafebabecafebabecafebabe")).unwrap();
+        info!("Account 1: {:?}", account1.info.balance);
+    }
+
+    
+    let mut my_evm = evm::PslEvm::new(Context::mainnet().with_db(state), ());
+    
+    let tx = TxEnv::builder()
+        .caller(address!("0xcafebabecafebabecafebabecafebabecafebabe"))
+        .to(address!("0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"))
+        .value(Uint::<256, 4>::from(1000000000000000000u64))
+        .build().unwrap();
+    // let tx = TxEnv::default();
+
+    let _res = my_evm.transact_commit(tx);
+    info!("EVM result: {:?}", _res);
+    let ctx = my_evm.ctx();
+    let state = ctx.db();
+
+    let account2 = state.load_account(address!("0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef")).unwrap();
+    info!("Account 2: {:?}", account2.info.balance);
+
+    let account1 = state.load_account(address!("0xcafebabecafebabecafebabecafebabecafebabe")).unwrap();
+    info!("Account 1: {:?}", account1.info.balance);
 }

@@ -2,16 +2,9 @@ use std::{pin::Pin, sync::Arc};
 
 // Ported from https://github.com/bluealloy/revm/blob/main/examples/my_evm/src/evm.rs
 use revm::{
-    context::{ContextError, ContextSetters, ContextTr, Evm, FrameStack, Block, Transaction, Cfg, LocalContextTr},
-    handler::{
-        evm::FrameTr, instructions::EthInstructions, EthFrame, EthPrecompiles, EvmTr,
-        FrameInitOrResult, ItemOrResult,
-    },
-    inspector::{InspectorEvmTr, JournalExt},
-    interpreter::interpreter::EthInterpreter,
-    Database, Inspector,
-    database::{CacheDB, EmptyDBTyped, InMemoryDB, Journal},
-    Context, MainContext,
+    context::{result::{EVMError, ExecResultAndState, ExecutionResult, HaltReason, InvalidTransaction}, Block, Cfg, ContextError, ContextSetters, ContextTr, Evm, FrameStack, JournalTr, LocalContextTr, Transaction}, database::{CacheDB, EmptyDBTyped, InMemoryDB}, handler::{
+        evm::FrameTr, instructions::{EthInstructions, InstructionProvider}, EthFrame, EthPrecompiles, EvmTr, FrameInitOrResult, FrameResult, Handler, ItemOrResult, PrecompileProvider
+    }, inspector::{InspectorEvmTr, InspectorHandler, JournalExt}, interpreter::{interpreter::EthInterpreter, interpreter_action::FrameInit, InterpreterResult}, state::EvmState, Context, Database, DatabaseCommit, ExecuteCommitEvm, ExecuteEvm, InspectCommitEvm, InspectEvm, Inspector, MainContext
 
 };
 use psl::utils::channel::{make_channel, Sender};
@@ -150,46 +143,144 @@ where
     }
 }
 
-pub struct PslEvmTask {
-    evm_task_handle: JoinHandle<Result<(), anyhow::Error>>,
-    evm_connector: Sender<oneshot::Receiver<Vec<u8>>>,
-    cache_connector: CacheConnector,
-    id: usize,
-    total_work: usize,
+
+/// Type alias for the error type of the OpEvm.
+type PslEvmError<CTX> = EVMError<<<CTX as ContextTr>::Db as Database>::Error, InvalidTransaction>;
+
+// Trait that allows to replay and transact the transaction.
+impl<CTX, INSP> ExecuteEvm for PslEvm<CTX, INSP>
+where
+    CTX: ContextSetters<Journal: JournalTr<State = EvmState>>,
+{
+    type State = EvmState;
+    type ExecutionResult = ExecutionResult<HaltReason>;
+    type Error = PslEvmError<CTX>;
+
+    type Tx = <CTX as ContextTr>::Tx;
+
+    type Block = <CTX as ContextTr>::Block;
+
+    fn set_block(&mut self, block: Self::Block) {
+        self.0.ctx.set_block(block);
+    }
+
+    fn transact_one(&mut self, tx: Self::Tx) -> Result<Self::ExecutionResult, Self::Error> {
+        self.0.ctx.set_tx(tx);
+        let mut handler = PslHandler::default();
+        handler.run(self)
+    }
+
+    fn finalize(&mut self) -> Self::State {
+        self.ctx().journal_mut().finalize()
+    }
+
+    fn replay(
+        &mut self,
+    ) -> Result<ExecResultAndState<Self::ExecutionResult, Self::State>, Self::Error> {
+        let mut handler = PslHandler::default();
+        handler.run(self).map(|result| {
+            let state = self.finalize();
+            ExecResultAndState::new(result, state)
+        })
+    }
 }
 
-impl ClientHandlerTask for PslEvmTask {
-    fn new(cache_connector: Sender<CacheCommand>, id: usize) -> Self {
-        let _cache_chan = cache_connector.clone();
-        let (request_tx, request_rx) = make_channel(100);
-        let handle = tokio::spawn(async move {
-            let ctx = Context::mainnet().with_db(InMemoryDB::default());
-            let evm = PslEvm::new(ctx, ());
-            let cache_connector = CacheConnector::new(_cache_chan);
-            while let Some(request) = request_rx.recv().await {
-                // Run the evm
-            }
-            Ok(())
-        });
+// Trait allows replay_commit and transact_commit functionality.
+impl<CTX, INSP> ExecuteCommitEvm for PslEvm<CTX, INSP>
+where
+    CTX: ContextSetters<Db: DatabaseCommit, Journal: JournalTr<State = EvmState>>,
+{
+    fn commit(&mut self, state: Self::State) {
+        self.ctx().db_mut().commit(state);
+    }
+}
 
-        let cache_connector = CacheConnector::new(cache_connector);
-        Self { evm_task_handle: handle, evm_connector: request_tx, cache_connector, id, total_work: 0 }
+// Inspection trait.
+impl<CTX, INSP> InspectEvm for PslEvm<CTX, INSP>
+where
+    CTX: ContextSetters<Journal: JournalTr<State = EvmState> + JournalExt>,
+    INSP: Inspector<CTX, EthInterpreter>,
+{
+    type Inspector = INSP;
+
+    fn set_inspector(&mut self, inspector: Self::Inspector) {
+        self.0.inspector = inspector;
     }
 
-    fn get_cache_connector(&self) -> &CacheConnector {
-        &self.cache_connector
+    fn inspect_one_tx(&mut self, tx: Self::Tx) -> Result<Self::ExecutionResult, Self::Error> {
+        self.0.ctx.set_tx(tx);
+        let mut handler = PslHandler::default();
+        handler.inspect_run(self)
     }
+}
 
-    fn get_id(&self) -> usize {
-        self.id
+// Inspect
+impl<CTX, INSP> InspectCommitEvm for PslEvm<CTX, INSP>
+where
+    CTX: ContextSetters<Db: DatabaseCommit, Journal: JournalTr<State = EvmState> + JournalExt>,
+    INSP: Inspector<CTX, EthInterpreter>,
+{
+}
+
+/// Custom handler for MyEvm that defines transaction execution behavior.
+///
+/// This handler demonstrates how to customize EVM execution by implementing
+/// the Handler trait. It can be extended to add custom validation, modify
+/// gas calculations, or implement protocol-specific behavior while maintaining
+/// compatibility with the standard EVM execution flow.
+#[derive(Debug)]
+pub struct PslHandler<EVM> {
+    /// Phantom data to maintain the EVM type parameter.
+    /// This field exists solely to satisfy Rust's type system requirements
+    /// for generic parameters that aren't directly used in the struct fields.
+    pub _phantom: core::marker::PhantomData<EVM>,
+}
+
+impl<EVM> Default for PslHandler<EVM> {
+    fn default() -> Self {
+        Self {
+            _phantom: core::marker::PhantomData,
+        }
     }
+}
 
-    fn get_total_work(&self) -> usize {
-        self.total_work
-    }
+impl<EVM> Handler for PslHandler<EVM>
+where
+    EVM: EvmTr<
+        Context: ContextTr<Journal: JournalTr<State = EvmState>>,
+        Precompiles: PrecompileProvider<EVM::Context, Output = InterpreterResult>,
+        Instructions: InstructionProvider<
+            Context = EVM::Context,
+            InterpreterTypes = EthInterpreter,
+        >,
+        Frame: FrameTr<FrameResult = FrameResult, FrameInit = FrameInit>,
+    >,
+{
+    type Evm = EVM;
+    type Error = EVMError<<<EVM::Context as ContextTr>::Db as Database>::Error, InvalidTransaction>;
+    type HaltReason = HaltReason;
 
-    async fn on_client_request(&mut self, request: TxWithAckChanTag, reply_handler_tx: &Sender<UncommittedResultSet>) -> Result<(), anyhow::Error> {
-        // self.evm.run(request.tx).await;
+    fn reward_beneficiary(
+        &self,
+        _evm: &mut Self::Evm,
+        _exec_result: &mut FrameResult,
+    ) -> Result<(), Self::Error> {
+        // Skip beneficiary reward
         Ok(())
     }
+}
+
+impl<EVM> InspectorHandler for PslHandler<EVM>
+where
+    EVM: InspectorEvmTr<
+        Inspector: Inspector<<<Self as Handler>::Evm as EvmTr>::Context, EthInterpreter>,
+        Context: ContextTr<Journal: JournalTr<State = EvmState>>,
+        Precompiles: PrecompileProvider<EVM::Context, Output = InterpreterResult>,
+        Instructions: InstructionProvider<
+            Context = EVM::Context,
+            InterpreterTypes = EthInterpreter,
+        >,
+    >,
+{
+    type IT = EthInterpreter;
 }
