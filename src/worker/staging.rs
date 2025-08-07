@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use hashbrown::{HashMap, HashSet};
-use log::warn;
+use log::{error, warn};
 use tokio::sync::Mutex;
 
 use crate::{config::{AtomicConfig, AtomicPSLWorkerConfig}, crypto::{CachedBlock, CryptoServiceConnector}, proto::consensus::ProtoVote, rpc::SenderType, utils::channel::{Receiver, Sender}};
@@ -102,8 +102,10 @@ impl Staging {
 
     fn get_commit_threshold(&self) -> usize {
 
-        // TODO: This is not correct. Change the config to reflect the quorum size.
         let n = self.config.get().worker_config.storage_list.len() as usize;
+        if n == 0 {
+            return 0;
+        }
         n / 2 + 1
     }
 
