@@ -1,6 +1,12 @@
 use core::convert::Infallible;
 use std::future::Future;
+use std::sync::atomic::{AtomicU64, Ordering};
 use num_bigint::BigInt;
+use psl::consensus::batch_proposal::MsgAckChanWithTag;
+use psl::proto::client::ProtoClientReply;
+use psl::proto::execution::{ProtoTransaction, ProtoTransactionOp, ProtoTransactionOpType, ProtoTransactionPhase};
+use psl::rpc::server::LatencyProfile;
+use psl::rpc::{PinnedMessage, SenderType};
 use psl::utils::channel::{make_channel, Receiver, Sender};
 use psl::worker::block_sequencer::BlockSeqNumQuery;
 use psl::worker::cache_manager::{CacheCommand, CacheKey};
@@ -13,60 +19,118 @@ use revm::primitives::{
     hash_map::Entry, Address, HashMap, Log, StorageKey, StorageValue, B256, KECCAK_EMPTY, U256,
 };
 use revm::state::{Account, AccountInfo, Bytecode};
-use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
+use serde::Deserialize;
 use tokio::sync::oneshot;
 use std::vec::Vec;
+use prost::Message as _;
+use log::info;
 
 
 pub struct PslKvDb {
-    db_chan: Option<UnboundedSender<CacheCommand>>,
+    pub db_chan: Option<Sender<(Option<ProtoTransaction>, MsgAckChanWithTag)>>,
+
+    pub client_tag: AtomicU64,
 }
 
 impl PslKvDb {
     pub fn new() -> Self {
-        Self { db_chan: None }
+        Self { db_chan: None, client_tag: AtomicU64::new(1) }
     }
 
-    pub fn init(&mut self) -> UnboundedReceiver<CacheCommand> {
-        let (tx, rx) = unbounded_channel();
+    pub fn init(&mut self) -> Receiver<(Option<ProtoTransaction>, MsgAckChanWithTag)> {
+        let (tx, rx) = make_channel(1000);
         self.db_chan = Some(tx);
         rx
     }
 
-    pub async fn run(mut rx: UnboundedReceiver<CacheCommand>) {
-        let mut cache = HashMap::<CacheKey, Vec<u8>>::new();
-        while let Some(cmd) = rx.recv().await {
-            match cmd {
-                CacheCommand::Get(key, sender) => {
-                    let value = cache.get(&key);
-                    if let Some(value) = value {
-                        let _ = sender.send(Ok((value.clone(), 0)));
-                    } else {
-                        let _ = sender.send(Ok((vec![], 0)));
-                    }
-                }
-                CacheCommand::Put(key, value, big_int, block_seq_num_query, sender) => {
-                    cache.insert(key, value);
-                    let _ = sender.send(Ok(0));
-                },
-                CacheCommand::Cas(key, value, _, sender) => todo!(),
-                CacheCommand::Commit => todo!(),
-            }
+    fn make_read_transaction(key: CacheKey) -> ProtoTransaction {
+        ProtoTransaction {
+            is_2pc: false,
+            is_reconfiguration: false,
+            on_byzantine_commit: None,
+            on_crash_commit: None,
+            on_receive: Some(ProtoTransactionPhase {
+                ops: vec![ProtoTransactionOp {
+                    op_type: ProtoTransactionOpType::Read as i32,
+                    operands: vec![key],
+                }],
+            }),
         }
     }
 
-    async fn get_key(&self, key: CacheKey) -> Result<Vec<u8>, Infallible> {
-        let (tx, rx) = oneshot::channel();
+    fn make_write_transaction(key: CacheKey, value: Vec<u8>) -> ProtoTransaction {
+        ProtoTransaction {
+            is_2pc: false,
+            is_reconfiguration: false,
+            on_byzantine_commit: None,
+            on_crash_commit: None,
+            on_receive: Some(ProtoTransactionPhase {
+                ops: vec![ProtoTransactionOp {
+                    op_type: ProtoTransactionOpType::Write as i32,
+                    operands: vec![key, value],
+                }],
+            }),
+        }
+    }
+
+    fn deserialize_response(response: PinnedMessage) -> Vec<Vec<u8>> {
+        let reply = ProtoClientReply::decode(&response.as_ref().0.as_slice()[0..response.as_ref().1]);
+        let Ok(reply) = reply else {
+            return vec![];
+        };
+
+        let Some(reply) = reply.reply else {
+            return vec![];
+        };
+
+        let psl::proto::client::proto_client_reply::Reply::Receipt(reply) = reply else {
+            return vec![];
+        };
+
+        let Some(result) = reply.results else {
+            return vec![];
+        };
+
+
+        let Some(result) = result.result.first() else {
+            return vec![];
+        };
         
-        self.db_chan.as_ref().unwrap().send(CacheCommand::Get(key, tx)).unwrap();
-        let res = rx.await.unwrap().unwrap();
-        Ok(res.0)
+        result.values.iter().map(|v| v.clone()).collect()
+        
+    }
+
+    // pub async fn run(mut rx: Receiver<CacheCommand>) {
+    //     while let Some(cmd) = rx.recv().await {
+    //         match cmd {
+    //             CacheCommand::Get(key, sender) => {
+    //                 let op = Self::make_read_transaction(key);
+    //                 let (tx, rx) = oneshot::channel();
+    //             }
+    //             CacheCommand::Put(key, value, big_int, block_seq_num_query, sender) => {
+    //                 cache.insert(key, value);
+    //                 let _ = sender.send(Ok(0));
+    //             },
+    //             CacheCommand::Cas(key, value, _, sender) => todo!(),
+    //             CacheCommand::Commit => todo!(),
+    //         }
+    //     }
+    // }
+
+    async fn get_key(&self, key: CacheKey) -> Result<Vec<u8>, Infallible> {
+        let (ack_tx, mut ack_rx) = tokio::sync::mpsc::channel(1);
+        self.db_chan.as_ref().unwrap().send((Some(Self::make_read_transaction(key)), (ack_tx, self.client_tag.fetch_add(1, Ordering::Relaxed), SenderType::Auth("node1".to_string(), 0)))).await.unwrap();
+        let res = ack_rx.recv().await.unwrap();
+        let res = Self::deserialize_response(res.0);
+        Ok(res.first().unwrap().clone())
     }
 
     async fn put_key(&self, key: CacheKey, value: Vec<u8>) -> Result<(), Infallible> {
-        let (tx, rx) = oneshot::channel();
-        self.db_chan.as_ref().unwrap().send(CacheCommand::Put(key, value, BigInt::from(0), BlockSeqNumQuery::DontBother, tx)).unwrap();
-        let _ = rx.await.unwrap().unwrap();
+        let (ack_tx, mut ack_rx) = tokio::sync::mpsc::channel(1);
+        self.db_chan.as_ref().unwrap().send((Some(Self::make_write_transaction(key, value)), (ack_tx, self.client_tag.fetch_add(1, Ordering::Relaxed), SenderType::Auth("node1".to_string(), 0)))).await.unwrap();
+        info!("Sent write transaction");
+        let _res = ack_rx.recv().await.unwrap();
+        info!("Received write transaction");
         Ok(())
     }
 

@@ -3,6 +3,8 @@
 
 use log::{debug, error, info};
 use psl::config::{self, Config, PSLWorkerConfig};
+use psl::utils::channel::{make_channel, Receiver, Sender};
+use psl::worker::TxWithAckChanTag;
 use psl::{consensus, storage_server, worker};
 use revm::context::ContextTr;
 use revm::database::async_db::DatabaseAsyncRef;
@@ -13,8 +15,11 @@ use revm::primitives::{address, Address};
 use revm::state::{Account, AccountInfo};
 use revm::{context::TxEnv,
     handler::{ExecuteCommitEvm, ExecuteEvm, Handler}, Context, MainContext};
+use tokio::time::sleep;
 use tokio::{runtime, signal};
 use std::process::exit;
+use std::sync::atomic::AtomicU64;
+use std::time::Duration;
 use std::{env, fs, io, path, sync::{atomic::AtomicUsize, Arc, Mutex}};
 use psl::consensus::engines::kvs::KVSAppEngine;
 use std::io::Write;
@@ -29,13 +34,10 @@ use crate::db::PslKvDb;
 #[global_allocator]
 static ALLOC: snmalloc_rs::SnMalloc = snmalloc_rs::SnMalloc;
 
-enum RunMode {
-    EVM(PSLWorkerConfig),
-}
 
 /// Fetch json config file from command line path.
 /// Panic if not found or parsed properly.
-fn process_args() -> RunMode {
+fn process_args() -> PSLWorkerConfig {
     macro_rules! usage_str {
         () => {
             "\x1b[31;1mUsage: {} path/to/config.json\x1b[0m"
@@ -55,9 +57,7 @@ fn process_args() -> RunMode {
     
     let cfg_contents = fs::read_to_string(cfg_path).expect("Invalid file path");
     
-    let run_mode = RunMode::EVM(PSLWorkerConfig::deserialize(&cfg_contents));
-
-    run_mode
+    PSLWorkerConfig::deserialize(&cfg_contents)
 }
 
 #[allow(unused_assignments)]
@@ -109,27 +109,21 @@ macro_rules! handle_signal_till_end {
 
     };
 }
-async fn run_main(run_mode: RunMode) -> Result<(), io::Error> {
-    let node_type = match run_mode {
-        RunMode::EVM(cfg) => run_worker(cfg).await,
-    };
 
-    match node_type {
-        NodeType::Worker(mut worker_node) => {
-            handle_signal_till_end!(worker_node);
-        },
-    };
-    
-    
+async fn run_main(cfg: PSLWorkerConfig, client_request_tx: Sender<TxWithAckChanTag>, client_request_rx: Receiver<TxWithAckChanTag>) -> Result<(), io::Error> {
+    let mut node = worker::PSLWorker::<worker::app::KVSTask>::mew(cfg, client_request_tx, client_request_rx);
+    handle_signal_till_end!(node);
+
     Ok(())
 }
+
 
 const NUM_THREADS: usize = 32;
 
 fn main() {
     log4rs::init_config(config::default_log4rs_config()).unwrap();
 
-    let run_mode = process_args();
+    let config = process_args();
 
     let (protocol, app) = get_feature_set();
     info!("Protocol: {}, App: {}", protocol, app);
@@ -142,13 +136,7 @@ fn main() {
     let core_ids = 
         Arc::new(Mutex::new(Box::pin(core_affinity::get_core_ids().unwrap())));
 
-    let (node_list, my_name) = match &run_mode {
-        RunMode::EVM(_cfg) => {
-            (_cfg.worker_config.all_worker_list.clone(), _cfg.net_config.name.clone())
-        },
-    };
-
-    let start_idx = node_list.iter().position(|r| r.eq(&my_name)).unwrap();
+    let start_idx = 0; // config.worker_config.all_worker_list.iter().position(|r| r.eq(&config.net_config.name)).unwrap();
     let mut num_threads = NUM_THREADS;
     {
         let _num_cores = core_ids.lock().unwrap().len();
@@ -158,7 +146,9 @@ fn main() {
         }
     }
 
-    let start_idx = start_idx * num_threads;
+    let start_idx = 0; //start_idx * num_threads;
+
+    let (client_request_tx, client_request_rx) = make_channel(1000);
     
     let i = Box::pin(AtomicUsize::new(0));
     let runtime = runtime::Builder::new_multi_thread()
@@ -182,17 +172,20 @@ fn main() {
         .unwrap();
 
 
-    let _ = runtime.spawn(run_main(run_mode));
 
-    let mut state = PslKvDb::new();
-    let rx = state.init();
-    runtime.spawn(PslKvDb::run(rx));
+    let state = PslKvDb {
+        db_chan: Some(client_request_tx.clone()),
+        client_tag: AtomicU64::new(1),
+    };
 
+    runtime.spawn(run_main(config, client_request_tx, client_request_rx));
     let _ = runtime.block_on(run_evm(state));
+
 }
 
 
 async fn run_evm(mut state: PslKvDb) {
+    sleep(Duration::from_secs(2)).await;
     state.insert_account_info(address!("0xcafebabecafebabecafebabecafebabecafebabe"), AccountInfo::from_balance(Uint::<256, 4>::from(1000000000000000000000000u128))).await;
     state.insert_account_info(address!("0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"), AccountInfo::from_balance(Uint::<256, 4>::from(0u64))).await;
 
@@ -221,4 +214,5 @@ async fn run_evm(mut state: PslKvDb) {
 
     let account1 = state.load_account(address!("0xcafebabecafebabecafebabecafebabecafebabe")).await.unwrap();
     info!("Account 1: {:?}", account1.info.balance);
+    sleep(Duration::from_secs(2)).await;
 }
