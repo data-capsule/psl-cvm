@@ -2,7 +2,6 @@ use std::{io::{Error, ErrorKind}, ops::Deref, pin::Pin, sync::{atomic::fence, Ar
 
 use bytes::{BufMut, BytesMut};
 use ed25519_dalek::{verify_batch, Signature, SIGNATURE_LENGTH};
-use futures::SinkExt;
 use log::{trace, warn};
 use prost::Message;
 use rand::{thread_rng, Rng};

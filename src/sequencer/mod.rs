@@ -1,4 +1,8 @@
+mod commit_buffer;
+mod auditor;
 mod controller;
+mod lockserver;
+
 
 use std::{io::{Error, ErrorKind}, ops::Deref, pin::Pin, sync::Arc};
 
@@ -6,7 +10,7 @@ use log::{debug, warn};
 use prost::Message as _;
 use tokio::{sync::Mutex, task::JoinSet};
 
-use crate::{config::{AtomicConfig, Config}, crypto::{AtomicKeyStore, CryptoService, KeyStore}, proto::{checkpoint::ProtoBackfillQuery, consensus::ProtoAppendEntries, rpc::ProtoPayload}, rpc::{client::Client, server::{MsgAckChan, RespType, Server, ServerContextType}, MessageRef, SenderType}, sequencer::controller::Controller, utils::{channel::{make_channel, Receiver, Sender}, BlackHoleStorageEngine, RocksDBStorageEngine, StorageService}, worker::block_broadcaster::BroadcasterConfig};
+use crate::{config::{AtomicConfig, Config}, crypto::{AtomicKeyStore, CryptoService, KeyStore}, proto::{checkpoint::ProtoBackfillQuery, consensus::ProtoAppendEntries, rpc::ProtoPayload}, rpc::{client::Client, server::{MsgAckChan, RespType, Server, ServerContextType}, MessageRef, SenderType}, sequencer::commit_buffer::CommitBuffer, utils::{channel::{make_channel, Receiver, Sender}, BlackHoleStorageEngine, RocksDBStorageEngine, StorageService}, worker::block_broadcaster::BroadcasterConfig};
 use crate::storage_server::fork_receiver::ForkReceiver;
 use crate::storage_server::staging::Staging;
 
@@ -108,7 +112,7 @@ pub struct SequencerNode {
 
     fork_receiver: Arc<Mutex<ForkReceiver>>,
     staging: Arc<Mutex<Staging>>,
-    controller: Arc<Mutex<Controller>>,
+    controller: Arc<Mutex<CommitBuffer>>,
     // logserver: Arc<Mutex<LogServer>>,
 }
 
@@ -150,14 +154,12 @@ impl SequencerNode {
         let (staging_tx, staging_rx) = make_channel(_chan_depth);
         let (logserver_tx, logserver_rx) = make_channel(_chan_depth);
         let (fork_receiver_cmd_tx, fork_receiver_cmd_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (auditor_tx, auditor_rx) = make_channel(_chan_depth);
 
         let fork_receiver = ForkReceiver::new(config.clone(), keystore.clone(), true, fork_receiver_rx, fork_receiver_crypto, fork_receiver_storage, staging_tx, fork_receiver_cmd_rx);
 
         let staging = Staging::new(config.clone(), keystore.clone(), staging_rx, logserver_tx, None, fork_receiver_cmd_tx, None, false);
-
-
-        let client = Client::new_atomic(config.clone(), keystore.clone(), false, 0).into();
-        let controller = Controller::new(config.clone(), client, logserver_rx);
+        let controller = CommitBuffer::new(config.clone(), logserver_rx, auditor_tx);
 
         Self {
             config,
@@ -168,7 +170,7 @@ impl SequencerNode {
             fork_receiver: Arc::new(Mutex::new(fork_receiver)),
             staging: Arc::new(Mutex::new(staging)),
             controller: Arc::new(Mutex::new(controller)),
-            // logserver: Arc::new(Mutex::new(logserver)),
+            
         }
 
     }
@@ -200,7 +202,7 @@ impl SequencerNode {
             Staging::run(staging).await;
         });
         handles.spawn(async move {
-            Controller::run(controller).await;
+            CommitBuffer::run(controller).await;
         });
 
         handles

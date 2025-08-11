@@ -80,6 +80,8 @@ pub struct ConsensusConfig {
     pub liveness_u: u64,
     pub commit_index_gap_soft: u64, // ci - bci >= this -> even for crash commits, honest leader needs (n - u) votes
     pub commit_index_gap_hard: u64, // ci - bci >= this -> followers trigger view change.
+
+    pub max_audit_snapshots: usize, // Only used by the sequencer.
 }
 
 
@@ -206,6 +208,7 @@ impl WorkerConfig {
             liveness_u: 0,
             commit_index_gap_soft: 0,
             commit_index_gap_hard: 0,
+            max_audit_snapshots: 0,
         }
     }
 }
@@ -279,6 +282,7 @@ impl ClientConfig {
                 num_crypto_workers: 128,
                 commit_index_gap_soft: 256,
                 commit_index_gap_hard: 512,
+                max_audit_snapshots: 5,
 
                 liveness_u: 1,
 
