@@ -1,6 +1,6 @@
 use std::{collections::{HashMap, VecDeque}, pin::Pin, sync::Arc, time::Duration};
 
-use log::error;
+use log::{error, info};
 use tokio::sync::Mutex;
 
 use crate::{config::AtomicConfig, crypto::CachedBlock, sequencer::{commit_buffer::BlockStats, controller::ControllerCommand}, utils::{channel::{Receiver, Sender}, timer::ResettableTimer}, worker::{block_sequencer::VectorClock, cache_manager::{CacheKey, CachedValue}}};
@@ -23,6 +23,9 @@ pub struct Auditor {
 
     snapshot_vcs: VecDeque<VectorClock>,
     audit_timer: Arc<Pin<Box<ResettableTimer>>>,
+    log_timer: Arc<Pin<Box<ResettableTimer>>>,
+
+    /// Everything strictly < forgotten_cut is forgotten. The forgotten_cut itself is not forgotten. Or anything that is concurrent with it.
     forgotten_cut: VectorClock,
 
     dry_run_mode: bool,
@@ -31,6 +34,7 @@ pub struct Auditor {
 impl Auditor {
     pub fn new(config: AtomicConfig, auditor_rx: Receiver<(BlockStats, CachedBlock)>, controller_tx: Sender<ControllerCommand>, dry_run_mode: bool) -> Self {
         let audit_timer = ResettableTimer::new(Duration::from_millis(config.get().consensus_config.max_audit_delay_ms));
+        let log_timer = ResettableTimer::new(Duration::from_millis(config.get().app_config.logger_stats_report_ms));
 
         Self {
             config,
@@ -44,6 +48,7 @@ impl Auditor {
             snapshot_vcs: VecDeque::new(),
 
             audit_timer,
+            log_timer,
 
             dry_run_mode,
 
@@ -55,6 +60,7 @@ impl Auditor {
         let mut auditor = auditor.lock().await;
 
         auditor.audit_timer.run().await;
+        auditor.log_timer.run().await;
 
         while let Ok(force_audit) = auditor.handle_inputs().await {
             if force_audit || auditor.should_audit() {
@@ -67,6 +73,10 @@ impl Auditor {
         tokio::select! {
             _ = self.audit_timer.wait() => {
                 Ok(true)
+            }
+            _ = self.log_timer.wait() => {
+                self.log_stats().await;
+                Ok(false)
             }
             Some((block_stats, block)) = self.auditor_rx.recv() => {
                 self.handle_block(block_stats, block).await;
@@ -91,7 +101,7 @@ impl Auditor {
                     && self.is_snapshot_available(&queue.front().unwrap().0.read_vc))
                 .next()
             else {
-                error!("There must have been a block that could have been audited. Invariant violated.");
+                self.throw_error("There must have been a block that could have been audited. Invariant violated.");
                 return;
             };
 
@@ -163,19 +173,39 @@ impl Auditor {
     }
 
     async fn apply_updates(&mut self, block_stats: &BlockStats, block: &CachedBlock) {
-        // TODO: Replay tx list
-
+        
         self.snapshot_vcs.push_back(block_stats.read_vc.clone());
-
-
+        
+        if self.dry_run_mode {
+            return;
+        }
+        
+        // TODO: Replay tx list
     }
 
     async fn check_snapshot_limit(&mut self) {
         let mut frontier_cut = HashMap::new();
         for (_, queue) in &self.unaudited_buffer {
-            // TODO: Find the frontier cut.
+            if queue.is_empty() {
+                continue;
+            }
+
+            let (block_stats, _) = queue.front().unwrap();
+
+            for (origin, seq_num) in block_stats.read_vc.iter() {
+                let _seq_num_curr = frontier_cut.entry(origin.clone()).or_insert(u64::MAX);
+                if *seq_num < *_seq_num_curr {
+                    *_seq_num_curr = *seq_num;
+                }
+            }
         }
-        // TODO: Remove every snapshot < frontier_cut.
+
+        let frontier_cut = VectorClock::from_iter(frontier_cut.iter()
+            .map(|(origin, seq_num)| (origin.clone(), *seq_num)));
+        
+
+        self.forget_snapshots(&frontier_cut).await;
+
         if self.state_snapshots.len() >= self.config.get().consensus_config.max_audit_snapshots {
             self.send_blocking_command().await;
         } else {
@@ -185,9 +215,8 @@ impl Auditor {
 
     async fn throw_error(&self, error: &str) {
         error!("{}", error);
-
+        panic!("Killing the auditor.");
         // Haven't decided what to do when audit fails.
-        unimplemented!();
     }
     
     async fn send_blocking_command(&mut self) {
@@ -196,5 +225,20 @@ impl Auditor {
 
     async fn send_unblocking_command(&mut self) {
         self.controller_tx.send(ControllerCommand::UnblockWorkers).await.unwrap();
+    }
+
+    async fn forget_snapshots(&mut self, forgotten_cut: &VectorClock) {
+        self.state_snapshots.iter_mut()
+            .for_each(|(_, vals)| {
+                vals.retain(|(vc, _)| vc >= forgotten_cut);
+            });
+
+        self.snapshot_vcs.retain(|vc| vc >= forgotten_cut);
+
+        self.forgotten_cut = forgotten_cut.clone();
+    }
+
+    async fn log_stats(&mut self) {
+        info!("Snapshot VC: {:?}", self.snapshot_vcs);
     }
 }

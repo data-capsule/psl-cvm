@@ -48,7 +48,7 @@ pub enum SequencerCommand {
     WaitForVC(VectorClock, oneshot::Sender<()>),
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct VectorClock(HashMap<SenderType, u64>);
 
 impl Deref for VectorClock {
