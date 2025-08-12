@@ -164,8 +164,11 @@ impl ForkReceiver {
             return Ok(());
         }
 
+        let origin = fork.serialized_blocks[0].origin.clone();
+        let origin = SenderType::Auth(origin, 0);
+        
         let stats = self.continuity_stats
-            .entry(sender.clone())
+            .entry(origin.clone())
             .or_insert(VecDeque::new());
     
         
@@ -175,7 +178,7 @@ impl ForkReceiver {
             // TODO: This step can be made constant time!
             // This is currently O(# pending blocks).
             let parent_hash = Self::find_parent_hash(stats, &block).await;
-            let (fut_block, hash, _parent_hash) = self.crypto.verify_and_prepare_block_simple(block.serialized_body, parent_hash, sender.clone(), self.check_parent_hash).await;
+            let (fut_block, hash, _parent_hash) = self.crypto.verify_and_prepare_block_simple(block.serialized_body, parent_hash, origin.clone(), self.check_parent_hash).await;
 
             Self::append_block(stats, _n, hash).await;
             Self::reset_parent_hash(stats, _n - 1, _parent_hash).await;

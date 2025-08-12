@@ -169,7 +169,7 @@ fn main() {
         },
     };
 
-    let start_idx = node_list.iter().position(|r| r.eq(&my_name)).unwrap();
+    let start_idx = 0; // node_list.iter().position(|r| r.eq(&my_name)).unwrap();
     let mut num_threads = NUM_THREADS;
     {
         let _num_cores = core_ids.lock().unwrap().len();
