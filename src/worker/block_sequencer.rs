@@ -146,6 +146,19 @@ impl PartialOrd for VectorClock {
             }
         }
 
+        for (sender, other_seq_num) in other.0.iter() {
+            let self_seq_num = self.get(sender);
+            if self_seq_num > *other_seq_num {
+                all_self_entries_are_leq = false;
+            }
+
+            if self_seq_num < *other_seq_num {
+                all_self_entries_are_geq = false;
+            }
+        }
+
+        // This is done because self and other may not have the same set of senders.
+
         if all_self_entries_are_geq && all_self_entries_are_leq {
             return Some(std::cmp::Ordering::Equal);
         }

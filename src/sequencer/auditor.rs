@@ -1,9 +1,38 @@
-use std::{collections::{HashMap, VecDeque}, pin::Pin, sync::Arc, time::Duration};
+use std::{cmp::Ordering, collections::{BinaryHeap, HashMap, VecDeque}, fs::File, pin::Pin, sync::Arc, time::Duration};
 
+use hashbrown::HashSet;
 use log::{error, info};
 use tokio::sync::Mutex;
+use std::io::Write;
 
 use crate::{config::AtomicConfig, crypto::CachedBlock, rpc::SenderType, sequencer::{commit_buffer::BlockStats, controller::ControllerCommand}, utils::{channel::{Receiver, Sender}, timer::ResettableTimer}, worker::{block_sequencer::VectorClock, cache_manager::{process_tx_op, CacheKey, CachedValue}}};
+
+struct BlockWithSeqNum(
+    i128 /* this is negative of seq_num, since we use a max heap as min heap */,
+    BlockStats, CachedBlock
+);
+
+impl PartialEq for BlockWithSeqNum {
+    fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
+}
+
+impl Eq for BlockWithSeqNum {}
+
+impl PartialOrd for BlockWithSeqNum {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.0.cmp(&other.0))
+    }
+}
+
+impl Ord for BlockWithSeqNum {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.0.cmp(&other.0)
+    }
+}
+
+
 
 pub struct Auditor {
     config: AtomicConfig,
@@ -12,7 +41,7 @@ pub struct Auditor {
 
     unaudited_buffer: HashMap<
         String, // origin
-        VecDeque<(BlockStats, CachedBlock)>
+        BinaryHeap<BlockWithSeqNum>
     >,
     unaudited_buffer_size: usize,
 
@@ -32,6 +61,8 @@ pub struct Auditor {
     applied_cut: VectorClock,
 
     dry_run_mode: bool,
+
+    snapshot_log_file: File,
 }
 
 impl Auditor {
@@ -48,7 +79,7 @@ impl Auditor {
             unaudited_buffer_size: 0,
 
             state_snapshots: HashMap::new(),
-            snapshot_vcs: VecDeque::new(),
+            snapshot_vcs: VecDeque::from_iter(vec![VectorClock::new()]),
 
             audit_timer,
             log_timer,
@@ -57,6 +88,8 @@ impl Auditor {
 
             forgotten_cut: VectorClock::new(),
             applied_cut: VectorClock::new(),
+
+            snapshot_log_file: File::create("snapshot.log").unwrap(),
 
         }
     }
@@ -100,27 +133,28 @@ impl Auditor {
     /// 3. If number of snapshots exceeds the limit, send command to block the workers.
     /// 4. Unblock when the workers are updated.
     async fn do_audit(&mut self) {
-        // self.cleanup_old_snapshots().await; // TODO: Uncomment this.
         while self.unaudited_buffer_size > 0 {
             let Some((target_origin, _)) = self.unaudited_buffer.iter()
                 .filter(|(_, queue)| !queue.is_empty()
-                    && self.is_snapshot_available(&queue.front().unwrap().0.read_vc))
+                    && self.is_snapshot_available(&queue.peek().unwrap().1.read_vc))
                 .next()
             else {
-                self.throw_error("There must have been a block that could have been audited. Invariant violated.").await;
+                self.throw_error(format!("There must have been a block that could have been audited. Invariant violated. Applied cut: {}, Forgotten cut: {}", self.applied_cut, self.forgotten_cut).as_str()).await;
                 return;
             };
 
             let target_origin = target_origin.clone();
 
-            let (block_stats, block) = self.unaudited_buffer.get_mut(&target_origin).unwrap()
-                .pop_front().unwrap();
+            let BlockWithSeqNum(_, block_stats, block) = self.unaudited_buffer.get_mut(&target_origin).unwrap()
+                .pop().unwrap();
 
             self.unaudited_buffer_size -= 1;
 
             self.verify_reads(&block_stats, &block).await;
 
             self.apply_updates(&block_stats, &block).await;
+
+            self.cleanup_old_snapshots().await; // TODO: Uncomment this.
 
             self.check_snapshot_limit().await;
         }
@@ -129,8 +163,8 @@ impl Auditor {
     async fn handle_block(&mut self, block_stats: BlockStats, block: CachedBlock) {
         self.unaudited_buffer
             .entry(block_stats.origin.clone())
-            .or_insert(VecDeque::new())
-            .push_back((block_stats, block));
+            .or_insert(BinaryHeap::new())
+            .push(BlockWithSeqNum(-(block_stats.seq_num as i128), block_stats, block));
         self.unaudited_buffer_size += 1;
     }
 
@@ -182,52 +216,78 @@ impl Auditor {
     async fn apply_updates(&mut self, block_stats: &BlockStats, block: &CachedBlock) {
         self.applied_cut.advance(SenderType::Auth(block_stats.origin.clone(), 0), block_stats.seq_num);
         
-        let _applied_cut = self.applied_cut.clone();
-        self.snapshot_vcs.push_back(_applied_cut.clone());
+        // let mut block_vc = block_stats.read_vc.clone();
+        // block_vc.advance(SenderType::Auth(block_stats.origin.clone(), 0), block_stats.seq_num);
+        // self.snapshot_vcs.push_back(block_vc.clone());
+
+        let vcs_to_apply = self.snapshot_vcs.iter()
+            .filter(|vc| !(*vc < &block_stats.read_vc))
+            .map(|vc| {
+                let mut vc = vc.clone();
+                vc.advance(SenderType::Auth(block_stats.origin.clone(), 0), block_stats.seq_num);
+                vc
+            })
+            .collect::<HashSet<_>>();
+
+        for vc in vcs_to_apply {
+            self.snapshot_vcs.push_back(vc.clone());
+            writeln!(self.snapshot_log_file, "{}", vc).unwrap();
+        }
+
+        self.snapshot_log_file.flush().unwrap();
+
+
         
         if self.dry_run_mode {
             return;
         }
         
-        for tx in &block.block.tx_list {
-            let Some(on_crash_commit) = &tx.on_crash_commit else { continue };
+        // for tx in &block.block.tx_list {
+        //     let Some(on_crash_commit) = &tx.on_crash_commit else { continue };
 
-            for op in &on_crash_commit.ops {
-                let Some((key, cached_value)) = process_tx_op(op) else { continue };
+        //     for op in &on_crash_commit.ops {
+        //         let Some((key, cached_value)) = process_tx_op(op) else { continue };
 
-                self.state_snapshots
-                    .entry(key.clone())
-                    .or_insert(VecDeque::new())
-                    .push_back((_applied_cut.clone(), cached_value));
+        //         self.state_snapshots
+        //             .entry(key.clone())
+        //             .or_insert(VecDeque::new())
+        //             .push_back((block_vc.clone(), cached_value));
 
-            }
-        }
+        //     }
+        // }
 
     }
 
 
     async fn cleanup_old_snapshots(&mut self) {
-        let mut frontier_cut = HashMap::new();
-        for (_, queue) in &self.unaudited_buffer {
-            if queue.is_empty() {
-                continue;
-            }
+        // let mut frontier_cut = HashMap::new();
+        // for (_, queue) in &self.unaudited_buffer {
+        //     if queue.is_empty() {
+        //         continue;
+        //     }
 
-            let (block_stats, _) = queue.front().unwrap();
+        //     let BlockWithSeqNum(_, block_stats, _) = queue.peek().unwrap();
 
-            for (origin, seq_num) in block_stats.read_vc.iter() {
-                let _seq_num_curr = frontier_cut.entry(origin.clone()).or_insert(u64::MAX);
-                if *seq_num < *_seq_num_curr {
-                    *_seq_num_curr = *seq_num;
-                }
-            }
-        }
+        //     for (origin, seq_num) in block_stats.read_vc.iter() {
+        //         let _seq_num_curr = frontier_cut.entry(origin.clone()).or_insert(u64::MAX);
+        //         if *seq_num < *_seq_num_curr {
+        //             *_seq_num_curr = *seq_num;
+        //         }
+        //     }
+        // }
 
-        let frontier_cut = VectorClock::from_iter(frontier_cut.iter()
-            .map(|(origin, seq_num)| (origin.clone(), *seq_num)));
+        // let frontier_cut = VectorClock::from_iter(frontier_cut.iter()
+        //     .map(|(origin, seq_num)| (origin.clone(), *seq_num)));
         
 
-        self.forget_snapshots(&frontier_cut).await;
+        // self.forget_snapshots(&frontier_cut).await;
+
+        self.snapshot_vcs.retain(|snapshot_vc| {
+            self.unaudited_buffer.iter()
+                .filter(|(_, queue)| !queue.is_empty())
+                .map(|(_, queue)| queue.peek().unwrap().1.read_vc.clone())
+                .any(|read_vc| !(*snapshot_vc < read_vc))
+        });
     }
 
     async fn check_snapshot_limit(&mut self) {
