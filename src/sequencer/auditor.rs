@@ -1,7 +1,7 @@
 use std::{cmp::Ordering, collections::{BinaryHeap, HashMap, VecDeque}, fs::File, pin::Pin, sync::Arc, time::Duration};
 
 use hashbrown::HashSet;
-use log::{error, info};
+use log::{debug, error, info, trace};
 use tokio::sync::Mutex;
 use std::io::Write;
 
@@ -53,6 +53,7 @@ pub struct Auditor {
     snapshot_vcs: VecDeque<VectorClock>,
     audit_timer: Arc<Pin<Box<ResettableTimer>>>,
     log_timer: Arc<Pin<Box<ResettableTimer>>>,
+    frontier_cut: HashMap<String, VectorClock>,
 
     /// Everything strictly < forgotten_cut is forgotten. The forgotten_cut itself is not forgotten. Or anything that is concurrent with it.
     forgotten_cut: VectorClock,
@@ -69,7 +70,6 @@ impl Auditor {
     pub fn new(config: AtomicConfig, auditor_rx: Receiver<(BlockStats, CachedBlock)>, controller_tx: Sender<ControllerCommand>, dry_run_mode: bool) -> Self {
         let audit_timer = ResettableTimer::new(Duration::from_millis(config.get().consensus_config.max_audit_delay_ms));
         let log_timer = ResettableTimer::new(Duration::from_millis(config.get().app_config.logger_stats_report_ms));
-
         Self {
             config,
             auditor_rx,
@@ -88,17 +88,30 @@ impl Auditor {
 
             forgotten_cut: VectorClock::new(),
             applied_cut: VectorClock::new(),
+            frontier_cut: HashMap::new(),
 
             snapshot_log_file: File::create("snapshot.log").unwrap(),
 
         }
     }
 
+    fn get_node_list(&self) -> Vec<String> {
+        // There must be a better way to do this.
+        self.config.get().net_config.nodes.iter()
+            .filter(|(name, _)| name.starts_with("node"))
+            .map(|(name, _)| name.clone())
+            .collect()
+    }
     pub async fn run(auditor: Arc<Mutex<Self>>) {
         let mut auditor = auditor.lock().await;
 
         auditor.audit_timer.run().await;
         auditor.log_timer.run().await;
+
+        let node_list = auditor.get_node_list();
+        auditor.frontier_cut
+            .extend(node_list.iter().map(|name| (name.clone(), VectorClock::new())));
+
 
         while let Ok(force_audit) = auditor.handle_inputs().await {
             if force_audit || auditor.should_audit() {
@@ -133,6 +146,8 @@ impl Auditor {
     /// 3. If number of snapshots exceeds the limit, send command to block the workers.
     /// 4. Unblock when the workers are updated.
     async fn do_audit(&mut self) {
+        self.cleanup_old_snapshots().await;
+
         while self.unaudited_buffer_size > 0 {
             let Some((target_origin, _)) = self.unaudited_buffer.iter()
                 .filter(|(_, queue)| !queue.is_empty()
@@ -154,7 +169,7 @@ impl Auditor {
 
             self.apply_updates(&block_stats, &block).await;
 
-            self.cleanup_old_snapshots().await; // TODO: Uncomment this.
+            self.update_frontier_cut().await;
 
             self.check_snapshot_limit().await;
         }
@@ -194,7 +209,7 @@ impl Auditor {
     }
 
     fn is_snapshot_available(&self, vc: &VectorClock) -> bool {
-        info!("Checking if snapshot is available for vc: {}.", vc);
+        debug!("Checking if snapshot is available for vc: {}.", vc);
         // The zero vc is always available.
         if vc.iter().all(|(_, v)| *v == 0) {
             return true;
@@ -260,33 +275,27 @@ impl Auditor {
 
 
     async fn cleanup_old_snapshots(&mut self) {
-        // let mut frontier_cut = HashMap::new();
-        // for (_, queue) in &self.unaudited_buffer {
-        //     if queue.is_empty() {
-        //         continue;
-        //     }
-
-        //     let BlockWithSeqNum(_, block_stats, _) = queue.peek().unwrap();
-
-        //     for (origin, seq_num) in block_stats.read_vc.iter() {
-        //         let _seq_num_curr = frontier_cut.entry(origin.clone()).or_insert(u64::MAX);
-        //         if *seq_num < *_seq_num_curr {
-        //             *_seq_num_curr = *seq_num;
-        //         }
-        //     }
-        // }
-
-        // let frontier_cut = VectorClock::from_iter(frontier_cut.iter()
-        //     .map(|(origin, seq_num)| (origin.clone(), *seq_num)));
-        
-
-        // self.forget_snapshots(&frontier_cut).await;
-
+        // Remove all snapshots such that their vc is strictly less than all vcs in frontier_cut.
         self.snapshot_vcs.retain(|snapshot_vc| {
-            self.unaudited_buffer.iter()
-                .filter(|(_, queue)| !queue.is_empty())
-                .map(|(_, queue)| queue.peek().unwrap().1.read_vc.clone())
-                .any(|read_vc| !(*snapshot_vc < read_vc))
+            let res = self.frontier_cut.iter()
+                .all(|(_, read_vc)| {
+                    debug!("Snapshot VC: {}, Read VC: {}. Result: {}", snapshot_vc, read_vc, *snapshot_vc < *read_vc);
+                    *snapshot_vc < *read_vc
+                });
+
+            trace!("Snapshot VC: {}, Result: {}", snapshot_vc, res);
+
+            !res
+        });
+
+        // Remove all snapshots that are concurrent with all vcs in frontier_cut.
+        self.snapshot_vcs.retain(|snapshot_vc| {
+            let res = self.frontier_cut.iter()
+                .all(|(_, read_vc)| {
+                    !(*snapshot_vc <= *read_vc || *read_vc <= *snapshot_vc)
+                });
+
+            !res
         });
     }
 
@@ -326,7 +335,29 @@ impl Auditor {
 
     async fn log_stats(&mut self) {
         info!("Number of snapshots: {}", self.snapshot_vcs.len());
+        info!("Snapshot VCs: {:?}", self.snapshot_vcs);
         info!("Forgotten cut: {}", self.forgotten_cut);
         info!("Unaudited buffer size: {}", self.unaudited_buffer_size);
+        info!("Frontier cut: {:?}", self.frontier_cut);
+    }
+
+    /// Frontier cut is the read_vc of the top of the heap for each origin.
+    async fn update_frontier_cut(&mut self) {
+        for (origin, queue) in &self.unaudited_buffer {
+            if queue.is_empty() {
+                continue;
+            }
+
+            let BlockWithSeqNum(_, block_stats, _) = queue.peek().unwrap();
+
+            let frontier_cut = self.frontier_cut.entry(origin.clone()).or_insert(VectorClock::new());
+            
+            // Invariant: The read_vc must be >= the frontier cut.
+            assert!(block_stats.read_vc >= *frontier_cut);
+            
+            if block_stats.read_vc > *frontier_cut {
+                *frontier_cut = block_stats.read_vc.clone();
+            }
+        }
     }
 }
