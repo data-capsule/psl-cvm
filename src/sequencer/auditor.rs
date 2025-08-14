@@ -2,6 +2,7 @@ use std::{cmp::Ordering, collections::{BinaryHeap, HashMap, VecDeque}, fs::File,
 
 use hashbrown::HashSet;
 use log::{debug, error, info, trace};
+use rand::seq::IteratorRandom;
 use tokio::sync::Mutex;
 use std::io::Write;
 
@@ -51,6 +52,9 @@ pub struct Auditor {
     >,
 
     snapshot_vcs: VecDeque<VectorClock>,
+    // __untouched_vcs: HashMap<VectorClock, bool>,
+    // __totally_untouched_vcs_count: usize,
+    update_buffer: HashMap<String /* origin */, VecDeque<CachedBlock>>,
     audit_timer: Arc<Pin<Box<ResettableTimer>>>,
     log_timer: Arc<Pin<Box<ResettableTimer>>>,
     frontier_cut: HashMap<String, VectorClock>,
@@ -80,6 +84,9 @@ impl Auditor {
 
             state_snapshots: HashMap::new(),
             snapshot_vcs: VecDeque::from_iter(vec![VectorClock::new()]),
+            // __untouched_vcs: HashMap::new(),
+            // __totally_untouched_vcs_count: 0,
+            update_buffer: HashMap::new(),
 
             audit_timer,
             log_timer,
@@ -147,31 +154,51 @@ impl Auditor {
     /// 4. Unblock when the workers are updated.
     async fn do_audit(&mut self) {
         self.cleanup_old_snapshots().await;
+        self.cleanup_update_buffer().await;
 
         while self.unaudited_buffer_size > 0 {
-            let Some((target_origin, _)) = self.unaudited_buffer.iter()
-                .filter(|(_, queue)| !queue.is_empty()
-                    && self.is_snapshot_available(&queue.peek().unwrap().1.read_vc))
-                .next()
-            else {
-                self.throw_error(format!("There must have been a block that could have been audited. Invariant violated. Applied cut: {}, Forgotten cut: {}", self.applied_cut, self.forgotten_cut).as_str()).await;
+            let possible_targets = self.unaudited_buffer.iter()
+                .filter_map(|(target, queue)| {
+                    if queue.is_empty() {
+                        return None;
+                    }
+
+                    let BlockWithSeqNum(_, block_stats, _) = queue.peek().unwrap();
+                    let (cost, base_vc) = self.snapshot_gen_cost(&block_stats.read_vc);
+                    Some((target.clone(), cost, base_vc))
+                })
+                .collect::<Vec<_>>();
+
+            let min_cost = possible_targets.iter().min_by_key(|(_, cost, _)| *cost).unwrap().1;
+            let (next_target, cost, base_vc) = possible_targets.iter()
+                .filter(|(_, cost, _)| *cost == min_cost)
+                .choose(&mut rand::thread_rng())
+                .unwrap();
+
+            if *cost == usize::MAX {
+                self.throw_error("No snapshot can be generated for the read vc.").await;
                 return;
-            };
+            }
 
-            let target_origin = target_origin.clone();
+            info!("Next target: {}, Cost: {}, Base VC: {}", next_target, cost, base_vc);
 
-            let BlockWithSeqNum(_, block_stats, block) = self.unaudited_buffer.get_mut(&target_origin).unwrap()
+
+
+            let BlockWithSeqNum(_, block_stats, block) = self.unaudited_buffer.get_mut(next_target).unwrap()
                 .pop().unwrap();
 
             self.unaudited_buffer_size -= 1;
 
+
+            self.derive_snapshot(&block_stats.read_vc, &base_vc).await;
+
             self.verify_reads(&block_stats, &block).await;
-
-            self.apply_updates(&block_stats, &block).await;
-
             self.update_frontier_cut().await;
 
+            self.apply_updates(&block_stats, &block).await;
+            
             self.check_snapshot_limit().await;
+        
         }
     }
 
@@ -219,7 +246,9 @@ impl Auditor {
         self.snapshot_vcs.iter().find(|v| *v == vc).is_some()
     }
 
-    async fn verify_reads(&self, block_stats: &BlockStats, block: &CachedBlock) {
+    async fn verify_reads(&mut self, block_stats: &BlockStats, block: &CachedBlock) {
+        // self.__untouched_vcs.entry(block_stats.read_vc.clone()).and_modify(|v| *v = false);
+
         if self.dry_run_mode {
             return;
         }
@@ -229,27 +258,48 @@ impl Auditor {
     }
 
     async fn apply_updates(&mut self, block_stats: &BlockStats, block: &CachedBlock) {
-        self.applied_cut.advance(SenderType::Auth(block_stats.origin.clone(), 0), block_stats.seq_num);
+        self.update_buffer.entry(block_stats.origin.clone())
+            .or_insert(VecDeque::new())
+            .push_back(block.clone());
+
+        // self.applied_cut.advance(SenderType::Auth(block_stats.origin.clone(), 0), block_stats.seq_num);
         
-        // let mut block_vc = block_stats.read_vc.clone();
-        // block_vc.advance(SenderType::Auth(block_stats.origin.clone(), 0), block_stats.seq_num);
-        // self.snapshot_vcs.push_back(block_vc.clone());
+        // let vcs_to_apply = self.snapshot_vcs.iter()
+        //     .filter(|vc| !(*vc < &block_stats.read_vc))
+        //     .map(|vc| {
+        //         let mut vc = vc.clone();
+        //         vc.advance(SenderType::Auth(block_stats.origin.clone(), 0), block_stats.seq_num);
+        //         vc
+        //     })
+        //     .collect::<HashSet<_>>();
 
-        let vcs_to_apply = self.snapshot_vcs.iter()
-            .filter(|vc| !(*vc < &block_stats.read_vc))
-            .map(|vc| {
-                let mut vc = vc.clone();
-                vc.advance(SenderType::Auth(block_stats.origin.clone(), 0), block_stats.seq_num);
-                vc
-            })
-            .collect::<HashSet<_>>();
+        // For each snapshot in snapshot_vcs,
+        // if advancing the vc by block_stats.read_vc
+        // leads to a vc that is >= some vc in the frontier_cut,
+        // then add this new vc to snapshot_vcs.
 
-        for vc in vcs_to_apply {
-            self.snapshot_vcs.push_back(vc.clone());
-            writeln!(self.snapshot_log_file, "{}", vc).unwrap();
-        }
+        // let vcs_to_apply = self.snapshot_vcs.iter()
+        //     .filter_map(|vc| {
+        //         if vc.get(&SenderType::Auth(block_stats.origin.clone(), 0)) + 1 != block_stats.seq_num {
+        //             return None;
+        //         }
 
-        self.snapshot_log_file.flush().unwrap();
+        //         let mut new_vc = (*vc).clone();
+        //         new_vc.advance(SenderType::Auth(block_stats.origin.clone(), 0), block_stats.seq_num);
+        //         match self.frontier_cut.iter().all(|(_, read_vc)| !(*read_vc <= new_vc || new_vc <= *read_vc)) {
+        //             false => Some(new_vc),
+        //             true => None
+        //         }
+        //     })
+        //     .collect::<HashSet<_>>();
+
+        // for vc in vcs_to_apply {
+        //     self.snapshot_vcs.push_back(vc.clone());
+        //     self.__untouched_vcs.insert(vc.clone(), true);
+        //     writeln!(self.snapshot_log_file, "{}", vc).unwrap();
+        // }
+
+        // self.snapshot_log_file.flush().unwrap();
 
 
         
@@ -333,12 +383,25 @@ impl Auditor {
         self.forgotten_cut = forgotten_cut.clone();
     }
 
+    fn get_snapshot_vc_glb(&self) -> Vec<VectorClock> {
+        self.snapshot_vcs.iter()
+            .filter(|test_vc| {
+                self.snapshot_vcs.iter()
+                    .all(|other_vc| {
+                        !(other_vc < *test_vc)
+                    })
+            })
+            .map(|vc| vc.clone())
+            .collect()
+    }
     async fn log_stats(&mut self) {
         info!("Number of snapshots: {}", self.snapshot_vcs.len());
         info!("Snapshot VCs: {:?}", self.snapshot_vcs);
+        info!("Snapshot VC GLB: {:?}", self.get_snapshot_vc_glb());
         info!("Forgotten cut: {}", self.forgotten_cut);
         info!("Unaudited buffer size: {}", self.unaudited_buffer_size);
         info!("Frontier cut: {:?}", self.frontier_cut);
+        info!("Update buffer size: {}", self.update_buffer.iter().map(|(_, queue)| queue.len()).sum::<usize>());
     }
 
     /// Frontier cut is the read_vc of the top of the heap for each origin.
@@ -357,6 +420,61 @@ impl Auditor {
             
             if block_stats.read_vc > *frontier_cut {
                 *frontier_cut = block_stats.read_vc.clone();
+            }
+        }
+    }
+
+
+    fn snapshot_gen_cost(&self, target_vc: &VectorClock) -> (usize, VectorClock) {
+        self.snapshot_vcs.iter()
+            .map(|vc| {
+                if !(vc <= target_vc) {
+                    return (usize::MAX, vc.clone());
+                }
+
+                let cost = target_vc.iter()
+                    .map(|(sender, target_seq_num)| {
+                        let seq_num = vc.get(sender);
+                        target_seq_num - seq_num
+                    })
+                    .sum::<u64>();
+
+                (cost as usize, vc.clone())
+            })
+            .min_by_key(|(cost, _)| *cost)
+            .unwrap()
+    
+    }
+
+
+    /// TODO: Do this actually.
+    async fn derive_snapshot(&mut self, target_vc: &VectorClock, base_vc: &VectorClock) {
+        if target_vc == base_vc {
+            return;
+        }
+
+        self.snapshot_vcs.push_back(target_vc.clone());
+        writeln!(self.snapshot_log_file, "{}", target_vc).unwrap();
+        self.snapshot_log_file.flush().unwrap();
+    }
+
+    async fn cleanup_update_buffer(&mut self) {
+        // Find min seq_num for each origin in each snapshot_vc.
+        for (origin, queue) in self.update_buffer.iter_mut() {
+            let _sender = SenderType::Auth(origin.clone(), 0);
+            let min_seq_num = self.snapshot_vcs.iter()
+                .map(|vc| {
+                    vc.get(&_sender)
+                })
+                .min()
+                .unwrap_or(0);
+
+            while let Some(block) = queue.front() {
+                if block.block.n < min_seq_num {
+                    queue.pop_front();
+                } else {
+                    break;
+                }
             }
         }
     }

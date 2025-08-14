@@ -84,7 +84,8 @@ impl VectorClock {
 
     pub fn serialize(&self) -> ProtoVectorClock {
         ProtoVectorClock {
-            entries: self.0.iter().map(|(sender, seq_num)| ProtoVectorClockEntry {
+            entries: self.0.iter().sorted_by_key(|(sender, _)| sender.to_name_and_sub_id().0)
+            .map(|(sender, seq_num)| ProtoVectorClockEntry {
                 sender: sender.to_name_and_sub_id().0,
                 seq_num: *seq_num,
             }).collect(),
@@ -479,5 +480,29 @@ mod tests {
 
         assert!(!(vc1 < vc3 && vc3 < vc1));
         assert!(vc1 != vc3);
+    }
+
+    #[test]
+    fn vector_clock_missing_entries() {
+        let vc1 = VectorClock::from_iter(vec![
+            (SenderType::Auth("A".to_string(), 0), 2),
+            (SenderType::Auth("B".to_string(), 0), 2),
+        ]);
+
+        let vc2 = VectorClock::from_iter(vec![
+            (SenderType::Auth("A".to_string(), 0), 2),
+            (SenderType::Auth("B".to_string(), 0), 2),
+            (SenderType::Auth("C".to_string(), 0), 4),
+        ]);
+
+        let vc3 = VectorClock::new();
+
+        assert!(vc1 < vc2);
+        assert!(vc2 > vc1);
+
+        assert!(vc3 < vc1);
+        assert!(vc3 < vc2);
+        assert!(!(vc3 < vc3));
+        assert!(vc1 > vc3);
     }
 }
