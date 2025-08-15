@@ -164,7 +164,7 @@ impl SequencerNode {
 
 
         let (auditor_controller_tx, auditor_controller_rx) = make_channel(_chan_depth);
-        let auditor = Auditor::new(config.clone(), auditor_rx, auditor_controller_tx, true);
+        let auditor = Auditor::new(config.clone(), auditor_rx, auditor_controller_tx, false);
 
         let controller_client = Client::new_atomic(config.clone(), keystore.clone(), false, 0);
         let controller = Controller::new(config.clone(), controller_client.into(), auditor_controller_rx);

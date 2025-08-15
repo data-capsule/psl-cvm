@@ -1,12 +1,12 @@
 use std::{cmp::Ordering, collections::{BinaryHeap, HashMap, VecDeque}, fs::File, pin::Pin, sync::Arc, time::Duration};
 
-use hashbrown::HashSet;
 use log::{debug, error, info, trace};
 use rand::seq::IteratorRandom;
-use tokio::sync::Mutex;
+use tokio::{sync::{oneshot, Mutex}, task::JoinSet};
+use twox_hash::XxHash64;
 use std::io::Write;
 
-use crate::{config::AtomicConfig, crypto::CachedBlock, rpc::SenderType, sequencer::{commit_buffer::BlockStats, controller::ControllerCommand}, utils::{channel::{Receiver, Sender}, timer::ResettableTimer}, worker::{block_sequencer::VectorClock, cache_manager::{process_tx_op, CacheKey, CachedValue}}};
+use crate::{config::AtomicConfig, crypto::CachedBlock, rpc::SenderType, sequencer::{commit_buffer::BlockStats, controller::ControllerCommand}, utils::{channel::{make_channel, Receiver, Sender}, timer::ResettableTimer}, worker::{block_sequencer::VectorClock, cache_manager::{process_tx_op, CacheKey, CachedValue}}};
 
 struct BlockWithSeqNum(
     i128 /* this is negative of seq_num, since we use a max heap as min heap */,
@@ -46,34 +46,38 @@ pub struct Auditor {
     >,
     unaudited_buffer_size: usize,
 
-    state_snapshots: HashMap<
-        CacheKey,
-        VecDeque<(VectorClock, CachedValue)>
-    >,
-
     snapshot_vcs: VecDeque<VectorClock>,
-    // __untouched_vcs: HashMap<VectorClock, bool>,
-    // __totally_untouched_vcs_count: usize,
     update_buffer: HashMap<String /* origin */, VecDeque<CachedBlock>>,
     audit_timer: Arc<Pin<Box<ResettableTimer>>>,
     log_timer: Arc<Pin<Box<ResettableTimer>>>,
     frontier_cut: HashMap<String, VectorClock>,
 
-    /// Everything strictly < forgotten_cut is forgotten. The forgotten_cut itself is not forgotten. Or anything that is concurrent with it.
-    forgotten_cut: VectorClock,
-
-    /// For each origin, the last seq_num that was applied.
-    applied_cut: VectorClock,
-
     dry_run_mode: bool,
 
     snapshot_log_file: File,
+    shard_sender: ShardSender,
+
+    shard_receivers: Vec<Receiver<ShardCommand>>,
+    shard_handles: JoinSet<()>,
+    block_processor_handles: JoinSet<()>,
+    block_processor_tx: Sender<BlockProcessorCommand>,
+    block_processor_rx: Receiver<BlockProcessorCommand>,
 }
 
 impl Auditor {
+    const NUM_BLOCK_PROCESSORS: usize = 4;
+    const NUM_SHARDS: usize = 16;
+
+
     pub fn new(config: AtomicConfig, auditor_rx: Receiver<(BlockStats, CachedBlock)>, controller_tx: Sender<ControllerCommand>, dry_run_mode: bool) -> Self {
         let audit_timer = ResettableTimer::new(Duration::from_millis(config.get().consensus_config.max_audit_delay_ms));
         let log_timer = ResettableTimer::new(Duration::from_millis(config.get().app_config.logger_stats_report_ms));
+        
+        let _chan_depth = config.get().rpc_config.channel_depth as usize;
+        let (shard_sender, shard_receivers) = ShardSender::new(Self::NUM_SHARDS, _chan_depth);
+        
+        let (block_processor_tx, block_processor_rx) = make_channel(_chan_depth);
+
         Self {
             config,
             auditor_rx,
@@ -82,10 +86,7 @@ impl Auditor {
             unaudited_buffer: HashMap::new(),
             unaudited_buffer_size: 0,
 
-            state_snapshots: HashMap::new(),
             snapshot_vcs: VecDeque::from_iter(vec![VectorClock::new()]),
-            // __untouched_vcs: HashMap::new(),
-            // __totally_untouched_vcs_count: 0,
             update_buffer: HashMap::new(),
 
             audit_timer,
@@ -93,12 +94,16 @@ impl Auditor {
 
             dry_run_mode,
 
-            forgotten_cut: VectorClock::new(),
-            applied_cut: VectorClock::new(),
             frontier_cut: HashMap::new(),
 
             snapshot_log_file: File::create("snapshot.log").unwrap(),
 
+            shard_sender,
+            shard_receivers,
+            shard_handles: JoinSet::new(),
+            block_processor_handles: JoinSet::new(),
+            block_processor_tx,
+            block_processor_rx,
         }
     }
 
@@ -119,6 +124,20 @@ impl Auditor {
         auditor.frontier_cut
             .extend(node_list.iter().map(|name| (name.clone(), VectorClock::new())));
 
+        for id in 0..Self::NUM_SHARDS {
+            let shard_rx = auditor.shard_receivers.pop().unwrap();
+            auditor.shard_handles.spawn(async move {
+                ShardAuditor::new(id, shard_rx).run().await;
+            });
+        }
+
+        for _ in 0..Self::NUM_BLOCK_PROCESSORS {
+            let block_processor_rx = auditor.block_processor_rx.clone();
+            let shard_sender = auditor.shard_sender.clone();
+            auditor.block_processor_handles.spawn(async move {
+                BlockProcessor::new(shard_sender, block_processor_rx).run().await;
+            });
+        }
 
         while let Ok(force_audit) = auditor.handle_inputs().await {
             if force_audit || auditor.should_audit() {
@@ -129,15 +148,16 @@ impl Auditor {
 
     async fn handle_inputs(&mut self) -> Result<bool, ()> {
         tokio::select! {
+            biased;
+            Some((block_stats, block)) = self.auditor_rx.recv() => {
+                self.handle_block(block_stats, block).await;
+                Ok(false)
+            }
             _ = self.audit_timer.wait() => {
                 Ok(true)
             }
             _ = self.log_timer.wait() => {
                 self.log_stats().await;
-                Ok(false)
-            }
-            Some((block_stats, block)) = self.auditor_rx.recv() => {
-                self.handle_block(block_stats, block).await;
                 Ok(false)
             }
         }
@@ -180,7 +200,7 @@ impl Auditor {
                 return;
             }
 
-            info!("Next target: {}, Cost: {}, Base VC: {}", next_target, cost, base_vc);
+            trace!("Next target: {}, Cost: {}, Base VC: {}", next_target, cost, base_vc);
 
 
 
@@ -210,45 +230,7 @@ impl Auditor {
         self.unaudited_buffer_size += 1;
     }
 
-    /// If my read_vc is X, what value must I have read?
-    /// Invariant: All updates EXACTLY upto read_vc must be applied.
-    /// Otherwise, the result could be wrong. This function is not going to check that.
-    fn get_key(&self, key: &CacheKey, read_vc: &VectorClock) -> Option<CachedValue> {
-        match self.state_snapshots.get(key) {
-            Some(snapshots) => {
-                if snapshots.is_empty() {
-                    return None;
-                }
-
-                // Find all the vcs that are <= read_vc.
-                // Then merge all the values.
-                let value = snapshots.iter()
-                    .filter(|(vc, _)| vc <= read_vc)
-                    .map(|(_, value)| value.clone())
-                    .reduce(|a, b| a.merge_immutable(&b))
-                    .unwrap();
-
-                Some(value)
-
-            }
-            None => None
-        }
-    }
-
-    fn is_snapshot_available(&self, vc: &VectorClock) -> bool {
-        debug!("Checking if snapshot is available for vc: {}.", vc);
-        // The zero vc is always available.
-        if vc.iter().all(|(_, v)| *v == 0) {
-            return true;
-        }
-
-        // Find an exact match for vc.
-        self.snapshot_vcs.iter().find(|v| *v == vc).is_some()
-    }
-
     async fn verify_reads(&mut self, block_stats: &BlockStats, block: &CachedBlock) {
-        // self.__untouched_vcs.entry(block_stats.read_vc.clone()).and_modify(|v| *v = false);
-
         if self.dry_run_mode {
             return;
         }
@@ -261,66 +243,6 @@ impl Auditor {
         self.update_buffer.entry(block_stats.origin.clone())
             .or_insert(VecDeque::new())
             .push_back(block.clone());
-
-        // self.applied_cut.advance(SenderType::Auth(block_stats.origin.clone(), 0), block_stats.seq_num);
-        
-        // let vcs_to_apply = self.snapshot_vcs.iter()
-        //     .filter(|vc| !(*vc < &block_stats.read_vc))
-        //     .map(|vc| {
-        //         let mut vc = vc.clone();
-        //         vc.advance(SenderType::Auth(block_stats.origin.clone(), 0), block_stats.seq_num);
-        //         vc
-        //     })
-        //     .collect::<HashSet<_>>();
-
-        // For each snapshot in snapshot_vcs,
-        // if advancing the vc by block_stats.read_vc
-        // leads to a vc that is >= some vc in the frontier_cut,
-        // then add this new vc to snapshot_vcs.
-
-        // let vcs_to_apply = self.snapshot_vcs.iter()
-        //     .filter_map(|vc| {
-        //         if vc.get(&SenderType::Auth(block_stats.origin.clone(), 0)) + 1 != block_stats.seq_num {
-        //             return None;
-        //         }
-
-        //         let mut new_vc = (*vc).clone();
-        //         new_vc.advance(SenderType::Auth(block_stats.origin.clone(), 0), block_stats.seq_num);
-        //         match self.frontier_cut.iter().all(|(_, read_vc)| !(*read_vc <= new_vc || new_vc <= *read_vc)) {
-        //             false => Some(new_vc),
-        //             true => None
-        //         }
-        //     })
-        //     .collect::<HashSet<_>>();
-
-        // for vc in vcs_to_apply {
-        //     self.snapshot_vcs.push_back(vc.clone());
-        //     self.__untouched_vcs.insert(vc.clone(), true);
-        //     writeln!(self.snapshot_log_file, "{}", vc).unwrap();
-        // }
-
-        // self.snapshot_log_file.flush().unwrap();
-
-
-        
-        if self.dry_run_mode {
-            return;
-        }
-        
-        // for tx in &block.block.tx_list {
-        //     let Some(on_crash_commit) = &tx.on_crash_commit else { continue };
-
-        //     for op in &on_crash_commit.ops {
-        //         let Some((key, cached_value)) = process_tx_op(op) else { continue };
-
-        //         self.state_snapshots
-        //             .entry(key.clone())
-        //             .or_insert(VecDeque::new())
-        //             .push_back((block_vc.clone(), cached_value));
-
-        //     }
-        // }
-
     }
 
 
@@ -347,11 +269,12 @@ impl Auditor {
 
             !res
         });
+
     }
 
     async fn check_snapshot_limit(&mut self) {
         
-        if self.state_snapshots.len() >= self.config.get().consensus_config.max_audit_snapshots {
+        if self.snapshot_vcs.len() >= self.config.get().consensus_config.max_audit_snapshots {
             self.send_blocking_command().await;
         } else {
             self.send_unblocking_command().await;
@@ -372,17 +295,6 @@ impl Auditor {
         self.controller_tx.send(ControllerCommand::UnblockWorkers).await.unwrap();
     }
 
-    async fn forget_snapshots(&mut self, forgotten_cut: &VectorClock) {
-        self.state_snapshots.iter_mut()
-            .for_each(|(_, vals)| {
-                vals.retain(|(vc, _)| vc >= forgotten_cut);
-            });
-
-        self.snapshot_vcs.retain(|vc| vc >= forgotten_cut);
-
-        self.forgotten_cut = forgotten_cut.clone();
-    }
-
     fn get_snapshot_vc_glb(&self) -> Vec<VectorClock> {
         self.snapshot_vcs.iter()
             .filter(|test_vc| {
@@ -398,7 +310,6 @@ impl Auditor {
         info!("Number of snapshots: {}", self.snapshot_vcs.len());
         info!("Snapshot VCs: {:?}", self.snapshot_vcs);
         info!("Snapshot VC GLB: {:?}", self.get_snapshot_vc_glb());
-        info!("Forgotten cut: {}", self.forgotten_cut);
         info!("Unaudited buffer size: {}", self.unaudited_buffer_size);
         info!("Frontier cut: {:?}", self.frontier_cut);
         info!("Update buffer size: {}", self.update_buffer.iter().map(|(_, queue)| queue.len()).sum::<usize>());
@@ -426,6 +337,22 @@ impl Auditor {
 
 
     fn snapshot_gen_cost(&self, target_vc: &VectorClock) -> (usize, VectorClock) {
+        // If any of the required blocks are not found in the update buffer, return MAX.
+        if target_vc.iter()
+            .any(|(sender, target_seq_num)| {
+                let origin = sender.to_name_and_sub_id().0;
+                let Some(buffer) = self.update_buffer.get(&origin)
+                else {
+                    return true;
+                };
+
+                buffer.back().map(|block| block.block.n).unwrap_or(0) < *target_seq_num
+            }) {
+
+            info!("Target VC: {} not found in update buffer.", target_vc);
+            return (usize::MAX, VectorClock::new());
+        }
+
         self.snapshot_vcs.iter()
             .map(|vc| {
                 if !(vc <= target_vc) {
@@ -446,8 +373,6 @@ impl Auditor {
     
     }
 
-
-    /// TODO: Do this actually.
     async fn derive_snapshot(&mut self, target_vc: &VectorClock, base_vc: &VectorClock) {
         if target_vc == base_vc {
             return;
@@ -456,6 +381,62 @@ impl Auditor {
         self.snapshot_vcs.push_back(target_vc.clone());
         writeln!(self.snapshot_log_file, "{}", target_vc).unwrap();
         self.snapshot_log_file.flush().unwrap();
+
+        if self.dry_run_mode {
+            return;
+        }
+
+        let mut waiters = Vec::new();
+
+        for (origin, end_seq_num) in target_vc.iter() {
+            let base_seq_num = base_vc.get(origin);
+            if base_seq_num == *end_seq_num {
+                // Can't be >, since that will make base_vc and target_vc concurrent.
+                continue;
+            }
+            let start_seq_num = base_seq_num + 1;
+
+            // Find start_seq_num in the update buffer.
+            let origin = origin.to_name_and_sub_id().0;
+            let Some(buffer) = self.update_buffer.get(&origin)
+            else {
+                self.throw_error(&format!("No update buffer found for origin: {}.", origin)).await;
+                return;
+            };
+
+            let Ok(index) = buffer.binary_search_by_key(&start_seq_num, |block| block.block.n)
+            else {
+                let range_start = buffer.front().map(|block| block.block.n).unwrap_or(0);
+                let range_end = buffer.back().map(|block| block.block.n).unwrap_or(0);
+                self.throw_error(&format!("Start seq_num: {} not found in update buffer for origin: {}. Current range: {}-{}", start_seq_num, origin, range_start, range_end)).await;
+                return;
+            };
+
+            let block_cnt = (end_seq_num - start_seq_num + 1) as usize;
+
+            for i in 0..block_cnt {
+                let Some(block) = buffer.get(index + i)
+                else {
+                    self.throw_error(&format!("Block {} with supposed sequence number {} not found in update buffer for origin: {}.", index + i, start_seq_num + i as u64, origin)).await;
+                    return;
+                };
+
+                // TODO: Apply the updates.
+                info!("Applying update: {} for origin: {}.", block.block.n, origin);
+
+                let (block_processor_command, block_processor_rx) = BlockProcessorCommand::new(block.clone(), target_vc.clone());
+
+                self.block_processor_tx.send(block_processor_command).await.unwrap();
+
+                waiters.push(block_processor_rx);
+
+            }
+        }
+
+        for waiter in waiters.drain(..) {
+            let _ = waiter.await;
+        }
+
     }
 
     async fn cleanup_update_buffer(&mut self) {
@@ -477,5 +458,302 @@ impl Auditor {
                 }
             }
         }
+    }
+}
+
+
+enum ShardCommand {
+    ApplyUpdates {
+        snapshot_vc: VectorClock,
+        updates: Vec<(CacheKey, CachedValue)>,
+    },
+
+    VerifyReads {
+        snapshot_vc: VectorClock,
+        reads: Vec<(CacheKey, CachedValue)>,
+
+        response_tx: Option<oneshot::Sender<bool>>,
+    },
+
+    CleanSnapshots {
+        snapshot_vc: VectorClock,
+    }
+}
+
+
+struct SnapshotValue {
+    /// Values appended here first.
+    lazy_eval_log: VecDeque<(VectorClock, CachedValue)>,
+
+    /// On the first read query for a given vc, we will evaluate the value from the lazy_eval_log.
+    /// And add it here.
+    absolute_value: HashMap<VectorClock, CachedValue>,
+
+}
+
+struct ShardAuditor {
+    id: usize,
+
+    state_snapshots: HashMap<
+        CacheKey,
+        SnapshotValue
+    >,
+
+    command_rx: Receiver<ShardCommand>,
+}
+
+impl ShardAuditor {
+    pub fn new(id: usize, command_rx: Receiver<ShardCommand>) -> Self {
+        Self {
+            id,
+            state_snapshots: HashMap::new(),
+            command_rx,
+        }
+    }
+
+    pub async fn run(&mut self) {
+        let mut write_commands_executed = 0;
+        let mut read_commands_executed = 0;
+
+        while let Some(command) = self.command_rx.recv().await {
+            match command {
+                ShardCommand::ApplyUpdates { snapshot_vc, updates } => {
+                    self.apply_updates(snapshot_vc, updates).await;
+                    write_commands_executed += 1;
+                },
+                ShardCommand::VerifyReads { snapshot_vc, reads, mut response_tx } => {
+                    let result = self.verify_reads(snapshot_vc, reads).await;
+                    let response_tx = response_tx.take().unwrap();
+                    let _ = response_tx.send(result);
+                    read_commands_executed += 1;
+                },
+                ShardCommand::CleanSnapshots { snapshot_vc } => {
+                    self.clean_snapshots(snapshot_vc).await;
+                }
+            }
+
+            if write_commands_executed % 1000 == 1 || read_commands_executed % 1000 == 1 {
+                info!("Shard {} Write commands executed: {}, Read commands executed: {}, Total keys: {}",
+                    self.id, write_commands_executed, read_commands_executed, self.state_snapshots.len());
+            }
+
+            
+        }
+    }
+
+    async fn apply_updates(&mut self, snapshot_vc: VectorClock, mut updates: Vec<(CacheKey, CachedValue)>) {
+        for (key, value) in updates.drain(..) {
+            self.state_snapshots.entry(key)
+                .or_insert(SnapshotValue { lazy_eval_log: VecDeque::new(), absolute_value: HashMap::new() })
+                .lazy_eval_log.push_back((snapshot_vc.clone(), value));
+        }
+    }
+
+    async fn verify_reads(&mut self, snapshot_vc: VectorClock, reads: Vec<(CacheKey, CachedValue)>) -> bool {
+        for (key, value) in reads {
+            let Some(expected_value) = self.get_key(&key, &snapshot_vc)
+            else {
+                return false;
+            };
+
+            if expected_value != value {
+                return false;
+            }
+        }
+        true
+    }
+
+    async fn clean_snapshots(&mut self, snapshot_vc: VectorClock) {
+        self.state_snapshots.iter_mut()
+            .for_each(|(_, vals)| {
+                vals.lazy_eval_log.retain(|(vc, _)| !(vc < &snapshot_vc));
+                vals.absolute_value.retain(|vc, _| !(vc < &snapshot_vc));
+            });
+    }
+
+    /// If my read_vc is X, what value must I have read?
+    /// Invariant: All updates EXACTLY upto read_vc must be applied.
+    /// Otherwise, the result could be wrong. This function is not going to check that.
+    fn get_key(&mut self, key: &CacheKey, read_vc: &VectorClock) -> Option<CachedValue> {
+        let Some(snapshots) = self.state_snapshots.get_mut(key)
+        else {
+            return None;
+        };
+
+        if snapshots.absolute_value.contains_key(read_vc) {
+            return snapshots.absolute_value.get(read_vc).cloned();
+        }
+
+        let value = snapshots.lazy_eval_log.iter()
+            .filter(|(vc, _)| vc <= read_vc)
+            .map(|(_, value)| value.clone())
+            .reduce(|a, b| a.merge_immutable(&b))
+            .unwrap();
+
+        snapshots.absolute_value.insert(read_vc.clone(), value.clone());
+
+        Some(value)
+
+    }
+}
+
+
+pub struct ShardSender {
+    txs: Vec<Sender<ShardCommand>>,
+}
+
+impl ShardSender {
+    const SEED: u64 = 42;
+
+    pub fn new(num_shards: usize, chan_depth: usize) -> (Self, Vec<Receiver<ShardCommand>>) {
+        let mut txs = Vec::new();
+        let mut rxs = Vec::new();
+
+        for _ in 0..num_shards {
+            let (tx, rx) = make_channel(chan_depth);
+            txs.push(tx);
+            rxs.push(rx);
+        }
+
+        (Self { txs }, rxs)
+    }
+
+    fn get_shard_id(&self, key: &CacheKey) -> usize {
+        let key_hash = XxHash64::oneshot(Self::SEED, key);
+
+        key_hash as usize % self.txs.len()
+    }
+
+    fn split_shard_command(&self, command: ShardCommand) -> (Vec<ShardCommand>, Option<Vec<oneshot::Receiver<bool>>>) {
+        let mut shard_commands = Vec::new();
+        let mut receivers = Vec::new();
+
+        match command {
+            ShardCommand::ApplyUpdates { snapshot_vc, updates } => {
+                for _ in 0..self.txs.len() {
+                    shard_commands.push(ShardCommand::ApplyUpdates { snapshot_vc: snapshot_vc.clone(), updates: Vec::new() });
+                }
+
+                for (key, value) in updates {
+                    let shard_id = self.get_shard_id(&key);
+                    if let ShardCommand::ApplyUpdates { updates, .. } = &mut shard_commands[shard_id] {
+                        updates.push((key, value));
+                    } else {
+                        unreachable!();
+                    }
+                }
+            }
+            ShardCommand::VerifyReads { snapshot_vc, reads, .. } => {    
+                for _ in 0..self.txs.len() {
+                    let (_tx, _rx) = oneshot::channel();
+                    shard_commands.push(ShardCommand::VerifyReads { snapshot_vc: snapshot_vc.clone(), reads: Vec::new(), response_tx: Some(_tx) });
+                    receivers.push(_rx);
+                }
+
+                for (key, value) in reads {
+                    let shard_id = self.get_shard_id(&key);
+                    if let ShardCommand::VerifyReads { reads, .. } = &mut shard_commands[shard_id] {
+                        reads.push((key, value));
+                    } else {
+                        unreachable!();
+                    }
+                }
+            }
+            ShardCommand::CleanSnapshots { snapshot_vc } => {
+                for _ in 0..self.txs.len() {
+                    shard_commands.push(ShardCommand::CleanSnapshots { snapshot_vc: snapshot_vc.clone() });
+                }
+            }
+        }
+
+        if receivers.is_empty() {
+            (shard_commands, None)
+        } else {
+            (shard_commands, Some(receivers))
+        }
+    
+    }
+
+    async fn send_and_wait(&self, command: ShardCommand) -> Option<bool> {
+        let (mut shard_commands, receivers) = self.split_shard_command(command);
+        for (i, shard_command) in shard_commands.drain(..).enumerate() {
+            self.txs[i].send(shard_command).await.unwrap();
+        }
+
+        if let Some(receivers) = receivers {
+            let mut result = true;
+            for receiver in receivers {
+                let res = receiver.await.unwrap();
+                result = result && res;
+            }
+
+            return Some(result);
+        }
+
+        None
+    }
+}
+
+impl Clone for ShardSender {
+    fn clone(&self) -> Self {
+        Self { txs: self.txs.clone() }
+    }
+}
+
+#[derive(Clone)]
+struct BlockProcessorCommand {
+    block: CachedBlock,
+    target_vc: VectorClock,
+    response_tx: Arc<Mutex<Option<oneshot::Sender<()>>>>,
+}
+
+impl BlockProcessorCommand {
+    pub fn new(block: CachedBlock, target_vc: VectorClock) -> (Self, oneshot::Receiver<()>) {
+        let (tx, rx) = oneshot::channel();
+        (Self { block, target_vc, response_tx: Arc::new(Mutex::new(Some(tx))) }, rx)
+    }
+}
+
+struct BlockProcessor {
+    shard_sender: ShardSender,
+    command_rx: Receiver<BlockProcessorCommand>,
+}
+
+impl BlockProcessor {
+    pub fn new(shard_sender: ShardSender, command_rx: Receiver<BlockProcessorCommand>) -> Self {
+        Self { shard_sender, command_rx }
+    }
+
+    pub async fn run(&mut self) {
+        while let Some(command) = self.command_rx.recv().await {
+            self.process_block(command).await;
+        }
+    }
+
+    async fn process_block(&mut self, command: BlockProcessorCommand) {
+        let BlockProcessorCommand { block, target_vc, mut response_tx } = command;
+
+        let mut updates = Vec::new();
+
+        for tx in &block.block.tx_list {
+            let Some(phase) = &tx.on_crash_commit
+            else {
+                continue;
+            };
+
+
+            phase.ops.iter()
+                .filter_map(|op| process_tx_op(op))
+                .for_each(|(key, value)| {
+                    updates.push((key, value));
+                });
+        }
+
+        let shard_command = ShardCommand::ApplyUpdates { snapshot_vc: target_vc, updates };
+
+        let _ = self.shard_sender.send_and_wait(shard_command).await;
+
+        let response_tx = response_tx.lock().await.take().unwrap();
+        let _ = response_tx.send(());
     }
 }
