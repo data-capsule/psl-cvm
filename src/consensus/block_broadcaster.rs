@@ -411,6 +411,7 @@ impl BlockBroadcaster {
                     view_is_stable: block.block.view_is_stable,
                     config_num: block.block.config_num,
                     origin: block.block.origin.clone(),
+                    chain_id: block.block.chain_id,
                     serialized_body: block.block_ser.clone(), 
                 }).collect(),
             }),

@@ -357,6 +357,7 @@ impl BlockSequencer {
             )),
             vector_clock: None,
             origin,
+            chain_id: 0, // This field is generally unused.
         };
 
         let parent_hash_rx = self.parent_hash_rx.take();

@@ -224,6 +224,7 @@ impl Staging {
             n: last_block.block.block.n,
             view: self.view,
             config_num: self.config_num,
+            chain_id: last_block.block.block.chain_id,
         };
 
         #[cfg(feature = "extra_2pc")]
@@ -317,6 +318,7 @@ impl Staging {
             n: last_block.block.block.n,
             view: self.view,
             config_num: self.config_num,
+            chain_id: last_block.block.block.chain_id,
         };
 
         #[cfg(feature = "extra_2pc")]

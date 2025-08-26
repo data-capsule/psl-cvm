@@ -185,10 +185,13 @@ impl Staging {
             return;
         }
 
+        let (name, chain_id) = sender.to_name_and_sub_id();
+
+
         let vote = ProtoVote {
             fork_digest: block.block_hash.clone(),
             n: block.block.n,
-            
+            chain_id,
             // Unused
             sig_array: vec![],
             view: 0,
@@ -202,7 +205,6 @@ impl Staging {
         let buf = payload.encode_to_vec();
         let sz = buf.len();
 
-        let (name, _) = sender.to_name_and_sub_id();
 
         if name.contains("client"){
             debug!("Voting on test clients. Dropping vote."); // Useful for local testing

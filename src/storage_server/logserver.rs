@@ -185,6 +185,7 @@ impl LogServer {
                     view_is_stable: true,
                     config_num: 1,
                     origin: b.block.origin.clone(),
+                    chain_id: b.block.chain_id,
                     serialized_body: b.block_ser.clone(),
                 })
                 .collect::<Vec<_>>(),

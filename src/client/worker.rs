@@ -6,7 +6,7 @@ use prost::Message as _;
 use sha2::{Digest, Sha512};
 use tokio::{task::JoinSet, time::sleep};
 
-use crate::{client::workload_generators::WrapperMode, config::ClientConfig, crypto::{default_hash, hash, AtomicKeyStore, HashType, KeyStore, DIGEST_LENGTH}, proto::{client::{self, ProtoClientReply, ProtoClientRequest, ProtoTransactionReceipt}, consensus::{HalfSerializedBlock, ProtoAppendEntries, ProtoBlock, ProtoFork}, execution::ProtoTransaction, rpc::ProtoPayload}, rpc::client::PinnedClient, utils::{channel::{make_channel, Receiver, Sender}, serialize_proto_block_nascent, update_parent_hash_in_proto_block_ser, update_signature_in_proto_block_ser}};
+use crate::{client::workload_generators::WrapperMode, config::ClientConfig, crypto::{default_hash, hash, AtomicKeyStore, HashType, KeyStore, DIGEST_LENGTH}, proto::{client::{self, ProtoClientReply, ProtoClientRequest, ProtoTransactionReceipt}, consensus::{HalfSerializedBlock, ProtoAppendEntries, ProtoBlock, ProtoFork}, execution::ProtoTransaction, rpc::ProtoPayload}, rpc::{client::PinnedClient, SenderType}, utils::{channel::{make_channel, Receiver, Sender}, serialize_proto_block_nascent, update_parent_hash_in_proto_block_ser, update_signature_in_proto_block_ser}};
 use crate::rpc::MessageRef;
 use super::{logger::ClientWorkerStat, workload_generators::{Executor, PerWorkerWorkloadGenerator, RateControl}};
 
@@ -283,8 +283,12 @@ impl<Gen: PerWorkerWorkloadGenerator + Send + Sync + 'static> ClientWorker<Gen> 
         }
     }
 
-    fn get_serialized_ae_body(tx: &ProtoTransaction, ae_n: &mut u64, ae_parent_hash: &mut HashType, must_sign: bool, keystore: &AtomicKeyStore) -> (u64, Vec<u8>) {
+    fn get_serialized_ae_body(tx: &ProtoTransaction, ae_n: &mut u64, ae_parent_hash: &mut HashType, must_sign: bool, keystore: &AtomicKeyStore, my_sender: SenderType) -> (u64, Vec<u8>) {
         *ae_n += 1;
+
+        let (origin, chain_id) = my_sender.to_name_and_sub_id();
+
+
         let tx = tx.to_owned();
         let block = ProtoBlock {
             tx_list: vec![tx],
@@ -297,7 +301,8 @@ impl<Gen: PerWorkerWorkloadGenerator + Send + Sync + 'static> ClientWorker<Gen> 
             config_num: 0,
             sig: None,
             vector_clock: None,
-            origin: "client".to_string(),
+            origin,
+            chain_id,
         };
 
         let mut buf = serialize_proto_block_nascent(&block).unwrap();
@@ -337,6 +342,8 @@ impl<Gen: PerWorkerWorkloadGenerator + Send + Sync + 'static> ClientWorker<Gen> 
         let mut curr_round_robin_id = client_id % node_list.len();
 
         let my_name = self.config.net_config.name.clone();
+        let my_chain_id = self.client.0.client_sub_id;
+        let my_sender = crate::rpc::SenderType::Auth(my_name.clone(), my_chain_id);
 
         sleep(Duration::from_secs(1)).await;
 
@@ -384,6 +391,7 @@ impl<Gen: PerWorkerWorkloadGenerator + Send + Sync + 'static> ClientWorker<Gen> 
                                 &payload.tx, &mut ae_n, &mut ae_parent_hash, 
                                 payload.wrapper_mode == WrapperMode::AppendEntriesWithSignature,
                                 &keystore,
+                                my_sender.clone(),
                             );
                             if payload.wrapper_mode == WrapperMode::AppendEntriesWithSignature {
                                 self.stat_tx.send(ClientWorkerStat::SignedAE).await.unwrap();
@@ -395,6 +403,7 @@ impl<Gen: PerWorkerWorkloadGenerator + Send + Sync + 'static> ClientWorker<Gen> 
                                             n, serialized_body,
                                             view: 0, view_is_stable: true, config_num: 0,
                                             origin: my_name.clone(),
+                                            chain_id: my_chain_id,
                                         }],
                                     }),
                                     commit_index: 0,

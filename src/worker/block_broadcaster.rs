@@ -124,6 +124,7 @@ impl BlockBroadcaster {
                     n: block.block.n,
                     serialized_body: block.block_ser.clone(),
                     origin: block.block.origin.clone(),
+                    chain_id: block.block.chain_id,
 
                     // Unused fields
                     view: block.block.view,

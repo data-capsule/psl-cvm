@@ -82,6 +82,7 @@ message ProtoBlock {
 
     ProtoVectorClock vector_clock = 11;
     string origin = 12;
+    uint64 chain_id = 13;
 }
 
 message HalfSerializedBlock {
@@ -90,7 +91,8 @@ message HalfSerializedBlock {
     bool view_is_stable = 3;
     uint64 config_num = 4;
     string origin = 5;
-    bytes serialized_body = 6;      // Format: signature || parent_hash || serialized body
+    uint64 chain_id = 6;
+    bytes serialized_body = 7;      // Format: signature || parent_hash || serialized body
 }
 
 // This is different from the logical view of a fork with fields `last` and `last_qc`.
@@ -119,4 +121,5 @@ message ProtoVote {
     uint64 n = 3;
     uint64 view = 4;
     uint64 config_num = 5;
+    uint64 chain_id = 6;
 }

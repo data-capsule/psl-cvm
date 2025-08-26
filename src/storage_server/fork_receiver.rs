@@ -165,7 +165,8 @@ impl ForkReceiver {
         }
 
         let origin = fork.serialized_blocks[0].origin.clone();
-        let origin = SenderType::Auth(origin, 0);
+        let chain_id = fork.serialized_blocks[0].chain_id;
+        let origin = SenderType::Auth(origin, chain_id);
         
         let stats = self.continuity_stats
             .entry(origin.clone())

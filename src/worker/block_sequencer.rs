@@ -408,6 +408,7 @@ impl BlockSequencer {
             sig: None,
             vector_clock,
             origin,
+            chain_id: 0, // This field is generally unused.
         }
     }
 

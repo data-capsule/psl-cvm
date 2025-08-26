@@ -219,6 +219,7 @@ impl Staging {
                 config_num: _parent.block.config_num,
                 serialized_body: _parent.block_ser.clone(),
                 origin: _parent.block.origin.clone(),
+                chain_id: _parent.block.chain_id,
             };
             ProtoFork {
                 serialized_blocks: vec![half_serialized_block]
@@ -239,6 +240,7 @@ impl Staging {
                 config_num: b.block.block.config_num,
                 serialized_body: b.block.block_ser.clone(),
                 origin: b.block.block.origin.clone(),
+                chain_id: b.block.block.chain_id,
             }));
 
         // Fork sig will be the sig on the hash of the last block.
