@@ -44,7 +44,7 @@ pub mod app;
 pub mod block_broadcaster;
 pub mod block_sequencer;
 pub mod cache_manager;
-mod staging;
+pub mod staging;
 
 use staging::Staging;
 
@@ -307,6 +307,7 @@ impl<E: ClientHandlerTask + Send + Sync + 'static> PSLWorker<E> {
             block_sequencer_rx,
             node_broadcaster_tx,
             storage_broadcaster_tx,
+            0, // Chain ID is set to 0 for PSL.
         )));
 
         let bb_ts_client = Client::new_atomic(og_config.clone(), keystore.clone(), false, 0).into();

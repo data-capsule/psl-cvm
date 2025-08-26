@@ -227,6 +227,8 @@ pub struct BlockSequencer {
     log_timer: Arc<Pin<Box<ResettableTimer>>>,
 
     vc_wait_buffer: HashMap<VectorClock, Vec<oneshot::Sender<()>>>,
+
+    chain_id: u64, // This is unused for PSL, but useful for Nimble port.
 }
 
 impl BlockSequencer {
@@ -234,6 +236,7 @@ impl BlockSequencer {
         cache_manager_rx: Receiver<SequencerCommand>,
         node_broadcaster_tx: Sender<oneshot::Receiver<CachedBlock>>,
         storage_broadcaster_tx: Sender<oneshot::Receiver<CachedBlock>>,
+        chain_id: u64,
     ) -> Self {
         let log_timer = ResettableTimer::new(Duration::from_millis(config.get().app_config.logger_stats_report_ms));
         Self {
@@ -248,6 +251,7 @@ impl BlockSequencer {
             storage_broadcaster_tx,
             log_timer,
             vc_wait_buffer: HashMap::new(),
+            chain_id,
         }
     }
 
@@ -342,6 +346,7 @@ impl BlockSequencer {
             seq_num,
             Some(self.curr_vector_clock.serialize()),
             origin.clone(),
+            self.chain_id,
         );
 
         let self_writes = Self::wrap_vec(
@@ -349,6 +354,7 @@ impl BlockSequencer {
             seq_num,
             Some(read_vc.serialize()),
             origin,
+            self.chain_id,
         );
 
 
@@ -382,6 +388,7 @@ impl BlockSequencer {
         seq_num: u64,
         vector_clock: Option<ProtoVectorClock>,
         origin: String,
+        chain_id: u64,
     ) -> ProtoBlock {
         ProtoBlock {
             tx_list: writes.into_iter()
@@ -408,7 +415,7 @@ impl BlockSequencer {
             sig: None,
             vector_clock,
             origin,
-            chain_id: 0, // This field is generally unused.
+            chain_id, // This field is generally unused.
         }
     }
 
