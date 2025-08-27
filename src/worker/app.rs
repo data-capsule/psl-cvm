@@ -293,12 +293,9 @@ impl KVSTask {
         let mut results = Vec::new();
 
         for (i, op) in ops.iter().enumerate() {
-            let op_type: Result<ProtoTransactionOpType, DecodeError> = op.op_type.try_into();
-            if let Err(e) = op_type {
-                return Err(e.into());
-            }
+            let op_type = op.op_type();
 
-            match op_type.unwrap() {
+            match op_type {
                 ProtoTransactionOpType::Write  => {
                     atleast_one_write = true;
                     last_write_index = i;
@@ -308,12 +305,9 @@ impl KVSTask {
         }
 
         for op in ops {
-            let op_type: Result<ProtoTransactionOpType, DecodeError> = op.op_type.try_into();
-            if let Err(e) = op_type {
-                return Err(e.into());
-            }
+            let op_type = op.op_type();
 
-            match op_type.unwrap() {
+            match op_type {
                 ProtoTransactionOpType::Write => {
                     let key = op.operands[0].clone();
                     let value = op.operands[1].clone();
