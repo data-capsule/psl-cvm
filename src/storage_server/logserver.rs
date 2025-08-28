@@ -2,7 +2,7 @@ use std::{collections::{HashMap, VecDeque}, pin::Pin, sync::Arc, time::Duration}
 
 use log::{info, warn};
 use prost::Message as _;
-use tokio::sync::Mutex;
+use tokio::sync::{oneshot, Mutex};
 
 use crate::{config::AtomicConfig, crypto::{AtomicKeyStore, CachedBlock, HashType}, proto::{checkpoint::ProtoBackfillQuery, consensus::{HalfSerializedBlock, ProtoAppendEntries, ProtoFork}}, rpc::{client::{Client, PinnedClient}, MessageRef, SenderType}, utils::{channel::Receiver, timer::ResettableTimer, StorageServiceConnector}};
 
@@ -21,6 +21,7 @@ pub struct LogServer {
 
     block_rx: Receiver<(SenderType, CachedBlock)>,
     query_rx: Receiver<ProtoBackfillQuery>,
+    local_query_rx: Option<Receiver<(ProtoBackfillQuery, oneshot::Sender<Option<ProtoAppendEntries>>)>>,
 
     log_timer: Arc<Pin<Box<ResettableTimer>>>,
     submitted_block_window: usize,
@@ -36,6 +37,7 @@ impl LogServer {
         gc_rx: Receiver<(SenderType, u64)>,
         block_rx: Receiver<(SenderType, CachedBlock)>,
         query_rx: Receiver<ProtoBackfillQuery>,
+        local_query_rx: Option<Receiver<(ProtoBackfillQuery, oneshot::Sender<Option<ProtoAppendEntries>>)>>,
     ) -> Self {
         let client = Client::new_atomic(config.clone(), keystore.clone(), false, 0);
         let log_timer = ResettableTimer::new(
@@ -46,6 +48,7 @@ impl LogServer {
             keystore,
             block_rx,
             query_rx,
+            local_query_rx,
             gc_rx,
             client: client.into(),
             storage,
@@ -71,38 +74,83 @@ impl LogServer {
     }
 
     async fn worker(&mut self) -> Result<(), ()> {
-        tokio::select! {
-            _tick = self.log_timer.wait() => {
-                self.log_stats().await;
+        if self.local_query_rx.is_none() {
+            tokio::select! {
+                _tick = self.log_timer.wait() => {
+                    self.log_stats().await;
+                }
+                sender_and_n = self.gc_rx.recv() => {
+                    if sender_and_n.is_none() {
+                        return Err(());
+                    }
+                    let (sender, n) = sender_and_n.unwrap();
+    
+                    self.handle_gc(sender, n).await;
+                },
+                sender_and_block = self.block_rx.recv() => {
+                    if sender_and_block.is_none() {
+                        return Err(());
+                    }
+                    let (sender, block) = sender_and_block.unwrap();
+    
+                    self.submitted_block_window += 1;
+                    self.submitted_bytes_window += block.block_ser.len();
+                    self.handle_block(block, sender).await;
+                    
+                },
+                query = self.query_rx.recv() => {
+                    if query.is_none() {
+                        return Err(());
+                    }
+                    let query = query.unwrap();
+    
+                    self.handle_query(query, true).await;
+                }
             }
-            sender_and_n = self.gc_rx.recv() => {
-                if sender_and_n.is_none() {
-                    return Err(());
+        } else {
+            tokio::select! {
+                _tick = self.log_timer.wait() => {
+                    self.log_stats().await;
                 }
-                let (sender, n) = sender_and_n.unwrap();
-
-                self.handle_gc(sender, n).await;
-            },
-            sender_and_block = self.block_rx.recv() => {
-                if sender_and_block.is_none() {
-                    return Err(());
+                sender_and_n = self.gc_rx.recv() => {
+                    if sender_and_n.is_none() {
+                        return Err(());
+                    }
+                    let (sender, n) = sender_and_n.unwrap();
+    
+                    self.handle_gc(sender, n).await;
+                },
+                sender_and_block = self.block_rx.recv() => {
+                    if sender_and_block.is_none() {
+                        return Err(());
+                    }
+                    let (sender, block) = sender_and_block.unwrap();
+    
+                    self.submitted_block_window += 1;
+                    self.submitted_bytes_window += block.block_ser.len();
+                    self.handle_block(block, sender).await;
+                    
+                },
+                query = self.query_rx.recv() => {
+                    if query.is_none() {
+                        return Err(());
+                    }
+                    let query = query.unwrap();
+    
+                    self.handle_query(query, true).await;
                 }
-                let (sender, block) = sender_and_block.unwrap();
-
-                self.submitted_block_window += 1;
-                self.submitted_bytes_window += block.block_ser.len();
-                self.handle_block(block, sender).await;
-                
-            },
-            query = self.query_rx.recv() => {
-                if query.is_none() {
-                    return Err(());
+                query_and_reply_rx = self.local_query_rx.as_ref().unwrap().recv() => {
+                    if query_and_reply_rx.is_none() {
+                        return Err(());
+                    }
+                    let (query, reply_rx) = query_and_reply_rx.unwrap();
+    
+                    let resp = self.handle_query(query, false).await;
+                    let _ = reply_rx.send(resp);
                 }
-                let query = query.unwrap();
-
-                self.handle_query(query).await;
             }
         }
+        
 
         Ok(())
     }
@@ -149,16 +197,16 @@ impl LogServer {
         fork.retain(|b| b.block.n > n);
     }
 
-    async fn handle_query(&mut self, query: ProtoBackfillQuery) {
+    async fn handle_query(&mut self, query: ProtoBackfillQuery, is_remote: bool) -> Option<ProtoAppendEntries> {
         let origin = query.origin;
         if origin.is_none() {
-            return;
+            return None;
         }
         let origin = origin.unwrap();
         let origin = SenderType::Auth(origin.name, origin.sub_id);
 
         if !self.fork_cache.contains_key(&origin) {
-            return;
+            return None;
         }
 
         let fork = self.fork_cache.get_mut(&origin).unwrap();
@@ -197,7 +245,13 @@ impl LogServer {
             is_backfill_response: true,
         };
 
-        self.reply_ae(query.reply_name, ae).await;
+        if is_remote {
+            self.reply_ae(query.reply_name, ae).await;
+            None
+        } else {
+            Some(ae)
+        }
+
     }
 
     async fn reply_ae(&mut self, reply_name: String, ae: ProtoAppendEntries) {

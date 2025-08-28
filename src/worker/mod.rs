@@ -178,6 +178,7 @@ pub struct PSLWorker<E: ClientHandlerTask + Send + Sync + 'static> {
     block_broadcaster_to_storage: Arc<Mutex<BlockBroadcaster>>,
     block_broadcaster_to_other_workers: Arc<Mutex<BlockBroadcaster>>,
     staging: Arc<Mutex<Staging>>,
+    storage: Arc<Mutex<StorageService<RemoteStorageEngine>>>,
 
     app: Arc<Mutex<PSLAppEngine<E>>>,
     __commit_rx_spawner: tokio::sync::broadcast::Receiver<u64>,
@@ -360,6 +361,7 @@ impl<E: ClientHandlerTask + Send + Sync + 'static> PSLWorker<E> {
             gc_rx,
             logserver_rx,
             backfill_request_rx,
+            None,
         )));
 
         Self {
@@ -379,6 +381,7 @@ impl<E: ClientHandlerTask + Send + Sync + 'static> PSLWorker<E> {
 
             __commit_rx_spawner,
             __black_hole_storage: Arc::new(Mutex::new(__black_hole_storage)),
+            storage: Arc::new(Mutex::new(remote_storage)),
         }
     }
 
@@ -396,6 +399,7 @@ impl<E: ClientHandlerTask + Send + Sync + 'static> PSLWorker<E> {
         let block_sequencer = self.block_sequencer.clone();
 
         let __black_hole_storage = self.__black_hole_storage.clone();
+        let storage = self.storage.clone();
 
         handles.spawn(async move {
             let _ = Server::<PinnedPSLWorkerServerContext>::run(server).await;
@@ -430,6 +434,10 @@ impl<E: ClientHandlerTask + Send + Sync + 'static> PSLWorker<E> {
         handles.spawn(async move {
             let mut __black_hole_storage = __black_hole_storage.lock().await;
             __black_hole_storage.run().await;
+        });
+        handles.spawn(async move {
+            let mut storage = storage.lock().await;
+            storage.run().await;
         });
 
         handles
