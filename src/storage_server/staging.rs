@@ -13,7 +13,7 @@ pub struct Staging {
     config: AtomicConfig,
     keystore: AtomicKeyStore,
     client: PinnedClient,
-    block_rx: Receiver<(oneshot::Receiver<Result<CachedBlock, Error>>, SenderType /* sender */, String /* origin */)>, // Sender may not be equal to origin.
+    block_rx: Receiver<(oneshot::Receiver<Result<CachedBlock, Error>>, SenderType /* sender */, SenderType /* origin */)>, // Sender may not be equal to origin.
     logserver_tx: Sender<(SenderType, CachedBlock)>,
     gc_tx: Option<Sender<(SenderType, u64)>>,
     gc_timer: Arc<Pin<Box<ResettableTimer>>>,
@@ -30,7 +30,7 @@ const PER_PEER_BLOCK_WSS: u64 = 10000;
 impl Staging {
     pub fn new(
         config: AtomicConfig, keystore: AtomicKeyStore,
-        block_rx: Receiver<(oneshot::Receiver<Result<CachedBlock, Error>>, SenderType /* sender */, String /* origin */)>, // Sender may not be equal to origin.
+        block_rx: Receiver<(oneshot::Receiver<Result<CachedBlock, Error>>, SenderType /* sender */, SenderType /* origin */)>, // Sender may not be equal to origin.
         logserver_tx: Sender<(SenderType, CachedBlock)>,
         gc_tx: Option<Sender<(SenderType, u64)>>,
         fork_receiver_cmd_tx: UnboundedSender<ForkReceiverCommand>,
@@ -97,7 +97,7 @@ impl Staging {
 
 
 
-    async fn handle_block(&mut self, block_and_sender_and_origin: Option<(oneshot::Receiver<Result<CachedBlock, Error>>, SenderType, String)>) -> Result<(), ()> {
+    async fn handle_block(&mut self, block_and_sender_and_origin: Option<(oneshot::Receiver<Result<CachedBlock, Error>>, SenderType, SenderType)>) -> Result<(), ()> {
         if block_and_sender_and_origin.is_none() {
             return Err(());
         }
@@ -115,7 +115,7 @@ impl Staging {
 
         match block {
             Ok(block) => {
-                self.handle_checked_block(block, sender).await;
+                self.handle_checked_block(block, sender, origin).await;
             }
             Err(err) => {
                 // Handle error
@@ -131,12 +131,12 @@ impl Staging {
     /// 1. Confirm to fork receiver 
     /// 2. Send to logserver
     /// 3. Send vote to sender.
-    async fn handle_checked_block(&mut self, block: CachedBlock, sender: SenderType) {
+    async fn handle_checked_block(&mut self, block: CachedBlock, sender: SenderType, origin: SenderType) {
         let _ = self.fork_receiver_cmd_tx.send(
-            ForkReceiverCommand::Confirm(sender.clone(), block.block.n)
+            ForkReceiverCommand::Confirm(origin.clone(), block.block.n)
         );
 
-        let _ = self.logserver_tx.send((sender.clone(), block.clone())).await;
+        let _ = self.logserver_tx.send((origin.clone(), block.clone())).await;
 
         let _ = match &self.block_broadcaster_tx {
             Some(tx) => {
@@ -148,7 +148,7 @@ impl Staging {
             }
         };
 
-        let last_n = self.last_confirmed_n.entry(sender.clone())
+        let last_n = self.last_confirmed_n.entry(origin.clone())
             .or_insert(0);
 
         if block.block.n > *last_n {
@@ -162,7 +162,7 @@ impl Staging {
 
     /// 1. Rollback anything that is not confirmed.
     /// 2. Send backfill Nack to sender
-    async fn handle_error(&mut self, err: Error, sender: SenderType, origin: String) {
+    async fn handle_error(&mut self, err: Error, sender: SenderType, origin: SenderType) {
         error!("Block verification error: {:?}", err);
 
         let last_n = self.last_confirmed_n.get(&sender).unwrap_or(&0);
@@ -171,9 +171,11 @@ impl Staging {
             ForkReceiverCommand::Rollback(sender.clone(), *last_n)
         );
 
+        let (origin_name, origin_sub_id) = origin.to_name_and_sub_id();
+
         let origin = ProtoAuthSenderType {
-            name: origin,
-            sub_id: 0,
+            name: origin_name,
+            sub_id: origin_sub_id,
         };
 
         self.nack(sender, 1 + *last_n, u64::MAX, origin).await;
@@ -185,13 +187,13 @@ impl Staging {
             return;
         }
 
-        let (name, chain_id) = sender.to_name_and_sub_id();
+        let (name, _) = sender.to_name_and_sub_id();
 
 
         let vote = ProtoVote {
             fork_digest: block.block_hash.clone(),
             n: block.block.n,
-            chain_id,
+            chain_id: block.block.chain_id,
             // Unused
             sig_array: vec![],
             view: 0,

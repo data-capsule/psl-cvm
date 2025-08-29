@@ -160,12 +160,12 @@ impl LogServer {
 
         if fork.len() > 0 {
             if fork.iter().last().unwrap().block.n + 1 != block.block.n {
-                warn!("Dropping block, continuity broken. Expected n = {}, got {}", fork.iter().last().unwrap().block.n + 1, block.block.n);
+                warn!("Dropping block, continuity broken. Expected n = {}, got {}. Sender: {:?}", fork.iter().last().unwrap().block.n + 1, block.block.n, sender);
                 return;
             }
         } else {
             if block.block.n != 1 {
-                warn!("Dropping block, continuity broken. Expected n = 1, got {}", block.block.n);
+                warn!("Dropping block, continuity broken. Expected n = 1, got {}. Sender: {:?}", block.block.n, sender);
                 return;
             }
         }

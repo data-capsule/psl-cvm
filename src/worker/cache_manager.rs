@@ -188,7 +188,7 @@ pub type CacheKey = Vec<u8>;
 pub struct CacheManager {
     config: AtomicPSLWorkerConfig,
     command_rx: Receiver<CacheCommand>,
-    block_rx: Receiver<(oneshot::Receiver<Result<CachedBlock, std::io::Error>>, SenderType /* sender */, String /* origin */)>, // Invariant for CacheManager: sender == origin
+    block_rx: Receiver<(oneshot::Receiver<Result<CachedBlock, std::io::Error>>, SenderType /* sender */, SenderType /* origin */)>, // Invariant for CacheManager: sender == origin
     block_sequencer_tx: Sender<SequencerCommand>,
     fork_receiver_cmd_tx: UnboundedSender<ForkReceiverCommand>,
     cache: HashMap<CacheKey, CachedValue>,
@@ -206,7 +206,7 @@ impl CacheManager {
     pub fn new(
         config: AtomicPSLWorkerConfig,
         command_rx: Receiver<CacheCommand>,
-        block_rx: Receiver<(oneshot::Receiver<Result<CachedBlock, std::io::Error>>, SenderType /* sender */, String /* origin */)>, // Invariant for CacheManager: sender == origin
+        block_rx: Receiver<(oneshot::Receiver<Result<CachedBlock, std::io::Error>>, SenderType /* sender */, SenderType /* origin */)>, // Invariant for CacheManager: sender == origin
         block_sequencer_tx: Sender<SequencerCommand>,
         fork_receiver_cmd_tx: UnboundedSender<ForkReceiverCommand>,
     ) -> Self {
