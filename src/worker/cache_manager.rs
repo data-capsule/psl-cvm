@@ -95,9 +95,9 @@ impl CacheConnector {
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Eq, PartialEq)]
 pub struct CachedValue {
-    value: Vec<u8>,
-    seq_num: u64,
-    val_hash: BigInt,
+    pub(crate) value: Vec<u8>,
+    pub(crate) seq_num: u64,
+    pub(crate) val_hash: BigInt,
 }
 
 impl CachedValue {

@@ -14,6 +14,8 @@ use tokio::{
 pub use crate::consensus::batch_proposal::TxWithAckChanTag;
 
 
+#[cfg(feature = "external_cache")]
+use crate::worker::external_cache_manager::ExternalCacheManager;
 use crate::{
     config::{AtomicConfig, AtomicPSLWorkerConfig, PSLWorkerConfig},
     crypto::{AtomicKeyStore, CryptoService, KeyStore},
@@ -44,6 +46,7 @@ pub mod app;
 pub mod block_broadcaster;
 pub mod block_sequencer;
 pub mod cache_manager;
+pub mod external_cache_manager;
 pub mod staging;
 
 use staging::Staging;
@@ -171,7 +174,12 @@ pub struct PSLWorker<E: ClientHandlerTask + Send + Sync + 'static> {
     server: Arc<Server<PinnedPSLWorkerServerContext>>,
     crypto: CryptoService,
 
+    #[cfg(feature = "external_cache")]
+    cache_manager: Arc<Mutex<ExternalCacheManager>>,
+
+    #[cfg(not(feature = "external_cache"))]
     cache_manager: Arc<Mutex<CacheManager>>,
+
     logserver: Arc<Mutex<LogServer>>,
     fork_receiver: Arc<Mutex<crate::storage_server::fork_receiver::ForkReceiver>>,
     block_sequencer: Arc<Mutex<BlockSequencer>>,
@@ -294,7 +302,17 @@ impl<E: ClientHandlerTask + Send + Sync + 'static> PSLWorker<E> {
             ),
         ));
 
+        #[cfg(not(feature = "external_cache"))]
         let cache_manager = Arc::new(Mutex::new(CacheManager::new(
+            config.clone(),
+            cache_rx,
+            block_rx,
+            block_sequencer_tx,
+            command_tx,
+        )));
+
+        #[cfg(feature = "external_cache")]
+        let cache_manager = Arc::new(Mutex::new(ExternalCacheManager::new(
             config.clone(),
             cache_rx,
             block_rx,
@@ -406,7 +424,11 @@ impl<E: ClientHandlerTask + Send + Sync + 'static> PSLWorker<E> {
         });
 
         handles.spawn(async move {
+            #[cfg(not(feature = "external_cache"))]
             let _ = CacheManager::run(cache_manager).await;
+
+            #[cfg(feature = "external_cache")]
+            let _ = ExternalCacheManager::run(cache_manager).await;
         });
 
         handles.spawn(async move {

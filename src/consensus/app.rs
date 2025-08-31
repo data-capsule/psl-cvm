@@ -48,7 +48,7 @@ struct LogStats {
 
 impl LogStats {
     fn new() -> Self {
-        let res = Self {
+        let mut res = Self {
             ci: 0,
             bci: 0,
             view: 0,

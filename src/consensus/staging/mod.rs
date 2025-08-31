@@ -129,7 +129,7 @@ impl Staging {
             &leader_staging_event_order,
         ));
 
-        let ret = Self {
+        let mut ret = Self {
             config,
             client,
             crypto,

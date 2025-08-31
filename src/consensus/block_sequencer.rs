@@ -87,7 +87,7 @@ impl BlockSequencer {
         let perf_counter_unsigned =
             RefCell::new(PerfCounter::new("BlockSequencerUnsigned", &event_order));
 
-        let ret = Self {
+        let mut ret = Self {
             config,
             control_command_rx,
             batch_rx,

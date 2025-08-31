@@ -110,7 +110,7 @@ impl ForkReceiver {
         broadcaster_tx: Sender<MultipartFork>,
         logserver_query_tx: Sender<LogServerQuery>,
     ) -> Self {
-        let ret = Self {
+        let mut ret = Self {
             config,
             crypto,
             client,
