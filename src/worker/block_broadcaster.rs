@@ -171,32 +171,37 @@ impl BlockBroadcaster {
             
             let peers = self.get_peers();
             let threshold = self.get_success_threshold();
-            for (n, block) in self.block_buffer.iter() {
-                if self.wait_for_signal {
-                    if *n > self.deliver_index {
-                        continue;
+
+            if peers.len() > 0 {
+
+                for (n, block) in self.block_buffer.iter() {
+                    if self.wait_for_signal {
+                        if *n > self.deliver_index {
+                            continue;
+                        }
+                    }
+    
+                    let ae = self.wrap_block_for_broadcast(block);
+                    let payload = ProtoPayload {
+                        message: Some(crate::proto::rpc::proto_payload::Message::AppendEntries(ae)),
+                    };
+                    let data = payload.encode_to_vec();
+    
+                    let sz = data.len();
+                    let data = PinnedMessage::from(data, sz, SenderType::Anon);
+    
+                    let _ = PinnedClient::broadcast(
+                        &self.client,
+                        &peers, &data, 
+                        &mut LatencyProfile::new(),
+                        threshold
+                    ).await;
+    
+                    if self.forward_to_staging {
+                        let _ = self.staging_tx.as_ref().unwrap().send(block.clone()).await;
                     }
                 }
 
-                let ae = self.wrap_block_for_broadcast(block);
-                let payload = ProtoPayload {
-                    message: Some(crate::proto::rpc::proto_payload::Message::AppendEntries(ae)),
-                };
-                let data = payload.encode_to_vec();
-
-                let sz = data.len();
-                let data = PinnedMessage::from(data, sz, SenderType::Anon);
-
-                let _ = PinnedClient::broadcast(
-                    &self.client,
-                    &peers, &data, 
-                    &mut LatencyProfile::new(),
-                    threshold
-                ).await;
-
-                if self.forward_to_staging {
-                    let _ = self.staging_tx.as_ref().unwrap().send(block.clone()).await;
-                }
             }
 
             if self.wait_for_signal {

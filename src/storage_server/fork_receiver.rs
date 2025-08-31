@@ -1,6 +1,6 @@
 use std::{collections::{HashMap, VecDeque}, io::Error, sync::Arc};
 
-use log::{debug, warn};
+use log::{debug, error, warn};
 use tokio::sync::{mpsc::UnboundedReceiver, oneshot, Mutex};
 
 use crate::{config::AtomicConfig, crypto::{AtomicKeyStore, CachedBlock, CryptoServiceConnector, FutureHash}, proto::consensus::{HalfSerializedBlock, ProtoAppendEntries}, rpc::{client::{Client, PinnedClient}, SenderType}, utils::{channel::{Receiver, Sender}, StorageServiceConnector}};
@@ -87,7 +87,7 @@ impl ForkReceiver {
             debug!("Only handling commands, pending_cmds = {}, received_len = {} or {}", pending_cmds, received_len, cmds.len());
 
             for cmd in cmds {
-                self.handle_command(cmd).await?;
+                self.handle_command(cmd)?;
             }
 
             return Ok(())
@@ -102,7 +102,7 @@ impl ForkReceiver {
             }
             Some(cmd) = self.cmd_rx.recv() => {
                 // Handle commands
-                self.handle_command(cmd).await?;
+                self.handle_command(cmd)?;
             }
         }
 
@@ -110,7 +110,7 @@ impl ForkReceiver {
     }
 
 
-    async fn handle_command(&mut self, cmd: ForkReceiverCommand) -> Result<(), ()> {
+    fn handle_command(&mut self, cmd: ForkReceiverCommand) -> Result<(), ()> {
         match cmd {
             // Everything <= n is confirmed.
             // Clear it from stats.
@@ -167,7 +167,7 @@ impl ForkReceiver {
         let origin = fork.serialized_blocks[0].origin.clone();
         let chain_id = fork.serialized_blocks[0].chain_id;
         let origin = SenderType::Auth(origin, chain_id);
-        
+ 
         let stats = self.continuity_stats
             .entry(origin.clone())
             .or_insert(VecDeque::new());
@@ -178,22 +178,22 @@ impl ForkReceiver {
 
             // TODO: This step can be made constant time!
             // This is currently O(# pending blocks).
-            let parent_hash = Self::find_parent_hash(stats, &block).await;
+            
+            let parent_hash = Self::find_parent_hash(stats, &block);
             let (fut_block, hash, _parent_hash) = self.crypto.verify_and_prepare_block_simple(block.serialized_body, parent_hash, origin.clone(), self.check_parent_hash).await;
-
+            
             Self::append_block(stats, _n, hash).await;
-            Self::reset_parent_hash(stats, _n - 1, _parent_hash).await;
+            
+            Self::reset_parent_hash(stats, _n - 1, _parent_hash);
 
             // Forward it to storage.
             let storage_acked_block = self.storage.put_nonblocking(fut_block).await;
-
             let _ = self.staging_tx.send((storage_acked_block, sender.clone(), origin.clone())).await;
         }
-
         Ok(())
     }
 
-    async fn find_parent_hash(stats: &mut VecDeque<ContinuityStats>, block: &HalfSerializedBlock) -> FutureHash {
+    fn find_parent_hash(stats: &mut VecDeque<ContinuityStats>, block: &HalfSerializedBlock) -> FutureHash {
         let search_n = block.n - 1;
         stats.binary_search_by_key(&search_n, |b| b.block_n).map(|i| {
             stats[i].block_hash.take()
@@ -211,7 +211,7 @@ impl ForkReceiver {
         });
     }
 
-    async fn reset_parent_hash(stats: &mut VecDeque<ContinuityStats>, n: u64, parent_hash: FutureHash) {
+    fn reset_parent_hash(stats: &mut VecDeque<ContinuityStats>, n: u64, parent_hash: FutureHash) {
         stats.binary_search_by_key(&n, |b| b.block_n).map(|i| {
             stats[i].block_hash = parent_hash;
         }).unwrap_or_else(|_| {

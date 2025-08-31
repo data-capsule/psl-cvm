@@ -92,6 +92,9 @@ pub mod channel {
             }
 
 
+            pub fn len(&self) -> usize {
+                self.0.len()
+            }
         }
 
 

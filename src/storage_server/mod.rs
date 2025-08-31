@@ -2,11 +2,11 @@ pub mod fork_receiver;
 pub mod staging;
 pub mod logserver;
 
-use std::{io::{Error, ErrorKind}, ops::Deref, pin::Pin, sync::Arc};
+use std::{io::{Error, ErrorKind}, ops::Deref, pin::Pin, sync::Arc, time::Duration};
 
-use log::{debug, warn};
+use log::{debug, info, warn};
 use prost::Message as _;
-use tokio::{sync::Mutex, task::JoinSet};
+use tokio::{sync::Mutex, task::JoinSet, time::sleep};
 
 use crate::{config::{AtomicConfig, Config}, crypto::{AtomicKeyStore, CryptoService, KeyStore}, proto::{checkpoint::ProtoBackfillQuery, consensus::ProtoAppendEntries, rpc::ProtoPayload}, rpc::{client::Client, server::{MsgAckChan, RespType, Server, ServerContextType}, MessageRef, SenderType}, utils::{channel::{make_channel, Receiver, Sender}, RocksDBStorageEngine, StorageService}, worker::block_broadcaster::BroadcasterConfig};
 use fork_receiver::ForkReceiver;
@@ -161,8 +161,8 @@ impl StorageNode {
         let ctx = PinnedStorageServerContext::new(
             config.clone(),
             keystore.clone(),
-            fork_receiver_tx,
-            backfill_request_tx,
+            fork_receiver_tx.clone(),
+            backfill_request_tx.clone(),
         );
         let server = Server::new_atomic(config.clone(), ctx, keystore.clone());
 
@@ -172,10 +172,33 @@ impl StorageNode {
         let (logserver_tx, logserver_rx) = make_channel(_chan_depth);
         let (fork_receiver_cmd_tx, fork_receiver_cmd_rx) = tokio::sync::mpsc::unbounded_channel();
         let (gc_tx, gc_rx) = make_channel(_chan_depth);
+        let (block_broadcaster_tx, block_broadcaster_rx) = make_channel(_chan_depth);
+
+
+        // let _staging_tx = staging_tx.clone();
+        // let _fork_receiver_tx = fork_receiver_tx.clone();
+        // let _backfill_request_tx = backfill_request_tx.clone();
+        // let _logserver_tx = logserver_tx.clone();
+        // let _gc_tx = gc_tx.clone();
+        // let _fork_receiver_cmd_tx = fork_receiver_cmd_tx.clone();
+        // let _block_broadcaster_tx = block_broadcaster_tx.clone();
+
+        // tokio::spawn(async move {
+        //     loop {
+        //         sleep(Duration::from_secs(1)).await;
+        //         info!("Staging tx pending: {}", _staging_tx.len());
+        //         info!("Fork receiver tx pending: {}", _fork_receiver_tx.len());
+        //         info!("Backfill request tx pending: {}", _backfill_request_tx.len());
+        //         info!("Logserver tx pending: {}", _logserver_tx.len());
+        //         info!("GC tx pending: {}", _gc_tx.len());
+        //         // info!("Fork receiver cmd tx pending: {}", _fork_receiver_cmd_tx.);
+        //         info!("Block broadcaster tx pending: {}", _block_broadcaster_tx.len());
+        //     }
+        // });
+        
 
         let fork_receiver = ForkReceiver::new(config.clone(), keystore.clone(), true, fork_receiver_rx, fork_receiver_crypto, fork_receiver_storage, staging_tx, fork_receiver_cmd_rx);
 
-        let (block_broadcaster_tx, block_broadcaster_rx) = make_channel(_chan_depth);
         let staging = Staging::new(config.clone(), keystore.clone(), staging_rx, logserver_tx, Some(gc_tx), fork_receiver_cmd_tx, Some(block_broadcaster_tx), true);
 
         let logserver_storage = storage.get_connector(crypto.get_connector());
