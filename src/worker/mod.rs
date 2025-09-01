@@ -314,6 +314,7 @@ impl<E: ClientHandlerTask + Send + Sync + 'static> PSLWorker<E> {
         #[cfg(feature = "external_cache")]
         let cache_manager = Arc::new(Mutex::new(ExternalCacheManager::new(
             config.clone(),
+            keystore.clone(),
             cache_rx,
             block_rx,
             block_sequencer_tx,

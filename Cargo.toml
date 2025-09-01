@@ -108,11 +108,9 @@ pirateship = ["round_robin_leader", "dynamic_sign", "view_change"]
 
 # Worker features.
 external_cache = []
-external_cache_nimble = ["external_cache"]
-external_cache_pirateship = ["external_cache", "app_kvs"]
 
 # default = ["pirateship", "app_logger", "storage", "fast_path", "platforms", "gossip"]
-default = ["signed_raft", "app_kvs", "storage", "fast_path", "platforms", "gossip", "external_cache_nimble"]
+default = ["signed_raft", "app_kvs", "storage", "fast_path", "platforms", "gossip", "external_cache"]
 # default = ["jolteon", "app_logger", "storage"]
 # default = ["engraft", "app_kvs", "storage", "fast_path", "platforms"]
 
