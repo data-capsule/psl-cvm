@@ -74,6 +74,7 @@ max_write_buffers_to_merge = 1
 [node_config.worker_config]
 all_writes_max_batch_size = 1000
 self_writes_max_batch_size = 1000
+self_reads_max_batch_size = 1000
 batch_max_delay_ms = 2
 signature_max_delay_ms = 20000
 signature_max_delay_blocks = 50

@@ -4,7 +4,7 @@ use hashbrown::HashMap;
 use log::{error, info, warn};
 use num_bigint::{BigInt, Sign};
 use thiserror::Error;
-use tokio::sync::{mpsc::UnboundedSender, oneshot, Mutex};
+use tokio::sync::{mpsc::UnboundedSender, oneshot::{self, error::RecvError}, Mutex};
 use crate::{config::AtomicPSLWorkerConfig, crypto::{hash, CachedBlock}, proto::execution::{ProtoTransactionOp, ProtoTransactionOpType}, rpc::SenderType, storage_server::fork_receiver::ForkReceiverCommand, utils::{channel::{Receiver, Sender}, timer::ResettableTimer}, worker::block_sequencer::{BlockSeqNumQuery, VectorClock}};
 use crate::worker::block_sequencer::SequencerCommand;
 
@@ -200,6 +200,7 @@ pub struct CacheManager {
     log_timer: Arc<Pin<Box<ResettableTimer>>>,
 
     blocked_on_vc_wait: Option<oneshot::Receiver<()>>,
+    block_on_read_snapshot: Option<oneshot::Receiver<()>>,
 }
 
 impl CacheManager {
@@ -225,6 +226,7 @@ impl CacheManager {
             last_batch_time: Instant::now(),
             log_timer,
             blocked_on_vc_wait: None,
+            block_on_read_snapshot: None,
         }
     }
 
@@ -239,61 +241,97 @@ impl CacheManager {
         }
     }
 
-    async fn worker(&mut self) -> Result<(), ()> {
-        if self.blocked_on_vc_wait.is_some() {
-            tokio::select! {
-                Ok(_) = self.blocked_on_vc_wait.as_mut().unwrap() => {
-                    self.blocked_on_vc_wait = None;
-                }
-                Some((block_rx, sender, _)) = self.block_rx.recv() => {
-                    let block = block_rx.await.expect("Block rx error");
-                    if let Ok(block) = block {
-                        self.handle_block(sender, block).await;
-                    } else {
-                        warn!("Failed to get block from block_rx");
-                    }
-                }
-                _ = self.batch_timer.wait() => {
-    
-                    // This is safe to do here.
-                    // The tick won't interrupt handle_command or handle_block's logic.
-                    if self.last_batch_time.elapsed() > Duration::from_millis(self.config.get().worker_config.batch_max_delay_ms) {
-                        self.last_batch_time = Instant::now();
-                        self.block_sequencer_tx.send(SequencerCommand::ForceMakeNewBlock).await;
-                    }
-                }
-                _ = self.log_timer.wait() => {
-                    self.log_stats().await;
-                }
-            }
-        } else {
-            tokio::select! {
-                Some(command) = self.command_rx.recv() => {
-                    self.handle_command(command).await;
-                }
-                Some((block_rx, sender, _)) = self.block_rx.recv() => {
-                    let block = block_rx.await.expect("Block rx error");
-                    if let Ok(block) = block {
-                        self.handle_block(sender, block).await;
-                    } else {
-                        warn!("Failed to get block from block_rx");
-                    }
-                }
-                _ = self.batch_timer.wait() => {
-    
-                    // This is safe to do here.
-                    // The tick won't interrupt handle_command or handle_block's logic.
-                    if self.last_batch_time.elapsed() > Duration::from_millis(self.config.get().worker_config.batch_max_delay_ms) {
-                        self.last_batch_time = Instant::now();
-                        self.block_sequencer_tx.send(SequencerCommand::ForceMakeNewBlock).await;
-                    }
-                }
-                _ = self.log_timer.wait() => {
-                    self.log_stats().await;
-                }
-            }
+    async fn check_block_on_vc_wait(blocked_on_vc_wait: &mut Option<oneshot::Receiver<()>>) -> Option<Result<(), RecvError>> {
+        match blocked_on_vc_wait.as_mut() {
+            Some(rx) => Some(rx.await),
+            None => {
+                std::future::pending::<()>().await;
+                None
+            },
         }
-        
+    }
+
+    async fn check_block_on_read_snapshot(block_on_read_snapshot: &mut Option<oneshot::Receiver<()>>) -> Option<Result<(), RecvError>> {
+        match block_on_read_snapshot.as_mut() {
+            Some(rx) => Some(rx.await),
+            None => {
+                std::future::pending::<()>().await;
+                None
+            },
+        }
+    }
+
+    async fn check_block_rx(block_rx: &mut Receiver<(oneshot::Receiver<Result<CachedBlock, std::io::Error>>, SenderType /* sender */, SenderType /* origin */)>, block_on_read_snapshot_is_some: bool) -> Option<(oneshot::Receiver<Result<CachedBlock, std::io::Error>>, SenderType /* sender */, SenderType /* origin */)> {
+        if block_on_read_snapshot_is_some {
+            std::future::pending::<()>().await;
+            None
+        } else {
+            block_rx.recv().await
+        }
+    }
+
+    async fn check_command_rx(command_rx: &mut Receiver<CacheCommand>, blocked_on_vc_wait_is_some: bool) -> Option<CacheCommand> {
+        if blocked_on_vc_wait_is_some {
+            std::future::pending::<()>().await;
+            None
+        } else {
+            command_rx.recv().await
+        }
+    }
+
+    async fn worker(&mut self) -> Result<(), ()> {
+
+        let block_on_vc_wait_is_some = self.blocked_on_vc_wait.is_some();
+        let block_on_read_snapshot_is_some = self.block_on_read_snapshot.is_some();
+
+        /*
+        We only process new blocks from other workers if block_on_read_snapshot is None.
+        Processing new blocks is the only way to clear block_on_vc_wait.
+
+        We only process new commands if block_on_vc_wait is None.
+        Processing new commands is the only way to clear block_on_read_snapshot.
+
+        So, there is a chance of deadlock if both these blockers are active at the same time.
+        However, in that case, the batch timer will fire, and a new block will be formed.
+        (block_on_read_snapshot is set => there is at least one read op in the block sequencer => There will a new block when forced.)
+        This new block clears block_on_read_snapshot, and that will eventually lead to enough new blocks from others to clear block_on_vc_wait.
+        */
+
+        tokio::select! {
+            biased;
+            Some((block_rx, sender, _)) = Self::check_block_rx(&mut self.block_rx, block_on_read_snapshot_is_some) => {
+                let block = block_rx.await.expect("Block rx error");
+                if let Ok(block) = block {
+                    self.handle_block(sender, block).await;
+                } else {
+                    warn!("Failed to get block from block_rx");
+                }
+            },
+
+            Some(Ok(_)) = Self::check_block_on_vc_wait(&mut self.blocked_on_vc_wait) => {
+                self.blocked_on_vc_wait = None;
+            },
+            Some(Ok(_)) = Self::check_block_on_read_snapshot(&mut self.block_on_read_snapshot) => {
+                self.block_on_read_snapshot = None;
+                warn!("Snapshot cleared");
+            },
+            Some(command) = Self::check_command_rx(&mut self.command_rx, block_on_vc_wait_is_some) => {
+                self.handle_command(command).await;
+            },
+            
+            _ = self.batch_timer.wait() => {
+                // This is safe to do here.
+                // The tick won't interrupt handle_command or handle_block's logic.
+                if self.last_batch_time.elapsed() > Duration::from_millis(self.config.get().worker_config.batch_max_delay_ms) {
+                    self.last_batch_time = Instant::now();
+                    let _ = self.block_sequencer_tx.send(SequencerCommand::ForceMakeNewBlock).await;
+                }
+            },
+            _ = self.log_timer.wait() => {
+                self.log_stats().await;
+            },
+        }
+   
         Ok(())
     }
 
@@ -319,8 +357,26 @@ impl CacheManager {
     async fn handle_command(&mut self, command: CacheCommand) {
         match command {
             CacheCommand::Get(key, response_tx) => {
-                let res = self.cache.get(&key).map(|v| (v.value.clone(), v.seq_num));
-                let _ = response_tx.send(res.ok_or(CacheError::KeyNotFound));
+                let res = self.cache.get(&key);
+                let _ = response_tx.send(res.map(|v| (v.value.clone(), v.seq_num)).ok_or(CacheError::KeyNotFound));
+
+                let snapshot_propagated_signal_tx = if self.block_on_read_snapshot.is_some() {
+                    None
+                } else {
+                    let (tx, rx) = oneshot::channel();
+                    self.block_on_read_snapshot = Some(rx);
+                    Some(tx)
+                };
+
+                // On the first read op of the block, the snapshot is fixed.
+                // Henceforth, all reads are based on this snapshot.
+                // Until the block sequencer proposes the new block. After that, the snapshot can be updated.
+                let _ = self.block_sequencer_tx.send(SequencerCommand::SelfReadOp { 
+                    key,
+                    value: res.map(|v| v.clone()),
+                    snapshot_propagated_signal_tx
+                }).await;
+                warn!("Snapshot set");
 
                 // TODO: Fill from checkpoint if key not found.
             }
@@ -329,14 +385,14 @@ impl CacheManager {
                     let seq_num = self.cache.get_mut(&key).unwrap().blind_update(value.clone(), val_hash.clone());
                     response_tx.send(Ok(seq_num)).unwrap();
                     
-                    self.block_sequencer_tx.send(SequencerCommand::SelfWriteOp { key, value: CachedValue::new_with_seq_num(value, seq_num, val_hash), seq_num_query }).await;
+                    let _ = self.block_sequencer_tx.send(SequencerCommand::SelfWriteOp { key, value: CachedValue::new_with_seq_num(value, seq_num, val_hash), seq_num_query }).await;
                     return;
                 }
 
                 let cached_value = CachedValue::new(value.clone(), val_hash.clone());
                 self.cache.insert(key.clone(), cached_value);
                 response_tx.send(Ok(1)).unwrap();
-                self.block_sequencer_tx.send(SequencerCommand::SelfWriteOp { key, value: CachedValue::new(value, val_hash), seq_num_query }).await;
+                let _ = self.block_sequencer_tx.send(SequencerCommand::SelfWriteOp { key, value: CachedValue::new(value, val_hash), seq_num_query }).await;
 
             }
             CacheCommand::Cas(key, value, expected_seq_num, response_tx) => {
@@ -344,7 +400,7 @@ impl CacheManager {
             }
             CacheCommand::Commit => {
                 self.last_batch_time = Instant::now();
-                self.block_sequencer_tx.send(SequencerCommand::MakeNewBlock).await;
+                let _ = self.block_sequencer_tx.send(SequencerCommand::MakeNewBlock).await;
             }
             CacheCommand::WaitForVC(vc) => {
                 let (tx, rx) = oneshot::channel();
@@ -398,19 +454,19 @@ impl CacheManager {
         }
 
         // Advance the vector clock in the sequencer.
+        if block.block.vector_clock.is_some() {
+            let vector_clock = block.block.vector_clock.as_ref().unwrap();
+            for entry in vector_clock.entries.iter() {
+                let sender = SenderType::Auth(entry.sender.clone(), 0);
+                let _ = self.block_sequencer_tx.send(SequencerCommand::AdvanceVC { sender, block_seq_num: entry.seq_num }).await;
+            }
+        }
+
         let block_seq_num = block.block.n;
         let _ = self.block_sequencer_tx.send(SequencerCommand::AdvanceVC {
             sender: sender.clone(),
             block_seq_num,
         }).await;
-
-        if block.block.vector_clock.is_some() {
-            let vector_clock = block.block.vector_clock.as_ref().unwrap();
-            for entry in vector_clock.entries.iter() {
-                let sender = SenderType::Auth(entry.sender.clone(), 0);
-                self.block_sequencer_tx.send(SequencerCommand::AdvanceVC { sender, block_seq_num: entry.seq_num }).await;
-            }
-        }
 
 
         // A new block can be formed now.

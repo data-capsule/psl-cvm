@@ -23,6 +23,13 @@ pub enum SequencerCommand {
         seq_num_query: BlockSeqNumQuery,
     },
 
+    /// Read Op from myself
+    SelfReadOp {
+        key: CacheKey,
+        value: Option<CachedValue>, // Could be None if the key was not found.
+        snapshot_propagated_signal_tx: Option<oneshot::Sender<()>>,
+    },
+
     /// Write Op from other node, that I propagate
     OtherWriteOp {
         key: CacheKey,
@@ -217,6 +224,8 @@ pub struct BlockSequencer {
     last_block_hash: FutureHash,
     self_write_op_bag: Vec<(CacheKey, CachedValue)>,
     all_write_op_bag: Vec<(CacheKey, CachedValue)>,
+    self_read_op_bag: Vec<(CacheKey, Option<CachedValue>)>,
+
     curr_vector_clock: VectorClock,
 
     cache_manager_rx: Receiver<SequencerCommand>,
@@ -229,6 +238,8 @@ pub struct BlockSequencer {
     vc_wait_buffer: HashMap<VectorClock, Vec<oneshot::Sender<()>>>,
 
     chain_id: u64, // This is unused for PSL, but useful for Nimble port.
+
+    snapshot_propagated_signal_tx: Vec<oneshot::Sender<()>>,
 }
 
 impl BlockSequencer {
@@ -245,6 +256,7 @@ impl BlockSequencer {
             last_block_hash: FutureHash::Immediate(default_hash()),
             self_write_op_bag: Vec::new(),
             all_write_op_bag: Vec::new(),
+            self_read_op_bag: Vec::new(),
             curr_vector_clock: VectorClock::new(),
             cache_manager_rx,
             node_broadcaster_tx,
@@ -252,6 +264,7 @@ impl BlockSequencer {
             log_timer,
             vc_wait_buffer: HashMap::new(),
             chain_id,
+            snapshot_propagated_signal_tx: Vec::new(),
         }
     }
 
@@ -291,6 +304,12 @@ impl BlockSequencer {
                     }
                 }
             },
+            SequencerCommand::SelfReadOp { key, value, snapshot_propagated_signal_tx } => {
+                self.self_read_op_bag.push((key, value));
+                if let Some(tx) = snapshot_propagated_signal_tx {
+                    self.snapshot_propagated_signal_tx.push(tx);
+                }
+            },
             SequencerCommand::OtherWriteOp { key, value } => {
                 self.all_write_op_bag.push((key, value));
             },
@@ -314,8 +333,12 @@ impl BlockSequencer {
         let config = self.config.get();
         let all_write_batch_size = config.worker_config.all_writes_max_batch_size;
         let self_write_batch_size = config.worker_config.self_writes_max_batch_size;
+        let self_read_batch_size = config.worker_config.self_reads_max_batch_size;
 
-        if self.all_write_op_bag.len() < all_write_batch_size  || self.self_write_op_bag.len() < self_write_batch_size {
+        if self.all_write_op_bag.len() < all_write_batch_size
+        || self.self_write_op_bag.len() < self_write_batch_size 
+        || self.self_read_op_bag.len() < self_read_batch_size
+        {
             return; // Not enough writes to form a block
         }
 
@@ -323,7 +346,7 @@ impl BlockSequencer {
     }
 
     async fn force_prepare_new_block(&mut self) {
-        if self.all_write_op_bag.is_empty() {
+        if self.all_write_op_bag.is_empty() && self.self_read_op_bag.is_empty() {
             return;
         }
         
@@ -340,6 +363,8 @@ impl BlockSequencer {
         let read_vc = self.curr_vector_clock.clone();
         self.curr_vector_clock.advance(me.clone(), seq_num);
         assert!(read_vc.get(&me) + 1 == seq_num);
+
+        let _self_reads = self.self_read_op_bag.drain(..).collect::<Vec<_>>();
 
         let all_writes = Self::wrap_vec(
             Self::dedup_vec(self.all_write_op_bag.drain(..)),
@@ -373,14 +398,19 @@ impl BlockSequencer {
         self.last_block_hash = FutureHash::Future(hash_rx);
 
         // Nodes get all writes so as to virally send writes from other nodes.
-        self.node_broadcaster_tx.send(all_writes_rx).await;
+        let _ = self.node_broadcaster_tx.send(all_writes_rx).await;
 
         // Storage only gets self writes.
         // Strong convergence will ensure that the checkpoint state matches the state using all_writes above.
         // Same VC => Same state.
-        self.storage_broadcaster_tx.send(self_writes_rx).await;
+        let _ = self.storage_broadcaster_tx.send(self_writes_rx).await;
 
         // TODO: Send hash_rx2 to client reply handler.
+
+        // Signal the cache manager so that it can start processing blocks from others.
+        for tx in self.snapshot_propagated_signal_tx.drain(..) {
+            let _ = tx.send(());
+        }
     }
 
     fn wrap_vec(

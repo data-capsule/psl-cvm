@@ -94,6 +94,7 @@ pub struct WorkerConfig {
     pub gossip_downstream_worker_list: Vec<String>,
     pub all_writes_max_batch_size: usize,
     pub self_writes_max_batch_size: usize,
+    pub self_reads_max_batch_size: usize,
     pub batch_max_delay_ms: u64,
     pub signature_max_delay_ms: u64,
     pub signature_max_delay_blocks: u64,
