@@ -24,5 +24,7 @@ message ProtoPayload {
 
         proto.checkpoint.ProtoBackfillQuery backfill_query = 8;
 
+        proto.consensus.ProtoVectorClock heartbeat = 9;
+
     }
 }

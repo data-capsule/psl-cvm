@@ -2,11 +2,11 @@ use std::{fmt::{self, Display, Debug}, ops::{Deref, DerefMut}, pin::Pin, sync::A
 
 use hashbrown::HashMap;
 use itertools::Itertools;
-use log::info;
+use log::{debug, error, info, warn};
 use prost::Message;
-use tokio::sync::{oneshot, Mutex};
+use tokio::{sync::{oneshot, Mutex}, time::{interval, sleep}};
 
-use crate::{config::AtomicPSLWorkerConfig, crypto::{default_hash, CachedBlock, CryptoServiceConnector, FutureHash}, proto::{consensus::{ProtoBlock, ProtoVectorClock, ProtoVectorClockEntry}, execution::{ProtoTransaction, ProtoTransactionOp, ProtoTransactionOpType, ProtoTransactionPhase}}, rpc::SenderType, utils::{channel::{Receiver, Sender}, timer::ResettableTimer}};
+use crate::{config::AtomicPSLWorkerConfig, crypto::{default_hash, CachedBlock, CryptoServiceConnector, FutureHash}, proto::{consensus::{ProtoBlock, ProtoVectorClock, ProtoVectorClockEntry}, execution::{ProtoTransaction, ProtoTransactionOp, ProtoTransactionOpType, ProtoTransactionPhase}, rpc::ProtoPayload}, rpc::{client::PinnedClient, PinnedMessage, SenderType}, utils::{channel::{Receiver, Sender}, timer::ResettableTimer}};
 
 use super::cache_manager::{CacheKey, CachedValue};
 
@@ -54,6 +54,9 @@ pub enum SequencerCommand {
 
     /// Buffer this request, send ack once the VC is >= the one asked for.
     WaitForVC(VectorClock, oneshot::Sender<()>),
+
+    /// Force unblock all buffered waiters >= the given VC.
+    UnblockVC(VectorClock),
 }
 
 #[derive(Clone)]
@@ -219,6 +222,7 @@ impl Debug for VectorClock {
 pub struct BlockSequencer {
     config: AtomicPSLWorkerConfig,
     crypto: CryptoServiceConnector,
+    client: PinnedClient,
 
     curr_block_seq_num: u64,
     last_block_hash: FutureHash,
@@ -244,6 +248,7 @@ pub struct BlockSequencer {
 
 impl BlockSequencer {
     pub fn new(config: AtomicPSLWorkerConfig, crypto: CryptoServiceConnector,
+        client: PinnedClient,
         cache_manager_rx: Receiver<SequencerCommand>,
         node_broadcaster_tx: Sender<oneshot::Receiver<CachedBlock>>,
         storage_broadcaster_tx: Sender<oneshot::Receiver<CachedBlock>>,
@@ -251,7 +256,7 @@ impl BlockSequencer {
     ) -> Self {
         let log_timer = ResettableTimer::new(Duration::from_millis(config.get().app_config.logger_stats_report_ms));
         Self {
-            config, crypto,
+            config, crypto, client,
             curr_block_seq_num: 1,
             last_block_hash: FutureHash::Immediate(default_hash()),
             self_write_op_bag: Vec::new(),
@@ -326,10 +331,18 @@ impl BlockSequencer {
             SequencerCommand::WaitForVC(vc, sender) => {
                 self.buffer_vc_wait(vc, sender).await;
             }
+            SequencerCommand::UnblockVC(vc) => {
+                self._flush_vc_wait_buffer(vc);
+            }
         }
     }
 
     async fn maybe_prepare_new_block(&mut self) {
+        if self.vc_wait_buffer.len() > 0 {
+            // Blocked. So send heartbeat to sequencer.
+            self.send_heartbeat().await;
+        }
+
         let config = self.config.get();
         let all_write_batch_size = config.worker_config.all_writes_max_batch_size;
         let self_write_batch_size = config.worker_config.self_writes_max_batch_size;
@@ -342,15 +355,72 @@ impl BlockSequencer {
             return; // Not enough writes to form a block
         }
 
+        if self.self_write_op_bag.is_empty() && self.self_read_op_bag.is_empty() {
+            self.forward_just_other_writes().await;
+            return;
+        }
+
         self.do_prepare_new_block().await;
     }
 
     async fn force_prepare_new_block(&mut self) {
+
+        // Always do this.
+        if self.vc_wait_buffer.len() > 0 {
+            // Blocked. So send heartbeat to sequencer.
+            self.send_heartbeat().await;
+        }
+
         if self.all_write_op_bag.is_empty() && self.self_read_op_bag.is_empty() {
+            return;
+        }
+
+        if self.self_write_op_bag.is_empty() && self.self_read_op_bag.is_empty() {
+            self.forward_just_other_writes().await;
             return;
         }
         
         self.do_prepare_new_block().await;
+    }
+
+    async fn send_heartbeat(&mut self) {
+        debug!("Sending heartbeat with vc: {:?}", self.curr_vector_clock);
+        let vc = self.curr_vector_clock.clone();
+        let vc = vc.serialize();
+        let payload = ProtoPayload {
+            message: Some(crate::proto::rpc::proto_payload::Message::Heartbeat(vc)),
+        };
+
+        let buf = payload.encode_to_vec();
+        let sz = buf.len();
+        let request = PinnedMessage::from(buf, sz, crate::rpc::SenderType::Anon);
+
+        let _ = PinnedClient::send(&self.client, &"sequencer1".to_string(), request.as_ref()).await;
+    }
+
+
+
+    /// Same as do_prepare_new_block, but without self writes and reads.
+    /// Doesn't increment the seq_num.
+    /// This helps to synchronize the read_vc of all workers.
+    async fn forward_just_other_writes(&mut self) {
+        let seq_num = self.curr_block_seq_num;
+
+        let all_writes = Self::wrap_vec(
+            Self::dedup_vec(self.all_write_op_bag.drain(..)),
+            seq_num,
+            Some(self.curr_vector_clock.serialize()),
+            String::from("god"),
+            self.chain_id,
+        );
+
+        let (all_writes_rx, _, _) = self.crypto.prepare_block(
+            all_writes,
+            false,
+            FutureHash::Immediate(default_hash())
+        ).await;
+
+        let _ = self.node_broadcaster_tx.send(all_writes_rx).await;
     }
 
     async fn do_prepare_new_block(&mut self) {
@@ -463,17 +533,25 @@ impl BlockSequencer {
 
 
     async fn flush_vc_wait_buffer(&mut self) {
-        let mut to_remove = Vec::new();
+        if self.vc_wait_buffer.len() > 0 {
+            warn!("Current VC: {}, VC wait buffer: {:?}", self.curr_vector_clock, self.vc_wait_buffer);
+        }
 
+        self._flush_vc_wait_buffer(self.curr_vector_clock.clone());
+    }
+    
+    fn _flush_vc_wait_buffer(&mut self, target_vc: VectorClock) {
+        
+        let mut to_remove = Vec::new();
         for (vc, _) in self.vc_wait_buffer.iter() {
-            if self.curr_vector_clock >= *vc {
+            if target_vc >= *vc {
                 to_remove.push(vc.clone());
             }
         }
 
         for vc in to_remove.iter() {
             let mut senders = self.vc_wait_buffer.remove(vc).unwrap();
-            for sender in senders.drain(..) {
+            for sender in senders.drain(..) {                
                 let _ = sender.send(());
             }
         }

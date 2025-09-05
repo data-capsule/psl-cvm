@@ -57,6 +57,7 @@ pub struct PSLWorkerServerContext {
     backfill_request_tx: Sender<ProtoBackfillQuery>,
     fork_receiver_tx: Sender<(ProtoAppendEntries, SenderType)>,
     client_request_tx: Sender<TxWithAckChanTag>,
+    sequencer_request_tx: Sender<TxWithAckChanTag>,
     staging_tx: Sender<VoteWithSender>,
 }
 
@@ -71,6 +72,7 @@ impl PinnedPSLWorkerServerContext {
         fork_receiver_tx: Sender<(ProtoAppendEntries, SenderType)>,
         client_request_tx: Sender<TxWithAckChanTag>,
         staging_tx: Sender<VoteWithSender>,
+        sequencer_request_tx: Sender<TxWithAckChanTag>,
     ) -> Self {
         let context = PSLWorkerServerContext {
             config,
@@ -78,7 +80,8 @@ impl PinnedPSLWorkerServerContext {
             backfill_request_tx,
             fork_receiver_tx,
             client_request_tx,
-            staging_tx,
+            staging_tx, 
+            sequencer_request_tx,
         };
         Self(Arc::new(Box::pin(context)))
     }
@@ -144,6 +147,15 @@ impl ServerContextType for PinnedPSLWorkerServerContext {
                 return Ok(RespType::NoResp);
             }
             crate::proto::rpc::proto_payload::Message::ClientRequest(client_request) => {
+                // Is it the sequencer request?
+                let (sender_name, _) = sender.to_name_and_sub_id();
+                if sender_name.contains("sequencer") {
+                    self.sequencer_request_tx
+                        .send((client_request.tx, (ack_chan, client_request.client_tag, sender)))
+                        .await
+                        .expect("Channel send error");
+                    return Ok(RespType::NoResp);
+                }
                 let client_tag = client_request.client_tag;
                 
                 self.client_request_tx
@@ -263,6 +275,7 @@ impl<E: ClientHandlerTask + Send + Sync + 'static> PSLWorker<E> {
         let (logserver_tx, logserver_rx) = make_channel(_chan_depth as usize);
         let (gc_tx, gc_rx) = make_channel(_chan_depth as usize);
         let (staging_tx, staging_rx) = make_channel(_chan_depth as usize);
+        let (sequencer_request_tx, sequencer_request_rx) = make_channel(_chan_depth as usize);
 
         let context = PinnedPSLWorkerServerContext::new(
             og_config.clone(),
@@ -271,6 +284,7 @@ impl<E: ClientHandlerTask + Send + Sync + 'static> PSLWorker<E> {
             fork_receiver_tx,
             client_request_tx.clone(),
             vote_tx,
+            sequencer_request_tx,
         );
         let server = Arc::new(Server::new_atomic(
             og_config.clone(),
@@ -306,6 +320,7 @@ impl<E: ClientHandlerTask + Send + Sync + 'static> PSLWorker<E> {
         let cache_manager = Arc::new(Mutex::new(CacheManager::new(
             config.clone(),
             cache_rx,
+            sequencer_request_rx,
             block_rx,
             block_sequencer_tx,
             command_tx,
@@ -321,9 +336,11 @@ impl<E: ClientHandlerTask + Send + Sync + 'static> PSLWorker<E> {
             command_tx,
         )));
 
+        let bs_client = Client::new_atomic(og_config.clone(), keystore.clone(), false, 0).into();
         let block_sequencer = Arc::new(Mutex::new(BlockSequencer::new(
             config.clone(),
             crypto.get_connector(),
+            bs_client,
             block_sequencer_rx,
             node_broadcaster_tx,
             storage_broadcaster_tx,

@@ -1,12 +1,12 @@
-use std::{cmp::Ordering, collections::{BinaryHeap, HashMap, VecDeque}, fs::File, pin::Pin, sync::Arc, time::Duration};
+use std::{cmp::Ordering, collections::{BinaryHeap, HashMap, HashSet, VecDeque}, fs::File, pin::Pin, sync::Arc, time::Duration};
 
-use log::{debug, error, info, trace};
+use log::{debug, error, info, trace, warn};
 use rand::seq::IteratorRandom;
 use tokio::{sync::{oneshot, Mutex}, task::JoinSet};
 use twox_hash::XxHash64;
 use std::io::Write;
 
-use crate::{config::AtomicConfig, crypto::CachedBlock, rpc::SenderType, sequencer::{commit_buffer::BlockStats, controller::ControllerCommand}, utils::{channel::{make_channel, Receiver, Sender}, timer::ResettableTimer}, worker::{block_sequencer::VectorClock, cache_manager::{process_tx_op, CacheKey, CachedValue}}};
+use crate::{config::AtomicConfig, crypto::CachedBlock, proto::consensus::ProtoVectorClock, rpc::SenderType, sequencer::{commit_buffer::BlockStats, controller::ControllerCommand}, utils::{channel::{make_channel, Receiver, Sender}, timer::ResettableTimer}, worker::{block_sequencer::VectorClock, cache_manager::{process_tx_op, CacheKey, CachedValue}}};
 
 struct BlockWithSeqNum(
     i128 /* this is negative of seq_num, since we use a max heap as min heap */,
@@ -38,6 +38,7 @@ impl Ord for BlockWithSeqNum {
 pub struct Auditor {
     config: AtomicConfig,
     auditor_rx: Receiver<(BlockStats, CachedBlock)>,
+    heartbeat_rx: Receiver<(ProtoVectorClock, SenderType)>,
     controller_tx: Sender<ControllerCommand>,
 
     unaudited_buffer: HashMap<
@@ -51,6 +52,11 @@ pub struct Auditor {
     audit_timer: Arc<Pin<Box<ResettableTimer>>>,
     log_timer: Arc<Pin<Box<ResettableTimer>>>,
     frontier_cut: HashMap<String, VectorClock>,
+
+    /// For each origin, all blocks that are committed.
+    committed_vc: VectorClock,
+
+    heartbeat_vcs: HashMap<SenderType, VectorClock>,
 
     dry_run_mode: bool,
 
@@ -69,7 +75,7 @@ impl Auditor {
     const NUM_SHARDS: usize = 16;
 
 
-    pub fn new(config: AtomicConfig, auditor_rx: Receiver<(BlockStats, CachedBlock)>, controller_tx: Sender<ControllerCommand>, dry_run_mode: bool) -> Self {
+    pub fn new(config: AtomicConfig, auditor_rx: Receiver<(BlockStats, CachedBlock)>, controller_tx: Sender<ControllerCommand>, heartbeat_rx: Receiver<(ProtoVectorClock, SenderType)>, dry_run_mode: bool) -> Self {
         let audit_timer = ResettableTimer::new(Duration::from_millis(config.get().consensus_config.max_audit_delay_ms));
         let log_timer = ResettableTimer::new(Duration::from_millis(config.get().app_config.logger_stats_report_ms));
         
@@ -81,7 +87,9 @@ impl Auditor {
         Self {
             config,
             auditor_rx,
+            heartbeat_rx,
             controller_tx,
+            heartbeat_vcs: HashMap::new(),
 
             unaudited_buffer: HashMap::new(),
             unaudited_buffer_size: 0,
@@ -95,6 +103,7 @@ impl Auditor {
             dry_run_mode,
 
             frontier_cut: HashMap::new(),
+            committed_vc: VectorClock::new(),
 
             snapshot_log_file: File::create("snapshot.log").unwrap(),
 
@@ -149,6 +158,10 @@ impl Auditor {
     async fn handle_inputs(&mut self) -> Result<bool, ()> {
         tokio::select! {
             biased;
+            _ = self.log_timer.wait() => {
+                self.log_stats().await;
+                Ok(false)
+            }
             Some((block_stats, block)) = self.auditor_rx.recv() => {
                 self.handle_block(block_stats, block).await;
                 Ok(false)
@@ -156,11 +169,16 @@ impl Auditor {
             _ = self.audit_timer.wait() => {
                 Ok(true)
             }
-            _ = self.log_timer.wait() => {
-                self.log_stats().await;
+            Some((proto_heartbeat_vc, sender)) = self.heartbeat_rx.recv() => {
+                debug!("Received heartbeat from worker: {:?} with vc: {:?}", sender, proto_heartbeat_vc);
+                self.handle_heartbeat(proto_heartbeat_vc, sender).await;
                 Ok(false)
             }
         }
+    }
+
+    async fn handle_heartbeat(&mut self, proto_heartbeat_vc: ProtoVectorClock, sender: SenderType) {
+        self.heartbeat_vcs.insert(sender, VectorClock::from(Some(proto_heartbeat_vc)));
     }
 
     fn should_audit(&self) -> bool {
@@ -173,9 +191,6 @@ impl Auditor {
     /// 3. If number of snapshots exceeds the limit, send command to block the workers.
     /// 4. Unblock when the workers are updated.
     async fn do_audit(&mut self) {
-        self.cleanup_old_snapshots().await;
-        self.cleanup_update_buffer().await;
-
         while self.unaudited_buffer_size > 0 {
             let possible_targets = self.unaudited_buffer.iter()
                 .filter_map(|(target, queue)| {
@@ -196,6 +211,16 @@ impl Auditor {
                 .unwrap();
 
             if *cost == usize::MAX {
+                let read_vcs = self.unaudited_buffer.iter().filter_map(|(origin, queue)| {
+                    if queue.is_empty() {
+                        return None;
+                    }
+
+                    let BlockWithSeqNum(_, block_stats, _) = queue.peek().unwrap();
+                    Some((origin.clone(), block_stats.read_vc.clone()))
+                }).collect::<HashMap<_, _>>();
+                error!("Read VCs: {:?}, Snapshot GLB: {:?}", read_vcs, self.get_snapshot_vc_glb());
+
                 self.throw_error("No snapshot can be generated for the read vc.").await;
                 return;
             }
@@ -217,12 +242,16 @@ impl Auditor {
 
             self.apply_updates(&block_stats, &block).await;
             
-            self.check_snapshot_limit().await;
         
         }
+
+        self.cleanup_old_snapshots().await;
+        self.cleanup_update_buffer().await;
+        self.check_snapshot_limit().await;
     }
 
     async fn handle_block(&mut self, block_stats: BlockStats, block: CachedBlock) {
+        self.committed_vc.advance(SenderType::Auth(block_stats.origin.clone(), 0), block_stats.seq_num);
         self.unaudited_buffer
             .entry(block_stats.origin.clone())
             .or_insert(BinaryHeap::new())
@@ -272,12 +301,70 @@ impl Auditor {
 
     }
 
+    fn get_snapshot_lattice_diameter(&self) -> usize {
+        Self::_get_snapshot_lattice_diameter(&self.snapshot_vcs)
+    }
+
+
+    /// Base cases:
+    /// - If the list is empty, return 0.
+    /// - If the list has only one element, return 1.
+    /// Recursion:
+    /// 1. Find the list of glbs.
+    /// 2. For each glb:
+    ///     - Find all vcs > glb.
+    ///     - Call _get_snapshot_lattice_diameter on the list of vcs.
+    /// 3. Add up the results.
+    fn _get_snapshot_lattice_diameter(list: &VecDeque<VectorClock>) -> usize {
+        if list.is_empty() {
+            return 0;
+        }
+
+        if list.len() == 1 {
+            return 1;
+        }
+
+        let glbs = Self::_get_snapshot_vc_glb(list);
+        let mut diameter = 0;
+        for glb in &glbs {
+            let _diameter = Self::_get_snapshot_lattice_diameter(
+                &list.iter()
+                .filter_map(|vc| {
+                    if vc > glb {
+                        Some(vc.clone())
+                    } else {
+                        None
+                    }
+                }).collect());
+            diameter += _diameter;
+        }
+        // error!("Glbs: {:?} Returning diameter: {}", glbs, diameter);
+
+        diameter
+    }
+
+
+
     async fn check_snapshot_limit(&mut self) {
-        
-        if self.snapshot_vcs.len() >= self.config.get().consensus_config.max_audit_snapshots {
-            self.send_blocking_command().await;
-        } else {
+        let diameter = self.get_snapshot_lattice_diameter();
+
+        let blocking_criteria = diameter > self.config.get().consensus_config.max_audit_snapshots;
+
+        let unique_heartbeat_vcs = self.heartbeat_vcs.values().collect::<HashSet<_>>();
+
+        let unblocking_criteria = unique_heartbeat_vcs.len() == 1;
+
+        warn!("Snapshot lattice diameter: {}", diameter);
+        warn!("Unique heartbeat VCs: {:?}", unique_heartbeat_vcs);
+
+        // Unblocking criteria takes precedence over blocking criteria.
+        // Why? Because we may not have garbage collected enough old snapshots.
+        // GC is triggered in do_audit, which in turn triggered if there are unaudited blocks.
+        // If we make blocking the priority, we will never unblock.
+        if unblocking_criteria {
             self.send_unblocking_command().await;
+        } else if blocking_criteria {
+            self.send_blocking_command().await;
         }
     }
 
@@ -296,19 +383,25 @@ impl Auditor {
     }
 
     fn get_snapshot_vc_glb(&self) -> Vec<VectorClock> {
-        self.snapshot_vcs.iter()
-            .filter(|test_vc| {
-                self.snapshot_vcs.iter()
-                    .all(|other_vc| {
-                        !(other_vc < *test_vc)
-                    })
+        Self::_get_snapshot_vc_glb(&self.snapshot_vcs)
+    }
+
+    fn _get_snapshot_vc_glb(list: &VecDeque<VectorClock>) -> Vec<VectorClock> {
+        list.iter().filter(|test_vc| {
+            list.iter().all(|other_vc| {
+                !(other_vc < *test_vc)
             })
-            .map(|vc| vc.clone())
-            .collect()
+        })
+        .map(|vc| vc.clone())
+        .collect()
     }
     async fn log_stats(&mut self) {
-        info!("Number of snapshots: {}", self.snapshot_vcs.len());
-        info!("Snapshot VCs: {:?}", self.snapshot_vcs);
+        if self.snapshot_vcs.len() > self.config.get().consensus_config.max_audit_snapshots {
+            warn!("Number of snapshots: {}", self.snapshot_vcs.len());
+        } else {
+            info!("Number of snapshots: {}", self.snapshot_vcs.len());
+        }
+        // info!("Snapshot VCs: {:?}", self.snapshot_vcs);
         info!("Snapshot VC GLB: {:?}", self.get_snapshot_vc_glb());
         info!("Unaudited buffer size: {}", self.unaudited_buffer_size);
         info!("Frontier cut: {:?}", self.frontier_cut);
@@ -349,7 +442,7 @@ impl Auditor {
                 buffer.back().map(|block| block.block.n).unwrap_or(0) < *target_seq_num
             }) {
 
-            info!("Target VC: {} not found in update buffer.", target_vc);
+            trace!("Target VC: {} not found in update buffer.", target_vc);
             return (usize::MAX, VectorClock::new());
         }
 

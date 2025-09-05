@@ -147,9 +147,9 @@ impl ExternalCacheManager {
                 // The remote KV store is linearizable, but not serializable and has no sense of atomic multi-ops.
                 // So we don't need to commit anything.
             }
-            CacheCommand::WaitForVC(_) => {
-                // This is No-op as well.
-            }
+            // CacheCommand::WaitForVC(_) => {
+            //     // This is No-op as well.
+            // }
         }
     }
 

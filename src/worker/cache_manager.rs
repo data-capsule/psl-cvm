@@ -5,7 +5,7 @@ use log::{error, info, warn};
 use num_bigint::{BigInt, Sign};
 use thiserror::Error;
 use tokio::sync::{mpsc::UnboundedSender, oneshot::{self, error::RecvError}, Mutex};
-use crate::{config::AtomicPSLWorkerConfig, crypto::{hash, CachedBlock}, proto::execution::{ProtoTransactionOp, ProtoTransactionOpType}, rpc::SenderType, storage_server::fork_receiver::ForkReceiverCommand, utils::{channel::{Receiver, Sender}, timer::ResettableTimer}, worker::block_sequencer::{BlockSeqNumQuery, VectorClock}};
+use crate::{config::AtomicPSLWorkerConfig, crypto::{hash, CachedBlock}, proto::execution::{ProtoTransaction, ProtoTransactionOp, ProtoTransactionOpType}, rpc::SenderType, storage_server::fork_receiver::ForkReceiverCommand, utils::{channel::{Receiver, Sender}, timer::ResettableTimer}, worker::{block_sequencer::{BlockSeqNumQuery, VectorClock}, TxWithAckChanTag}};
 use crate::worker::block_sequencer::SequencerCommand;
 
 #[derive(Error, Debug)]
@@ -35,7 +35,7 @@ pub enum CacheCommand {
         oneshot::Sender<Result<u64 /* seq_num */, CacheError>>,
     ),
     Commit,
-    WaitForVC(VectorClock),
+    // WaitForVC(VectorClock),
 }
 
 
@@ -189,6 +189,8 @@ pub struct CacheManager {
     config: AtomicPSLWorkerConfig,
     command_rx: Receiver<CacheCommand>,
     block_rx: Receiver<(oneshot::Receiver<Result<CachedBlock, std::io::Error>>, SenderType /* sender */, SenderType /* origin */)>, // Invariant for CacheManager: sender == origin
+    sequencer_request_rx: Receiver<TxWithAckChanTag>,
+    
     block_sequencer_tx: Sender<SequencerCommand>,
     fork_receiver_cmd_tx: UnboundedSender<ForkReceiverCommand>,
     cache: HashMap<CacheKey, CachedValue>,
@@ -207,6 +209,7 @@ impl CacheManager {
     pub fn new(
         config: AtomicPSLWorkerConfig,
         command_rx: Receiver<CacheCommand>,
+        sequencer_request_rx: Receiver<TxWithAckChanTag>,
         block_rx: Receiver<(oneshot::Receiver<Result<CachedBlock, std::io::Error>>, SenderType /* sender */, SenderType /* origin */)>, // Invariant for CacheManager: sender == origin
         block_sequencer_tx: Sender<SequencerCommand>,
         fork_receiver_cmd_tx: UnboundedSender<ForkReceiverCommand>,
@@ -217,6 +220,7 @@ impl CacheManager {
         Self {
             config,
             command_rx,
+            sequencer_request_rx,
             block_rx,
             block_sequencer_tx,
             fork_receiver_cmd_tx,
@@ -309,14 +313,22 @@ impl CacheManager {
             },
 
             Some(Ok(_)) = Self::check_block_on_vc_wait(&mut self.blocked_on_vc_wait) => {
+                warn!("VC wait cleared");
                 self.blocked_on_vc_wait = None;
             },
             Some(Ok(_)) = Self::check_block_on_read_snapshot(&mut self.block_on_read_snapshot) => {
                 self.block_on_read_snapshot = None;
-                warn!("Snapshot cleared");
+                // warn!("Snapshot cleared");
             },
             Some(command) = Self::check_command_rx(&mut self.command_rx, block_on_vc_wait_is_some) => {
+                if block_on_vc_wait_is_some {
+                    error!("Command received while blocked on VC wait!!");
+                }
                 self.handle_command(command).await;
+            },
+
+            Some((Some(tx), _)) = self.sequencer_request_rx.recv() => {
+                self.handle_sequencer_request(tx).await;
             },
             
             _ = self.batch_timer.wait() => {
@@ -376,7 +388,7 @@ impl CacheManager {
                     value: res.map(|v| v.clone()),
                     snapshot_propagated_signal_tx
                 }).await;
-                warn!("Snapshot set");
+                // warn!("Snapshot set");
 
                 // TODO: Fill from checkpoint if key not found.
             }
@@ -402,10 +414,36 @@ impl CacheManager {
                 self.last_batch_time = Instant::now();
                 let _ = self.block_sequencer_tx.send(SequencerCommand::MakeNewBlock).await;
             }
-            CacheCommand::WaitForVC(vc) => {
-                let (tx, rx) = oneshot::channel();
-                self.blocked_on_vc_wait = Some(rx);
-                let _ = self.block_sequencer_tx.send(SequencerCommand::WaitForVC(vc, tx)).await;
+            // CacheCommand::WaitForVC(vc) => {
+            //     let (tx, rx) = oneshot::channel();
+            //     self.blocked_on_vc_wait = Some(rx);
+            //     let _ = self.block_sequencer_tx.send(SequencerCommand::WaitForVC(vc, tx)).await;
+            // }
+        }
+    }
+
+    async fn handle_sequencer_request(&mut self, mut tx: ProtoTransaction) {
+        error!("Handling sequencer request: {:?}", tx);
+        for op in tx.on_receive.as_mut().unwrap().ops.drain(..) {
+            match op.op_type() {
+                ProtoTransactionOpType::BlockIndefinitely => {
+                    let (tx, rx) = oneshot::channel();
+                    self.blocked_on_vc_wait = Some(rx);
+                    let mut vc = VectorClock::new();
+                    let me = self.config.get().net_config.name.clone();
+                    vc.advance(SenderType::Auth(me, 0), u64::MAX /* sense of indefinitely */);
+                    let _ = self.block_sequencer_tx.send(SequencerCommand::WaitForVC(vc, tx)).await;
+                },
+
+                ProtoTransactionOpType::Unblock => {
+                    let mut vc = VectorClock::new();
+                    let me = self.config.get().net_config.name.clone();
+                    vc.advance(SenderType::Auth(me, 0), u64::MAX);
+                    let _ = self.block_sequencer_tx.send(SequencerCommand::UnblockVC(vc)).await;
+                }
+                _ => {
+                    warn!("Unsupported sequencer request op: {:?}", op);
+                }
             }
         }
     }

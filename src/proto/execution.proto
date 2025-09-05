@@ -27,6 +27,11 @@ enum ProtoTransactionOpType {
 
     // To check for byz commit
     PROBE = 10;
+
+    // To Block on VectorClock
+    BLOCK_ON_VC = 11;
+    BLOCK_INDEFINITELY = 12;
+    UNBLOCK = 13;
 }
 
 message ProtoTransactionOp {
