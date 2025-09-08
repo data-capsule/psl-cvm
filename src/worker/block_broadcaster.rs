@@ -175,9 +175,12 @@ impl BlockBroadcaster {
             if peers.len() > 0 {
 
                 for (n, block) in self.block_buffer.iter() {
-                    if self.wait_for_signal {
-                        if *n > self.deliver_index {
-                            continue;
+                    if !block.block.origin.contains("god") {
+                        // God blocks are always delivered.
+                        if self.wait_for_signal {
+                            if *n > self.deliver_index {
+                                continue;
+                            }
                         }
                     }
     

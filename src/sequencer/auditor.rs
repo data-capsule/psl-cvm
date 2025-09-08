@@ -277,32 +277,39 @@ impl Auditor {
 
     async fn cleanup_old_snapshots(&mut self) {
         // Remove all snapshots such that their vc is strictly less than all vcs in frontier_cut.
+        // self.snapshot_vcs.retain(|snapshot_vc| {
+        //     let res = self.frontier_cut.iter()
+        //         .all(|(_, read_vc)| {
+        //             debug!("Snapshot VC: {}, Read VC: {}. Result: {}", snapshot_vc, read_vc, *snapshot_vc < *read_vc);
+        //             *snapshot_vc < *read_vc
+        //         });
+
+        //     trace!("Snapshot VC: {}, Result: {}", snapshot_vc, res);
+
+        //     !res
+        // });
+
+        // // Remove all snapshots that are concurrent with all vcs in frontier_cut.
+        // self.snapshot_vcs.retain(|snapshot_vc| {
+        //     let res = self.frontier_cut.iter()
+        //         .all(|(_, read_vc)| {
+        //             !(*snapshot_vc <= *read_vc || *read_vc <= *snapshot_vc)
+        //         });
+
+        //     !res
+        // });
+
         self.snapshot_vcs.retain(|snapshot_vc| {
-            let res = self.frontier_cut.iter()
-                .all(|(_, read_vc)| {
-                    debug!("Snapshot VC: {}, Read VC: {}. Result: {}", snapshot_vc, read_vc, *snapshot_vc < *read_vc);
-                    *snapshot_vc < *read_vc
-                });
-
-            trace!("Snapshot VC: {}, Result: {}", snapshot_vc, res);
-
-            !res
-        });
-
-        // Remove all snapshots that are concurrent with all vcs in frontier_cut.
-        self.snapshot_vcs.retain(|snapshot_vc| {
-            let res = self.frontier_cut.iter()
-                .all(|(_, read_vc)| {
-                    !(*snapshot_vc <= *read_vc || *read_vc <= *snapshot_vc)
-                });
-
-            !res
+            self.frontier_cut.iter()
+                .any(|(_, read_vc)| {
+                    *snapshot_vc >= *read_vc
+                })
         });
 
     }
 
     fn get_snapshot_lattice_diameter(&self) -> usize {
-        Self::_get_snapshot_lattice_diameter(&self.snapshot_vcs)
+        Self::_get_snapshot_lattice_diameter(&self.heartbeat_vcs.values().cloned().collect::<HashSet<_>>())
     }
 
 
@@ -315,7 +322,7 @@ impl Auditor {
     ///     - Find all vcs > glb.
     ///     - Call _get_snapshot_lattice_diameter on the list of vcs.
     /// 3. Add up the results.
-    fn _get_snapshot_lattice_diameter(list: &VecDeque<VectorClock>) -> usize {
+    fn _get_snapshot_lattice_diameter(list: &HashSet<VectorClock>) -> usize {
         if list.is_empty() {
             return 0;
         }
@@ -325,6 +332,7 @@ impl Auditor {
         }
 
         let glbs = Self::_get_snapshot_vc_glb(list);
+        error!("Glbs: {:?}", glbs);
         let mut diameter = 0;
         for glb in &glbs {
             let _diameter = Self::_get_snapshot_lattice_diameter(
@@ -336,6 +344,7 @@ impl Auditor {
                         None
                     }
                 }).collect());
+            let _diameter = usize::max(1, _diameter);
             diameter += _diameter;
         }
         // error!("Glbs: {:?} Returning diameter: {}", glbs, diameter);
@@ -347,12 +356,10 @@ impl Auditor {
 
     async fn check_snapshot_limit(&mut self) {
         let diameter = self.get_snapshot_lattice_diameter();
-
         let blocking_criteria = diameter > self.config.get().consensus_config.max_audit_snapshots;
-
         let unique_heartbeat_vcs = self.heartbeat_vcs.values().collect::<HashSet<_>>();
+        let unblocking_criteria = diameter <= self.config.get().consensus_config.max_audit_snapshots;
 
-        let unblocking_criteria = unique_heartbeat_vcs.len() == 1;
 
         warn!("Snapshot lattice diameter: {}", diameter);
         warn!("Unique heartbeat VCs: {:?}", unique_heartbeat_vcs);
@@ -362,8 +369,10 @@ impl Auditor {
         // GC is triggered in do_audit, which in turn triggered if there are unaudited blocks.
         // If we make blocking the priority, we will never unblock.
         if unblocking_criteria {
+            error!("Unblocking all workers.");
             self.send_unblocking_command().await;
         } else if blocking_criteria {
+            error!("Blocking all workers.");
             self.send_blocking_command().await;
         }
     }
@@ -383,10 +392,14 @@ impl Auditor {
     }
 
     fn get_snapshot_vc_glb(&self) -> Vec<VectorClock> {
-        Self::_get_snapshot_vc_glb(&self.snapshot_vcs)
+        Self::_get_snapshot_vc_glb(&self.snapshot_vcs.iter().cloned().collect::<HashSet<_>>())
     }
 
-    fn _get_snapshot_vc_glb(list: &VecDeque<VectorClock>) -> Vec<VectorClock> {
+    fn _get_snapshot_vc_glb(list: &HashSet<VectorClock>) -> Vec<VectorClock> {
+        if list.len() <= 1 {
+            return list.iter().map(|vc| vc.clone()).collect();
+        }
+
         list.iter().filter(|test_vc| {
             list.iter().all(|other_vc| {
                 !(other_vc < *test_vc)

@@ -449,6 +449,10 @@ impl CacheManager {
     }
 
     async fn handle_block(&mut self, sender: SenderType, block: CachedBlock) {
+        let (name, _) = sender.to_name_and_sub_id();
+        if name.contains("god") {
+            error!("Received god block");
+        }
         for tx in &block.block.tx_list {
             if tx.on_crash_commit.is_none() {
                 continue;

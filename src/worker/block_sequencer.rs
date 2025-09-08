@@ -257,7 +257,7 @@ impl BlockSequencer {
         let log_timer = ResettableTimer::new(Duration::from_millis(config.get().app_config.logger_stats_report_ms));
         Self {
             config, crypto, client,
-            curr_block_seq_num: 1,
+            curr_block_seq_num: 0,
             last_block_hash: FutureHash::Immediate(default_hash()),
             self_write_op_bag: Vec::new(),
             all_write_op_bag: Vec::new(),
@@ -319,13 +319,19 @@ impl BlockSequencer {
                 self.all_write_op_bag.push((key, value));
             },
             SequencerCommand::AdvanceVC { sender, block_seq_num } => {
+                if block_seq_num == 0 {
+                    // We want to keep the succint reprensentation.
+                    return;
+                }
                 self.curr_vector_clock.advance(sender, block_seq_num);
                 self.flush_vc_wait_buffer().await;
             },
             SequencerCommand::MakeNewBlock => {
+                self.send_heartbeat().await;
                 self.maybe_prepare_new_block().await;
             },
             SequencerCommand::ForceMakeNewBlock => {
+                self.send_heartbeat().await;
                 self.force_prepare_new_block().await;
             },
             SequencerCommand::WaitForVC(vc, sender) => {
@@ -338,11 +344,6 @@ impl BlockSequencer {
     }
 
     async fn maybe_prepare_new_block(&mut self) {
-        if self.vc_wait_buffer.len() > 0 {
-            // Blocked. So send heartbeat to sequencer.
-            self.send_heartbeat().await;
-        }
-
         let config = self.config.get();
         let all_write_batch_size = config.worker_config.all_writes_max_batch_size;
         let self_write_batch_size = config.worker_config.self_writes_max_batch_size;
@@ -365,15 +366,11 @@ impl BlockSequencer {
 
     async fn force_prepare_new_block(&mut self) {
 
-        // Always do this.
-        if self.vc_wait_buffer.len() > 0 {
-            // Blocked. So send heartbeat to sequencer.
-            self.send_heartbeat().await;
-        }
+        // Force to send null blocks if needed.
 
-        if self.all_write_op_bag.is_empty() && self.self_read_op_bag.is_empty() {
-            return;
-        }
+        // if self.all_write_op_bag.is_empty() && self.self_read_op_bag.is_empty() {
+        //     return;
+        // }
 
         if self.self_write_op_bag.is_empty() && self.self_read_op_bag.is_empty() {
             self.forward_just_other_writes().await;
@@ -424,8 +421,8 @@ impl BlockSequencer {
     }
 
     async fn do_prepare_new_block(&mut self) {
-        let seq_num = self.curr_block_seq_num;
         self.curr_block_seq_num += 1;
+        let seq_num = self.curr_block_seq_num;
 
 
         let origin = self.config.get().net_config.name.clone();
