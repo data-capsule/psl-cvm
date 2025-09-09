@@ -96,12 +96,20 @@ pub struct WorkerConfig {
     pub self_writes_max_batch_size: usize,
     pub self_reads_max_batch_size: usize,
     pub batch_max_delay_ms: u64,
+
+    #[serde(default = "default_heartbeat_max_delay_ms")]
+    pub heartbeat_max_delay_ms: u64,
     pub signature_max_delay_ms: u64,
     pub signature_max_delay_blocks: u64,
     pub num_crypto_workers: usize,
     pub num_worker_threads_per_worker: usize,
     pub num_replier_threads_per_worker: usize,
 }
+
+const fn default_heartbeat_max_delay_ms() -> u64 {
+    200
+}
+
 
 
 impl ConsensusConfig {

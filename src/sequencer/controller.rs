@@ -8,6 +8,7 @@ use crate::{config::AtomicConfig, proto::{client::{ProtoClientReply, ProtoClient
 
 pub enum ControllerCommand {
     BlockAllWorkers,
+    BlockChosenWorkers(Vec<String>),
     UnblockAllWorkers,
 
     /// This is used to grant release-consistent locks to a worker.
@@ -56,6 +57,9 @@ impl Controller {
             ControllerCommand::BlockAllWorkers => {
                 self.block_all_workers().await;
             }
+            ControllerCommand::BlockChosenWorkers(workers) => {
+                self.block_chosen_workers(workers).await;
+            }
             ControllerCommand::UnblockAllWorkers => {
                 self.unblock_all_workers().await;
             }
@@ -68,6 +72,11 @@ impl Controller {
     }
 
     async fn _send_request_to_all_workers(&mut self, tx: ProtoTransaction) {
+        let node_list = self.get_node_list();
+        self._send_request_to_chosen_workers(tx, node_list).await;
+    }
+
+    async fn _send_request_to_chosen_workers(&mut self, tx: ProtoTransaction, node_list: Vec<String>) {
         self.__client_tag_counter += 1;
         let request = ProtoClientRequest {
             tx: Some(tx),
@@ -84,7 +93,6 @@ impl Controller {
         let sz = buf.len();
         let request = PinnedMessage::from(buf, sz, crate::rpc::SenderType::Anon);
 
-        let node_list = self.get_node_list();
         for node in node_list {
             let resp = PinnedClient::send(&self.client, &node, request.as_ref()).await;
 
@@ -95,10 +103,10 @@ impl Controller {
         }
     }
 
-    async fn block_all_workers(&mut self) {
-        if self.blocking_state == BlockingState::Blocked {
-            return;
-        }
+    async fn block_chosen_workers(&mut self, workers: Vec<String>) {
+        // if self.blocking_state == BlockingState::Blocked {
+        //     return;
+        // }
         info!("Blocking workers.");
         self.blocking_state = BlockingState::Blocked;
 
@@ -115,14 +123,14 @@ impl Controller {
             is_2pc: false,
         };
 
-        self._send_request_to_all_workers(tx).await;
-
-        
-
-        warn!("Blocked all workers.");
-
-
+        self._send_request_to_chosen_workers(tx, workers).await;
     }
+
+    async fn block_all_workers(&mut self) {
+        let node_list = self.get_node_list();
+        self.block_chosen_workers(node_list).await;
+    }
+
 
     fn get_node_list(&self) -> Vec<String> {
         // There must be a better way to do this.

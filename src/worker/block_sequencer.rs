@@ -1,8 +1,8 @@
-use std::{fmt::{self, Display, Debug}, ops::{Deref, DerefMut}, pin::Pin, sync::Arc, time::Duration};
+use std::{fmt::{self, Debug, Display}, ops::{Deref, DerefMut}, pin::Pin, sync::Arc, time::{Duration, Instant}};
 
 use hashbrown::HashMap;
 use itertools::Itertools;
-use log::{debug, error, info, warn};
+use log::{debug, error, info, trace, warn};
 use prost::Message;
 use tokio::{sync::{oneshot, Mutex}, time::{interval, sleep}};
 
@@ -81,10 +81,13 @@ impl VectorClock {
         Self(HashMap::new())
     }
 
-    pub fn advance(&mut self, sender: SenderType, seq_num: u64) {
+    pub fn advance(&mut self, sender: SenderType, seq_num: u64) -> bool {
         let entry = self.0.entry(sender).or_insert(0);
         if *entry < seq_num {
             *entry = seq_num;
+            true
+        } else {
+            false
         }
     }
 
@@ -231,6 +234,7 @@ pub struct BlockSequencer {
     self_read_op_bag: Vec<(CacheKey, Option<CachedValue>)>,
 
     curr_vector_clock: VectorClock,
+    __vc_dirty: bool,
 
     cache_manager_rx: Receiver<SequencerCommand>,
 
@@ -244,6 +248,8 @@ pub struct BlockSequencer {
     chain_id: u64, // This is unused for PSL, but useful for Nimble port.
 
     snapshot_propagated_signal_tx: Vec<oneshot::Sender<()>>,
+
+    last_heartbeat_time: Instant,
 }
 
 impl BlockSequencer {
@@ -270,6 +276,8 @@ impl BlockSequencer {
             vc_wait_buffer: HashMap::new(),
             chain_id,
             snapshot_propagated_signal_tx: Vec::new(),
+            __vc_dirty: false,
+            last_heartbeat_time: Instant::now(),
         }
     }
 
@@ -324,8 +332,9 @@ impl BlockSequencer {
                     return;
                 }
 
-                error!("Advancing VC to {} from {:?}", block_seq_num, sender);
-                self.curr_vector_clock.advance(sender, block_seq_num);
+                if self.curr_vector_clock.advance(sender, block_seq_num) {
+                    self.__vc_dirty = true;
+                }
                 self.send_heartbeat().await;
                 self.flush_vc_wait_buffer().await;
             },
@@ -370,8 +379,10 @@ impl BlockSequencer {
     async fn force_prepare_new_block(&mut self) {
 
         // Force to send null blocks if needed.
+        trace!("Force preparing new block. VC dirty: {} , all_write_op_bag: {}, self_write_op_bag: {}, self_read_op_bag: {}",
+            self.__vc_dirty, self.all_write_op_bag.len(), self.self_write_op_bag.len(), self.self_read_op_bag.len());
 
-        // if self.all_write_op_bag.is_empty() && self.self_read_op_bag.is_empty() {
+        // if self.all_write_op_bag.is_empty() && self.self_read_op_bag.is_empty() && !self.__vc_dirty {
         //     return;
         // }
 
@@ -384,7 +395,17 @@ impl BlockSequencer {
     }
 
     async fn send_heartbeat(&mut self) {
-        debug!("Sending heartbeat with vc: {:?}", self.curr_vector_clock);
+        let heartbeat_timeout = self.last_heartbeat_time.elapsed().as_millis() >= self.config.get().worker_config.heartbeat_max_delay_ms as u128;
+        // let i_am_blocked = self.vc_wait_buffer.len() > 0;
+        let i_am_blocked = false;
+        
+        if !(heartbeat_timeout || i_am_blocked) {
+            return;
+        }
+
+        self.last_heartbeat_time = Instant::now();
+
+        trace!("Sending heartbeat with vc: {:?} heartbeat_timeout: {} i_am_blocked: {}", self.curr_vector_clock, heartbeat_timeout, i_am_blocked);
         let vc = self.curr_vector_clock.clone();
         let vc = vc.serialize();
         let payload = ProtoPayload {
@@ -421,6 +442,8 @@ impl BlockSequencer {
         ).await;
 
         let _ = self.node_broadcaster_tx.send(all_writes_rx).await;
+
+        self.__vc_dirty = false;
     }
 
     async fn do_prepare_new_block(&mut self) {
@@ -481,6 +504,8 @@ impl BlockSequencer {
         for tx in self.snapshot_propagated_signal_tx.drain(..) {
             let _ = tx.send(());
         }
+
+        self.__vc_dirty = false;
     }
 
     fn wrap_vec(
@@ -533,15 +558,15 @@ impl BlockSequencer {
 
 
     async fn flush_vc_wait_buffer(&mut self) {
-        if self.vc_wait_buffer.len() > 0 {
-            warn!("Current VC: {}, VC wait buffer: {:?}", self.curr_vector_clock, self.vc_wait_buffer);
-        }
+        // if self.vc_wait_buffer.len() > 0 {
+        //     warn!("Current VC: {}, VC wait buffer: {:?}", self.curr_vector_clock, self.vc_wait_buffer);
+        // }
 
         self._flush_vc_wait_buffer(self.curr_vector_clock.clone());
     }
     
     fn _flush_vc_wait_buffer(&mut self, target_vc: VectorClock) {
-        
+        let i_was_blocked = self.vc_wait_buffer.len() > 0;
         let mut to_remove = Vec::new();
         for (vc, _) in self.vc_wait_buffer.iter() {
             if target_vc >= *vc {
@@ -555,13 +580,24 @@ impl BlockSequencer {
                 let _ = sender.send(());
             }
         }
+        let i_am_blocked = self.vc_wait_buffer.len() > 0;
+
+        if i_was_blocked && !i_am_blocked {
+            warn!("Unblocked");
+        }
     }
 
     async fn buffer_vc_wait(&mut self, vc: VectorClock, sender: oneshot::Sender<()>) {
+        let i_was_blocked = self.vc_wait_buffer.len() > 0;
         let buffer = self.vc_wait_buffer.entry(vc).or_insert(Vec::new());
         buffer.push(sender);
 
         self.flush_vc_wait_buffer().await;
+        let i_am_blocked = self.vc_wait_buffer.len() > 0;
+
+        if !i_was_blocked && i_am_blocked {
+            warn!("Blocked");
+        }
     }
 }
 
