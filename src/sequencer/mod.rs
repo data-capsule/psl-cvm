@@ -187,12 +187,7 @@ impl SequencerNode {
         let staging = Staging::new(config.clone(), keystore.clone(), staging_rx, logserver_tx, None, fork_receiver_cmd_tx, None, false);
         let commit_buffer = CommitBuffer::new(config.clone(), logserver_rx, auditor_tx);
 
-        let (unused_heartbeat_tx, unused_heartbeat_rx) = make_channel(_chan_depth);
-
-        let (auditor_controller_tx, auditor_controller_rx) = make_channel(_chan_depth);
-        
-        let auditor = Auditor::new(config.clone(), auditor_rx, auditor_controller_tx, unused_heartbeat_rx, true);
-
+        let auditor = Auditor::new(config.clone(), auditor_rx);
 
         let (lock_server_controller_tx, lock_server_controller_rx) = make_channel(_chan_depth);
         let lock_server = LockServer::new(config.clone(), lock_server_rx, lock_server_controller_tx);
@@ -254,9 +249,9 @@ impl SequencerNode {
         handles.spawn(async move {
             CommitBuffer::run(commit_buffer).await;
         });
-        // handles.spawn(async move {
-        //     Auditor::run(auditor).await;
-        // });
+        handles.spawn(async move {
+            Auditor::run(auditor).await;
+        });
         handles.spawn(async move {
             Controller::run(controller).await;
         });
