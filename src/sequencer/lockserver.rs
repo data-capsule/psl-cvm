@@ -3,7 +3,7 @@ use std::{collections::{HashMap, HashSet, VecDeque}, pin::Pin, sync::Arc, time::
 use log::info;
 use tokio::sync::Mutex;
 
-use crate::{config::AtomicConfig, proto::client::ProtoClientRequest, rpc::{client::PinnedClient, SenderType}, sequencer::controller::ControllerCommand, utils::{channel::{Receiver, Sender}, timer::ResettableTimer}, worker::{block_sequencer::VectorClock, cache_manager::CacheKey}};
+use crate::{config::AtomicConfig, proto::client::ProtoClientRequest, rpc::SenderType, sequencer::controller::ControllerCommand, utils::{channel::{Receiver, Sender}, timer::ResettableTimer}, worker::{block_sequencer::VectorClock, cache_manager::CacheKey}};
 
 pub enum LockServerCommand {
     AcquireReadLock(CacheKey),

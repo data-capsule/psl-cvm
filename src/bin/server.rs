@@ -3,7 +3,7 @@
 
 use log::{debug, error, info};
 use psl::config::{self, Config, PSLWorkerConfig};
-use psl::{consensus, sequencer, storage_server, worker};
+use psl::{sequencer, storage_server, worker};
 use tokio::{runtime, signal};
 use std::process::exit;
 use std::{env, fs, io, path, sync::{atomic::AtomicUsize, Arc, Mutex}};

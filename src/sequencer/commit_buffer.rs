@@ -1,9 +1,9 @@
-use std::{collections::{HashMap, VecDeque}, pin::Pin, sync::Arc, time::Duration};
+use std::{collections::HashMap, pin::Pin, sync::Arc, time::Duration};
 
 use log::info;
 use tokio::sync::Mutex;
 
-use crate::{config::AtomicConfig, crypto::{CachedBlock, HashType}, rpc::{client::PinnedClient, SenderType}, utils::{channel::{Receiver, Sender}, timer::ResettableTimer}, worker::block_sequencer::VectorClock};
+use crate::{config::AtomicConfig, crypto::{CachedBlock, HashType}, rpc::SenderType, utils::{channel::{Receiver, Sender}, timer::ResettableTimer}, worker::block_sequencer::VectorClock};
 
 pub struct CommitBuffer {
     config: AtomicConfig,

@@ -4,7 +4,7 @@ use std::{
 
 use app::PSLAppEngine;
 use cache_manager::CacheManager;
-use log::{debug, error, warn};
+use log::{debug, warn};
 use prost::Message as _;
 use tokio::{
     sync::{mpsc::unbounded_channel, Mutex},

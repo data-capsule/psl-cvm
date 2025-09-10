@@ -2,9 +2,9 @@ use std::{fmt::{self, Debug, Display}, ops::{Deref, DerefMut}, pin::Pin, sync::A
 
 use hashbrown::HashMap;
 use itertools::Itertools;
-use log::{debug, error, info, trace, warn};
+use log::{info, trace};
 use prost::Message;
-use tokio::{sync::{oneshot, Mutex}, time::{interval, sleep}};
+use tokio::sync::{oneshot, Mutex};
 
 use crate::{config::AtomicPSLWorkerConfig, crypto::{default_hash, CachedBlock, CryptoServiceConnector, FutureHash}, proto::{consensus::{ProtoBlock, ProtoVectorClock, ProtoVectorClockEntry}, execution::{ProtoTransaction, ProtoTransactionOp, ProtoTransactionOpType, ProtoTransactionPhase}, rpc::ProtoPayload}, rpc::{client::PinnedClient, PinnedMessage, SenderType}, utils::{channel::{Receiver, Sender}, timer::ResettableTimer}};
 

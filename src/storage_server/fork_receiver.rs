@@ -1,6 +1,6 @@
 use std::{collections::{HashMap, VecDeque}, io::Error, sync::Arc};
 
-use log::{debug, error, warn};
+use log::{debug, warn};
 use tokio::sync::{mpsc::UnboundedReceiver, oneshot, Mutex};
 
 use crate::{config::AtomicConfig, crypto::{AtomicKeyStore, CachedBlock, CryptoServiceConnector, FutureHash}, proto::consensus::{HalfSerializedBlock, ProtoAppendEntries}, rpc::{client::{Client, PinnedClient}, SenderType}, utils::{channel::{Receiver, Sender}, StorageServiceConnector}};

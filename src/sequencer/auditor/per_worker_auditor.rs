@@ -1,6 +1,6 @@
 use std::{collections::{HashMap, VecDeque}, pin::Pin, sync::Arc, time::Duration};
 
-use log::{error, info, trace, warn};
+use log::{info, warn};
 use tokio::sync::{mpsc::UnboundedSender, Mutex};
 
 use crate::{config::AtomicConfig, crypto::CachedBlock, proto::consensus::ProtoBlock, rpc::SenderType, sequencer::auditor::snapshot_store::SnapshotStore, utils::{channel::Receiver, timer::ResettableTimer}, worker::{block_sequencer::VectorClock, cache_manager::{process_tx_op, CacheKey, CachedValue}}};
