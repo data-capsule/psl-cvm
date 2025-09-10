@@ -130,9 +130,7 @@ impl PerWorkerAuditor {
 
     async fn do_audit_block(&mut self, _block: CachedBlock, read_vc: VectorClock) {
         if !self.snapshot_store.snapshot_exists(&read_vc) {
-            // TODO: Actually generate the updates.
             let updates = self.generate_updates(read_vc.clone());
-            warn!("Generated updates: {}", updates.len());
             // let updates = vec![];
             self.snapshot_store.install_snapshot(read_vc.clone(), self.worker_name.clone(), updates).await;
             self.__snapshot_generated_counter += 1;

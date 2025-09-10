@@ -5,7 +5,7 @@ use log::warn;
 use crate::worker::{block_sequencer::VectorClock, cache_manager::{CacheKey, CachedValue}};
 
 
-struct ValueLattice {
+pub(super) struct ValueLattice {
     values: HashMap<VectorClock, CachedValue>,
 }
 
@@ -17,7 +17,7 @@ impl ValueLattice {
 
 pub struct _SnapshotStore {
     /// worker name => snapshot store.
-    store: DashMap<String, RwLock<HashMap<CacheKey, ValueLattice>>>,
+    pub(super) store: DashMap<String, RwLock<HashMap<CacheKey, ValueLattice>>>,
     /// All VCs currently installed, reverse indexed by worker name.
     log: DashMap<VectorClock, String>,
     /// All VCs that have been garbage collected.
@@ -125,16 +125,13 @@ impl _SnapshotStore {
     }
 
     pub async fn install_snapshot<T: IntoIterator<Item = (CacheKey, CachedValue)>>(&self, vc: VectorClock, worker_name: String, updates: T) {
-        warn!("Installing snapshot: {}", vc);
         let store = self.store.get(&worker_name).unwrap();
         let mut store = store.write().await;
-        warn!("Lock acquired");
         for (key, value) in updates {
             store.entry(key)
-                .or_insert(ValueLattice::new());
-                // .values.insert(vc.clone(), value);
+                .or_insert(ValueLattice::new())
+                .values.insert(vc.clone(), value);
         }
-        warn!("Installed snapshot: {}", vc);
 
         if self.__ghost_log.contains(&vc) {
             self.__ghost_reborn_counter.fetch_add(1, std::sync::atomic::Ordering::Release);
@@ -145,32 +142,18 @@ impl _SnapshotStore {
         std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
     }
 
-    /// Prune all snapshots <= vc.
+    /// Prune all snapshots < vc.
     pub async fn prune_lesser_snapshots(&self, vc: &VectorClock) {
-        let to_remove = self.log.iter()
-            .filter(|mapref| {
-                let test_vc = mapref.key();
-                let res = !(test_vc < vc);
-                !res
-            })
-            .map(|mapref| (mapref.key().clone(), mapref.value().clone()))
-            .collect::<Vec<_>>();
+        let all_workers = self.store.iter().map(|mapref| mapref.key().clone()).collect::<Vec<_>>();
 
-        let mut to_remove_home_workers_map = HashMap::new();
-        for (test_vc, home_worker) in to_remove {
-            to_remove_home_workers_map.entry(home_worker).or_insert(Vec::new()).push(test_vc);
-        }
-
-        for (home_worker, test_vcs) in to_remove_home_workers_map {
+        for home_worker in all_workers {
             let store = self.store.get(&home_worker).unwrap();
             let mut store = store.write().await;
-            for _vc in &test_vcs {
-                for mapref in store.iter_mut() {
-                    let val_ref = mapref.1; // mapref.value();
-                    val_ref.values.retain(|test_vc, _| {
-                        !(test_vc < _vc)
-                    });
-                }
+            for mapref in store.iter_mut() {
+                let val_ref = mapref.1; // mapref.value();
+                val_ref.values.retain(|test_vc, _| {
+                    !(test_vc < vc)
+                });
             }
         }
 
@@ -189,39 +172,16 @@ impl _SnapshotStore {
     }
 
     pub async fn prune_concurrent_snapshots(&self, vcs: &Vec<&VectorClock>, upper_limits: &Vec<&VectorClock>) {
-        let to_remove = self.log.iter()
-            .filter(|mapref| {
-                let test_vc = mapref.key();
-                let res = !Self::__all_concurrent(test_vc, vcs, upper_limits);
-                !res
-            })
-            .map(|mapref| (mapref.key().clone(), mapref.value().clone()))
-            .collect::<Vec<_>>();
+        let all_workers = self.store.iter().map(|mapref| mapref.key().clone()).collect::<Vec<_>>();
 
-        
-        // let mut store = self.store.write().await;
-        // for mapref in store.iter_mut() {
-        //     let val_ref = mapref.1; // mapref.value();
-        //     val_ref.values.retain(|test_vc, _| {
-        //         !Self::__all_concurrent(test_vc, vcs, upper_limits)
-        //     });
-        // }
-
-        let mut to_remove_home_workers_map = HashMap::new();
-        for (test_vc, home_worker) in to_remove {
-            to_remove_home_workers_map.entry(home_worker).or_insert(Vec::new()).push(test_vc);
-        }
-
-        for (home_worker, test_vcs) in to_remove_home_workers_map {
+        for home_worker in all_workers {
             let store = self.store.get(&home_worker).unwrap();
             let mut store = store.write().await;
-            for _vc in &test_vcs {
-                for mapref in store.iter_mut() {
-                    let val_ref = mapref.1; // mapref.value();
-                    val_ref.values.retain(|test_vc, _| {
-                        !(test_vc < _vc)
-                    });
-                }
+            for mapref in store.iter_mut() {
+                let val_ref = mapref.1; // mapref.value();
+                val_ref.values.retain(|test_vc, _| {
+                    !Self::__all_concurrent(test_vc, vcs, upper_limits)
+                });
             }
         }
 

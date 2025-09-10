@@ -8,7 +8,8 @@ use crate::{config::AtomicConfig, crypto::CachedBlock, rpc::SenderType, sequence
 mod snapshot_store;
 mod per_worker_auditor;
 
-const MAX_GC_COUNTER: usize = 10_000;
+const MAX_GC_COUNTER: usize = 1_000;
+const MAX_GC_INTERVAL_MS: u64 = 1000;
 
 pub struct Auditor {
     config: AtomicConfig,
@@ -18,6 +19,7 @@ pub struct Auditor {
     block_rx: Receiver<CachedBlock>,
     gc_rx: UnboundedReceiver<(String, VectorClock)>,
     gc_counter: usize,
+    gc_timer: Arc<Pin<Box<ResettableTimer>>>,
 
     per_worker_auditor_txs: Vec<Sender<CachedBlock>>,
     per_worker_auditors: Vec<Arc<Mutex<PerWorkerAuditor>>>,
@@ -54,7 +56,8 @@ impl Auditor {
         }).collect();
 
         let log_timer = ResettableTimer::new(Duration::from_millis(_config.app_config.logger_stats_report_ms));
-        
+        let gc_timer = ResettableTimer::new(Duration::from_millis(MAX_GC_INTERVAL_MS));
+
         Self {
             config,
             gc_vcs,
@@ -66,6 +69,7 @@ impl Auditor {
             per_worker_auditor_handles: JoinSet::new(),
             log_timer,
             gc_counter: 0,
+            gc_timer,
         }
     }
 
@@ -80,6 +84,7 @@ impl Auditor {
         }
 
         auditor.log_timer.run().await;
+        auditor.gc_timer.run().await;
 
         while let Ok(()) = auditor.worker().await {
 
@@ -107,6 +112,9 @@ impl Auditor {
             }
             Some((worker_name, read_vc)) = self.gc_rx.recv() => {
                 self.handle_gc(worker_name, read_vc).await;
+            }
+            _ = self.gc_timer.wait() => {
+                self.do_gc().await;
             }
         }
 
@@ -137,15 +145,25 @@ impl Auditor {
             return;
         }
 
+        self.do_gc().await;
+    }
+
+    async fn do_gc(&mut self) {
         let min_vc = self.get_min_gc_vc();
 
         self.snapshot_store.prune_lesser_snapshots(&min_vc).await;
-        self.snapshot_store.prune_concurrent_snapshots(&self.gc_vcs.iter()
-            .filter(|(_worker, _)| worker_name != **_worker)
-            .map(|(_worker, vc)| vc)
-        .collect::<Vec<_>>(), &self.gc_vcs.values().collect::<Vec<_>>()).await;
+
+        let all_worker_names = self.snapshot_store.store.iter().map(|mapref| mapref.key().clone()).collect::<Vec<_>>();
+
+        for worker_name in all_worker_names {
+            self.snapshot_store.prune_concurrent_snapshots(&self.gc_vcs.iter()
+                    .filter(|(_worker, _)| worker_name != **_worker)
+                    .map(|(_worker, vc)| vc)
+                .collect::<Vec<_>>(), &self.gc_vcs.values().collect::<Vec<_>>()).await;
+        }
 
         self.gc_counter = 0;
+        self.gc_timer.reset();
     }
 
     fn get_min_gc_vc(&self) -> VectorClock {
