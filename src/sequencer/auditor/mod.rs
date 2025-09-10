@@ -1,8 +1,7 @@
 use std::{collections::HashMap, pin::Pin, sync::Arc, time::Duration};
 
 use log::{info, warn};
-use nix::libc::IFLA_MIN_MTU;
-use tokio::{sync::{mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender}, Mutex}, task::JoinSet};
+use tokio::{sync::{mpsc::{unbounded_channel, UnboundedReceiver}, Mutex}, task::JoinSet};
 
 use crate::{config::AtomicConfig, crypto::CachedBlock, rpc::SenderType, sequencer::auditor::{per_worker_auditor::PerWorkerAuditor, snapshot_store::SnapshotStore}, utils::{channel::{make_channel, Receiver, Sender}, timer::ResettableTimer}, worker::block_sequencer::VectorClock};
 
@@ -135,7 +134,7 @@ impl Auditor {
         self.snapshot_store.prune_concurrent_snapshots(&self.gc_vcs.iter()
             .filter(|(_worker, _)| worker_name != **_worker)
             .map(|(_worker, vc)| vc)
-        .collect::<Vec<_>>());
+        .collect::<Vec<_>>(), &self.gc_vcs.values().collect::<Vec<_>>());
     }
 
     fn get_min_gc_vc(&self) -> VectorClock {

@@ -1,10 +1,11 @@
 use std::{collections::{HashMap, VecDeque}, pin::Pin, sync::Arc, time::Duration};
 
-use log::info;
-use tokio::sync::{mpsc::{UnboundedReceiver, UnboundedSender}, Mutex};
+use log::{error, info, trace};
+use tokio::sync::{mpsc::UnboundedSender, Mutex};
 
-use crate::{config::AtomicConfig, crypto::CachedBlock, rpc::SenderType, sequencer::auditor::snapshot_store::SnapshotStore, utils::{channel::{Receiver, Sender}, timer::ResettableTimer}, worker::block_sequencer::VectorClock};
+use crate::{config::AtomicConfig, crypto::CachedBlock, proto::consensus::ProtoBlock, rpc::SenderType, sequencer::auditor::snapshot_store::SnapshotStore, utils::{channel::Receiver, timer::ResettableTimer}, worker::{block_sequencer::VectorClock, cache_manager::{CacheKey, CachedValue}}};
 
+#[allow(dead_code)]
 pub struct PerWorkerAuditor {
     config: AtomicConfig,
     worker_name: String,
@@ -22,6 +23,9 @@ pub struct PerWorkerAuditor {
     unaudited_buffer: VecDeque<CachedBlock>,
 
     log_timer: Arc<Pin<Box<ResettableTimer>>>,
+
+    /// This will be the scapegoat for GC.
+    last_read_vc: VectorClock,
 
     __snapshot_reused_counter: usize,
     __snapshot_generated_counter: usize,
@@ -49,6 +53,7 @@ impl PerWorkerAuditor {
             available_vc,
             unaudited_buffer: VecDeque::new(),
             log_timer,
+            last_read_vc: VectorClock::new(),
 
             __snapshot_reused_counter: 0,
             __snapshot_generated_counter: 0,
@@ -103,6 +108,9 @@ impl PerWorkerAuditor {
     async fn maybe_audit_blocks(&mut self) -> bool {
         let mut audit_successful = false;
         while !self.unaudited_buffer.is_empty() {
+            // Doing things in a tight loop.
+            // Let's yield to tokio here.
+            tokio::task::yield_now().await;
 
             let read_vc = &self.unaudited_buffer.front().unwrap().clone()
                 .block.vector_clock;
@@ -110,7 +118,7 @@ impl PerWorkerAuditor {
 
             if read_vc <= self.available_vc {
                 let block = self.unaudited_buffer.pop_front().unwrap();
-                self.do_audit_block(block, read_vc).await;
+                self.do_audit_block(block, read_vc);
                 audit_successful = true;
             } else {
                 break;
@@ -120,11 +128,11 @@ impl PerWorkerAuditor {
         audit_successful
     }
 
-    async fn do_audit_block(&mut self, block: CachedBlock, read_vc: VectorClock) {
+    fn do_audit_block(&mut self, _block: CachedBlock, read_vc: VectorClock) {
         if !self.snapshot_store.snapshot_exists(&read_vc) {
             // TODO: Actually generate the updates.
-            let _vec = vec![];
-            self.snapshot_store.install_snapshot(read_vc.clone(), _vec);
+            let updates = self.generate_updates(read_vc.clone());
+            self.snapshot_store.install_snapshot(read_vc.clone(), updates);
             self.__snapshot_generated_counter += 1;
         } else {
             self.__snapshot_reused_counter += 1;
@@ -133,8 +141,82 @@ impl PerWorkerAuditor {
         // TODO: Actually verify the reads.
 
         // This is unbounded so as to not cause deadlock.
-        self.gc_tx.send((self.worker_name.clone(), read_vc.clone())).unwrap();
 
+        if self.last_read_vc != VectorClock::new() {
+            self.gc_tx.send((self.worker_name.clone(), self.last_read_vc.clone())).unwrap();
+        }
+        self.last_read_vc = read_vc.clone();
+
+    }
+
+    fn generate_updates(&mut self, read_vc: VectorClock) -> Vec<(CacheKey, CachedValue)> {
+        let update_blocks = self.get_update_blocks(read_vc);
+
+        let updates = update_blocks.iter()
+            .map(|block| self.filter_write_ops(&block.block))
+            .flatten()
+            .collect();
+
+
+        updates
+    }
+
+
+    fn get_update_blocks(&mut self, read_vc: VectorClock) -> Vec<CachedBlock> {
+        let chosen_glb = self.last_read_vc.clone();
+        assert!(chosen_glb <= read_vc);
+        assert!(self.snapshot_store.snapshot_exists(&chosen_glb));
+
+        let mut update_blocks = Vec::new();
+        let mut expected_block_count = 0;
+
+        self.update_buffer.iter_mut().for_each(|(worker, queue)| {
+            let glb_idx = chosen_glb.get(&SenderType::Auth(worker.clone(), 0));
+            let end_idx = read_vc.get(&SenderType::Auth(worker.clone(), 0));
+            if end_idx == 0 {
+                return;
+            }
+
+            expected_block_count += end_idx - glb_idx;
+
+            assert!(glb_idx <= end_idx);
+
+            if glb_idx == end_idx {
+                // Nothing to do.
+                return;
+            }
+
+            if !queue.is_empty() {
+                let front_n = queue.front().as_ref().unwrap().block.n;
+                let back_n = queue.back().as_ref().unwrap().block.n;
+                assert!(front_n <= end_idx, "front_n: {} end_idx: {} last_read_vc: {} read_vc: {} glb: {} worker: {}", front_n, end_idx, self.last_read_vc, read_vc, chosen_glb, worker);
+                assert!(back_n >= glb_idx + 1, "back_n: {} glb_idx: {} last_read_vc: {} read_vc: {} glb: {} worker: {}", back_n, glb_idx, self.last_read_vc, read_vc, chosen_glb, worker);
+                assert!(glb_idx + 1 >= front_n, "glb_idx: {} front_n: {} last_read_vc: {} read_vc: {} glb: {} worker: {}", glb_idx, front_n, self.last_read_vc, read_vc, chosen_glb, worker);
+            }
+
+            while !queue.is_empty() {
+                let block = queue.pop_front().unwrap();
+                let _n = block.block.n;
+                if _n <= glb_idx {
+                    continue;
+                }
+                update_blocks.push(block);
+
+                if _n == end_idx {
+                    break;
+                }
+            }
+        });
+
+        assert!(update_blocks.len() == expected_block_count as usize, "update_blocks.len(): {} expected_block_count: {} read_vc: {} lub: {}", update_blocks.len(), expected_block_count, read_vc, chosen_glb);
+
+        update_blocks
+    }
+
+    fn filter_write_ops(&self, block: &ProtoBlock) -> Vec<(CacheKey, CachedValue)> {
+        // TODO: Implement this.
+        vec![]
+    
     }
     
 }

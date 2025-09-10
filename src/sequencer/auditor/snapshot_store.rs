@@ -22,7 +22,9 @@ pub struct SnapshotStore(Arc<_SnapshotStore>);
 
 impl SnapshotStore {
     pub fn new() -> Self {
-        Self(Arc::new(_SnapshotStore { store: DashMap::new(), log: DashSet::new(), __ghost_log: DashSet::new(), __ghost_reborn_counter: AtomicUsize::new(0) }))
+        let log = DashSet::new();
+        log.insert(VectorClock::new());
+        Self(Arc::new(_SnapshotStore { store: DashMap::new(), log, __ghost_log: DashSet::new(), __ghost_reborn_counter: AtomicUsize::new(0) }))
     }
 }
 
@@ -40,29 +42,29 @@ impl _SnapshotStore {
         self.log.contains(vc)
     }
 
-    pub fn find_lub(&self, vc: &VectorClock) -> Vec<VectorClock> {
-        let all_vcs_lesser_than_vc = self.log.iter().filter(|test_vc| {
-            let _cmp = test_vc.partial_cmp(vc);
-            match _cmp {
-                Some(std::cmp::Ordering::Less) => true,
-                Some(std::cmp::Ordering::Equal) => true,
-                _ => false,
-            }
+    pub fn find_glb(&self, vc: &VectorClock) -> Vec<VectorClock> {
+        let lbs = self.log.iter()
+            .filter(|test_vc| {
+                let _cmp = test_vc.partial_cmp(vc);
+                match _cmp {
+                    Some(std::cmp::Ordering::Less) => true,
+                    Some(std::cmp::Ordering::Equal) => true,
+                    _ => false,
+                }
+            })
+            .map(|vc| vc.clone())
+            .collect::<Vec<_>>();
+
+        lbs.iter().filter(|test_vc| {
+            let res = lbs.iter().filter(|other_vc| other_vc != test_vc)
+                .any(|other_vc| {
+                    *test_vc < other_vc
+                });
+
+            !res
         })
         .map(|vc| vc.clone())
-        .collect::<Vec<_>>();
-
-        // Weed out vcs that are less than some vc in all_vcs_lesser_than_vc.
-        all_vcs_lesser_than_vc.iter().filter(|test_vc| {
-            !all_vcs_lesser_than_vc.iter().filter(|other_vc| {
-                *other_vc != *test_vc
-            })
-            .any(|other_vc| {
-                *test_vc < other_vc
-            })
-        })    
-        .map(|vc| vc.clone())
-        .collect()        
+        .collect()
     }
 
     /// Returns value <= vc.
@@ -122,12 +124,12 @@ impl _SnapshotStore {
         for mapref in self.store.iter_mut() {
             let val_ref = mapref.value();
             val_ref.values.retain(|test_vc, _| {
-                !(test_vc <= vc)
+                !(test_vc < vc)
             });
         }
 
         self.log.retain(|test_vc| {
-            let res = !(test_vc <= vc);
+            let res = !(test_vc < vc);
             if !res {
                 self.__ghost_log.insert(test_vc.clone());
             }
@@ -138,16 +140,16 @@ impl _SnapshotStore {
 
     }
 
-    pub fn prune_concurrent_snapshots(&self, vcs: &Vec<&VectorClock>) {
+    pub fn prune_concurrent_snapshots(&self, vcs: &Vec<&VectorClock>, upper_limits: &Vec<&VectorClock>) {
         for mapref in self.store.iter_mut() {
             let val_ref = mapref.value();
             val_ref.values.retain(|test_vc, _| {
-                !Self::__all_concurrent(test_vc, vcs)
+                !Self::__all_concurrent(test_vc, vcs, upper_limits)
             });
         }
 
         self.log.retain(|test_vc| {
-            let res = !Self::__all_concurrent(test_vc, vcs);
+            let res = !Self::__all_concurrent(test_vc, vcs, upper_limits);
             if !res {
                 self.__ghost_log.insert(test_vc.clone());
             }
@@ -157,7 +159,16 @@ impl _SnapshotStore {
         std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
     }
 
-    fn __all_concurrent(vc: &VectorClock, vcs: &Vec<&VectorClock>) -> bool {
+    fn __all_concurrent(vc: &VectorClock, vcs: &Vec<&VectorClock>, upper_limits: &Vec<&VectorClock>) -> bool {
+        // If vc >= any of the upper limits, return false.
+        let bigger_than_upper_limits = upper_limits.iter().any(|upper_limit| {
+            vc >= *upper_limit
+        });
+
+        if bigger_than_upper_limits {
+            return false;
+        }
+        
         vcs.iter().all(|test_vc| {
             !(vc <= *test_vc || *test_vc <= vc)
         })
