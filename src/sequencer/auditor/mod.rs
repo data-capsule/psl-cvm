@@ -1,6 +1,6 @@
 use std::{collections::HashMap, pin::Pin, sync::Arc, time::Duration};
 
-use log::info;
+use log::{info, warn};
 use nix::libc::IFLA_MIN_MTU;
 use tokio::{sync::{mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender}, Mutex}, task::JoinSet};
 
@@ -112,6 +112,12 @@ impl Auditor {
 
     async fn log_stats(&mut self) {
         info!("GC VC: {}, Snapshot store size: {}", self.get_min_gc_vc(), self.snapshot_store.size());
+
+        if self.snapshot_store.ghost_reborn_counter() > 0 {
+            warn!("Ghost reborn counter: {}", self.snapshot_store.ghost_reborn_counter());
+        } else {
+            info!("Ghost reborn counter: {}", self.snapshot_store.ghost_reborn_counter());
+        }
     }
 
     async fn handle_block(&mut self, block: CachedBlock) {
@@ -121,12 +127,15 @@ impl Auditor {
     }
 
     async fn handle_gc(&mut self, worker_name: String, read_vc: VectorClock) {
-        self.gc_vcs.insert(worker_name, read_vc);
+        self.gc_vcs.insert(worker_name.clone(), read_vc);
 
         let min_vc = self.get_min_gc_vc();
 
         self.snapshot_store.prune_lesser_snapshots(&min_vc);
-        self.snapshot_store.prune_concurrent_snapshots(&self.gc_vcs.values().collect::<Vec<_>>());
+        self.snapshot_store.prune_concurrent_snapshots(&self.gc_vcs.iter()
+            .filter(|(_worker, _)| worker_name != **_worker)
+            .map(|(_worker, vc)| vc)
+        .collect::<Vec<_>>());
     }
 
     fn get_min_gc_vc(&self) -> VectorClock {

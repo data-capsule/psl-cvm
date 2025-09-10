@@ -1,4 +1,4 @@
-use std::{ops::Deref, sync::Arc};
+use std::{ops::Deref, sync::{atomic::AtomicUsize, Arc}};
 use dashmap::{DashMap, DashSet};
 use crate::worker::{block_sequencer::VectorClock, cache_manager::{CacheKey, CachedValue}};
 
@@ -8,7 +8,11 @@ struct ValueLattice {
 }
 pub struct _SnapshotStore {
     store: DashMap<CacheKey, ValueLattice>,
+    /// All VCs currently installed.
     log: DashSet<VectorClock>,
+    /// All VCs that have been garbage collected.
+    __ghost_log: DashSet<VectorClock>,
+    __ghost_reborn_counter: AtomicUsize,
 }
 
 
@@ -18,7 +22,7 @@ pub struct SnapshotStore(Arc<_SnapshotStore>);
 
 impl SnapshotStore {
     pub fn new() -> Self {
-        Self(Arc::new(_SnapshotStore { store: DashMap::new(), log: DashSet::new() }))
+        Self(Arc::new(_SnapshotStore { store: DashMap::new(), log: DashSet::new(), __ghost_log: DashSet::new(), __ghost_reborn_counter: AtomicUsize::new(0) }))
     }
 }
 
@@ -34,6 +38,31 @@ impl _SnapshotStore {
     pub fn snapshot_exists(&self, vc: &VectorClock) -> bool {
         std::sync::atomic::fence(std::sync::atomic::Ordering::Acquire);
         self.log.contains(vc)
+    }
+
+    pub fn find_lub(&self, vc: &VectorClock) -> Vec<VectorClock> {
+        let all_vcs_lesser_than_vc = self.log.iter().filter(|test_vc| {
+            let _cmp = test_vc.partial_cmp(vc);
+            match _cmp {
+                Some(std::cmp::Ordering::Less) => true,
+                Some(std::cmp::Ordering::Equal) => true,
+                _ => false,
+            }
+        })
+        .map(|vc| vc.clone())
+        .collect::<Vec<_>>();
+
+        // Weed out vcs that are less than some vc in all_vcs_lesser_than_vc.
+        all_vcs_lesser_than_vc.iter().filter(|test_vc| {
+            !all_vcs_lesser_than_vc.iter().filter(|other_vc| {
+                *other_vc != *test_vc
+            })
+            .any(|other_vc| {
+                *test_vc < other_vc
+            })
+        })    
+        .map(|vc| vc.clone())
+        .collect()        
     }
 
     /// Returns value <= vc.
@@ -79,6 +108,10 @@ impl _SnapshotStore {
                 .values.insert(vc.clone(), value);
         }
 
+        if self.__ghost_log.contains(&vc) {
+            self.__ghost_reborn_counter.fetch_add(1, std::sync::atomic::Ordering::Release);
+        }
+
         
         self.log.insert(vc);
         std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
@@ -94,7 +127,11 @@ impl _SnapshotStore {
         }
 
         self.log.retain(|test_vc| {
-            !(test_vc <= vc)
+            let res = !(test_vc <= vc);
+            if !res {
+                self.__ghost_log.insert(test_vc.clone());
+            }
+            res
         });
 
         std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
@@ -110,7 +147,11 @@ impl _SnapshotStore {
         }
 
         self.log.retain(|test_vc| {
-            !Self::__all_concurrent(test_vc, vcs)
+            let res = !Self::__all_concurrent(test_vc, vcs);
+            if !res {
+                self.__ghost_log.insert(test_vc.clone());
+            }
+            res
         });
 
         std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
@@ -124,5 +165,9 @@ impl _SnapshotStore {
 
     pub fn size(&self) -> usize {
         self.log.len()
+    }
+
+    pub fn ghost_reborn_counter(&self) -> usize {
+        self.__ghost_reborn_counter.load(std::sync::atomic::Ordering::Acquire)
     }
 }
