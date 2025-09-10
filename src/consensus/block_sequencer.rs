@@ -358,6 +358,7 @@ impl BlockSequencer {
             vector_clock: None,
             origin,
             chain_id: 0, // This field is generally unused.
+            read_set: None, // This field is unused for consensus.
         };
 
         let parent_hash_rx = self.parent_hash_rx.take();

@@ -83,6 +83,8 @@ message ProtoBlock {
     ProtoVectorClock vector_clock = 11;
     string origin = 12;
     uint64 chain_id = 13;
+
+    ProtoReadSet read_set = 14;
 }
 
 message HalfSerializedBlock {
@@ -122,4 +124,17 @@ message ProtoVote {
     uint64 view = 4;
     uint64 config_num = 5;
     uint64 chain_id = 6;
+}
+
+message ProtoReadSet {
+    repeated ProtoReadSetEntry entries = 1;
+
+    // Merkle root is empty => each entries value_hash to be taken literally.
+    // Otherwise, all value_hashes should be empty and only the merkle root should be used.
+    bytes merkle_root = 2;
+}
+
+message ProtoReadSetEntry {
+    bytes key = 1;
+    bytes value_hash = 2;
 }

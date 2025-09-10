@@ -6,7 +6,7 @@ use log::{info, trace};
 use prost::Message;
 use tokio::sync::{oneshot, Mutex};
 
-use crate::{config::AtomicPSLWorkerConfig, crypto::{default_hash, CachedBlock, CryptoServiceConnector, FutureHash}, proto::{consensus::{ProtoBlock, ProtoVectorClock, ProtoVectorClockEntry}, execution::{ProtoTransaction, ProtoTransactionOp, ProtoTransactionOpType, ProtoTransactionPhase}, rpc::ProtoPayload}, rpc::{client::PinnedClient, PinnedMessage, SenderType}, utils::{channel::{Receiver, Sender}, timer::ResettableTimer}};
+use crate::{config::AtomicPSLWorkerConfig, crypto::{default_hash, CachedBlock, CryptoServiceConnector, FutureHash, HashType}, proto::{consensus::{ProtoBlock, ProtoReadSet, ProtoReadSetEntry, ProtoVectorClock, ProtoVectorClockEntry}, execution::{ProtoTransaction, ProtoTransactionOp, ProtoTransactionOpType, ProtoTransactionPhase}, rpc::ProtoPayload}, rpc::{client::PinnedClient, PinnedMessage, SenderType}, utils::{channel::{Receiver, Sender}, timer::ResettableTimer}};
 
 use super::cache_manager::{CacheKey, CachedValue};
 
@@ -431,6 +431,7 @@ impl BlockSequencer {
 
         let all_writes = Self::wrap_vec(
             Self::dedup_vec(self.all_write_op_bag.drain(..)),
+            vec![], // Reads are not forwarded to other nodes.
             seq_num,
             Some(self.curr_vector_clock.serialize()),
             String::from("god"),
@@ -459,18 +460,20 @@ impl BlockSequencer {
         self.curr_vector_clock.advance(me.clone(), seq_num);
         assert!(read_vc.get(&me) + 1 == seq_num);
 
-        let _self_reads = self.self_read_op_bag.drain(..).collect::<Vec<_>>();
+        let self_reads = self.self_read_op_bag.drain(..).collect::<Vec<_>>();
 
         let all_writes = Self::wrap_vec(
             Self::dedup_vec(self.all_write_op_bag.drain(..)),
+            vec![], // Reads are not forwarded to other nodes.
             seq_num,
             Some(self.curr_vector_clock.serialize()),
             origin.clone(),
             self.chain_id,
         );
 
-        let self_writes = Self::wrap_vec(
+        let self_writes_and_reads = Self::wrap_vec(
             Self::dedup_vec(self.self_write_op_bag.drain(..)),
+            Self::prepare_read_set(self_reads),
             seq_num,
             Some(read_vc.serialize()),
             origin,
@@ -486,7 +489,7 @@ impl BlockSequencer {
 
         let parent_hash_rx = self.last_block_hash.take();
         let (self_writes_rx, hash_rx, hash_rx2) = self.crypto.prepare_block(
-            self_writes,
+            self_writes_and_reads,
             true,
             parent_hash_rx,
         ).await;
@@ -512,6 +515,7 @@ impl BlockSequencer {
 
     fn wrap_vec(
         writes: Vec<(CacheKey, CachedValue)>,
+        reads: Vec<(CacheKey, HashType)>,
         seq_num: u64,
         vector_clock: Option<ProtoVectorClock>,
         origin: String,
@@ -543,6 +547,16 @@ impl BlockSequencer {
             vector_clock,
             origin,
             chain_id, // This field is generally unused.
+
+            read_set: Some(ProtoReadSet {
+                entries: reads.into_iter()
+                    .map(|(key, value_hash)| ProtoReadSetEntry {
+                        key,
+                        value_hash,
+                    })
+                    .collect(),
+                merkle_root: vec![],
+            })
         }
     }
 
@@ -600,6 +614,19 @@ impl BlockSequencer {
         // if !i_was_blocked && i_am_blocked {
         //     warn!("Blocked");
         // }
+    }
+
+    fn prepare_read_set(reads: Vec<(CacheKey, Option<CachedValue>)>) -> Vec<(CacheKey, HashType)> {
+        reads.into_iter()
+            .map(|(key, value)| {
+                let val_hash = match value {
+                    Some(value) => value.val_hash.to_bytes_be().1,
+                    None => vec![],
+                };
+                (key, val_hash)
+            })
+            .sorted_by_key(|(key, _)| key.clone())
+            .collect()
     }
 }
 

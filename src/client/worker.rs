@@ -303,6 +303,7 @@ impl<Gen: PerWorkerWorkloadGenerator + Send + Sync + 'static> ClientWorker<Gen> 
             vector_clock: None,
             origin,
             chain_id,
+            read_set: None, // This field is unused for client.
         };
 
         let mut buf = serialize_proto_block_nascent(&block).unwrap();
