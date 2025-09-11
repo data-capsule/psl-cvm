@@ -129,8 +129,9 @@ impl PerWorkerAuditor {
     }
 
     async fn do_audit_block(&mut self, block: CachedBlock, read_vc: VectorClock) {
+        let _ = self.snapshot_store.global_lock.lock().await;
         if !self.snapshot_store.snapshot_exists(&read_vc) {
-            let updates = self.generate_updates(read_vc.clone());
+            let updates = self.generate_updates(read_vc.clone()).await;
             // let updates = vec![];
             self.snapshot_store.install_snapshot(read_vc.clone(), self.worker_name.clone(), updates).await;
             self.__snapshot_generated_counter += 1;
@@ -158,20 +159,40 @@ impl PerWorkerAuditor {
 
     }
 
-    fn generate_updates(&mut self, read_vc: VectorClock) -> Vec<(CacheKey, CachedValue)> {
-        let update_blocks = self.get_update_blocks(read_vc);
+    /// Precondition: base_vc <= read_vc && base_vc is in the snapshot store or is VectorClock::new()
+    async fn generate_updates(&mut self, read_vc: VectorClock) -> Vec<(CacheKey, CachedValue)> {
+        let (update_blocks, base_vc) = self.get_update_blocks(read_vc.clone());
 
-        let updates = update_blocks.iter()
+        let update_map = update_blocks.iter()
             .map(|block| self.filter_write_ops(&block.block))
-            .flatten()
-            .collect();
+            .collect::<Vec<HashMap<CacheKey, CachedValue>>>();
+
+        let mut updates = HashMap::new();
+        for map in update_map {
+            for (key, value) in map {
+                let _ = updates.entry(key).or_insert(value.clone())
+                    .merge_cached(value);
+            }
+        }
+
+        if base_vc != VectorClock::new() {
+            for (key, value) in updates.iter_mut() {
+                let base_value = self.snapshot_store.get(key, &base_vc).await;
+                if base_value.is_none() {
+                    continue;
+                }
+                let _ = value.merge_cached(base_value.unwrap());
+            }
+        }
+
+        warn!("Updates: {:#?}", updates.iter().map(|(key, value)| (String::from_utf8(key.clone()).unwrap(), hex::encode(value.val_hash.to_bytes_be().1), read_vc.clone())).collect::<Vec<_>>());
 
 
-        updates
+        updates.into_iter().collect()
     }
 
 
-    fn get_update_blocks(&mut self, read_vc: VectorClock) -> Vec<CachedBlock> {
+    fn get_update_blocks(&mut self, read_vc: VectorClock) -> (Vec<CachedBlock>, VectorClock) {
         let chosen_glb = self.last_read_vc.clone();
         assert!(chosen_glb <= read_vc);
         assert!(self.snapshot_store.snapshot_exists(&chosen_glb));
@@ -219,11 +240,11 @@ impl PerWorkerAuditor {
 
         assert!(update_blocks.len() == expected_block_count as usize, "update_blocks.len(): {} expected_block_count: {} read_vc: {} lub: {}", update_blocks.len(), expected_block_count, read_vc, chosen_glb);
 
-        update_blocks
+        (update_blocks, chosen_glb)
     }
 
-    fn filter_write_ops(&self, block: &ProtoBlock) -> Vec<(CacheKey, CachedValue)> {
-        let mut updates = Vec::new();
+    fn filter_write_ops(&self, block: &ProtoBlock) -> HashMap<CacheKey, CachedValue> {
+        let mut updates = HashMap::new();
         for tx in &block.tx_list {
             if tx.on_crash_commit.is_none() {
                 continue;
@@ -232,7 +253,8 @@ impl PerWorkerAuditor {
             let ops = tx.on_crash_commit.as_ref().unwrap();
             for op in &ops.ops {
                 let Some((key, cached_value)) = process_tx_op(op) else { continue };
-                updates.push((key, cached_value));
+                let _ = updates.entry(key).or_insert(cached_value.clone())
+                    .merge_cached(cached_value);
             }
         }
         updates
@@ -246,10 +268,20 @@ impl PerWorkerAuditor {
             let correct_value_hash = cached_value_to_val_hash(correct_value);
             if *value_hash != correct_value_hash {
                 let key_str = String::from_utf8(key.clone()).unwrap();
-                let correct_value_hex_str = hex::encode(correct_value_hash);
-                let value_hex_str = hex::encode(value_hash);
-                error!("Read verification failed for key: {} correct_value_hash: {} value_hash: {}",
-                    key_str, correct_value_hex_str, value_hex_str);
+                let correct_value_hex_str = &hex::encode(correct_value_hash);
+                let value_hex_str = &hex::encode(value_hash);
+                error!("❌ Read verification failed for key: {} correct_value_hash: {} value_hash: {} read_vc: {}",
+                    key_str, correct_value_hex_str, value_hex_str, read_vc);
+
+                // if correct_value_hex_str.is_empty() {
+                    // panic!("Read verification failed");
+                // }
+            } else {
+                let key_str = String::from_utf8(key.clone()).unwrap();
+                let correct_value_hex_str = &hex::encode(correct_value_hash);
+                let value_hex_str = &hex::encode(value_hash);
+                warn!("✅ Read verification passed for key: {} correct_value_hash: {} value_hash: {} read_vc: {}",
+                    key_str, correct_value_hex_str, value_hex_str, read_vc);
             }
         }
     }

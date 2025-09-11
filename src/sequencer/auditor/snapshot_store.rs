@@ -23,6 +23,8 @@ pub struct _SnapshotStore {
     /// All VCs that have been garbage collected.
     __ghost_log: DashSet<VectorClock>,
     __ghost_reborn_counter: AtomicUsize,
+
+    pub(super) global_lock: tokio::sync::Mutex<()>,
 }
 
 
@@ -36,7 +38,7 @@ impl SnapshotStore {
         let store = worker_names.iter().map(|name| (name.clone(), RwLock::new(HashMap::new()))).collect();
 
         log.insert(VectorClock::new(), worker_names[0].clone());
-        Self(Arc::new(_SnapshotStore { store, log, __ghost_log: DashSet::new(), __ghost_reborn_counter: AtomicUsize::new(0) }))
+        Self(Arc::new(_SnapshotStore { store, log, __ghost_log: DashSet::new(), __ghost_reborn_counter: AtomicUsize::new(0), global_lock: tokio::sync::Mutex::new(()) }))
     }
 }
 
@@ -90,42 +92,66 @@ impl _SnapshotStore {
             return None;
         }
 
-        let home_worker = self.snapshot_home_worker(vc);
-
-        let store = self.store.get(&home_worker).unwrap();
-        let store = store.read().await;
-        let Some(value_lattice) = store.get(key) else {
-            return None;
-        };
-
         // Fast path:
-        if let Some(val) = value_lattice.values.get(vc) {
-            return Some(val.clone());
+        {
+            let home_worker = self.snapshot_home_worker(vc);
+    
+            let store = self.store.get(&home_worker).unwrap();
+            let store = store.read().await;
+            let Some(value_lattice) = store.get(key) else {
+                return None;
+            };
+    
+            if let Some(val) = value_lattice.values.get(vc) {
+                return Some(val.clone());
+            }
         }
 
-        // Slow path
-        // Find the greatest vc <= vc.
+        // Slow path:
+        // In all homes, find the greatest vc <= vc.
         let mut glb = None;
-        for mapref in value_lattice.values.iter() {
-            let test_vc = mapref.0; // mapref.key();
-            if test_vc <= vc {
-                if glb.is_none() {
-                    glb = Some(test_vc.clone());
-                } else {
-                    let _glb = glb.as_ref().unwrap();
-                    if test_vc > _glb {
+        let mut glb_home = None;
+
+        for mapref in self.store.iter() {
+            let store = mapref.value();
+            let store = store.read().await;
+
+            let Some(value_lattice) = store.get(key) else {
+                continue;
+            };
+
+            let home = mapref.key().clone();
+
+            value_lattice.values.iter().for_each(|(test_vc, _)| {
+                if test_vc <= vc {
+                    if glb.is_none() {
                         glb = Some(test_vc.clone());
+                        glb_home = Some(mapref.key().clone());
+                    } else {
+                        let _glb = glb.as_ref().unwrap();
+                        if test_vc > _glb {
+                            glb = Some(test_vc.clone());
+                            glb_home = Some(home.clone());
+                        }
                     }
                 }
-            }
+            });
+
         }
 
         if glb.is_none() {
             return None;
         }
 
-        let glb = glb.unwrap();
-        value_lattice.values.get(&glb).map(|val| val.clone())
+        {
+            let store = self.store.get(&glb_home.unwrap()).unwrap();
+            let store = store.read().await;
+            let Some(value_lattice) = store.get(key) else {
+                return None;
+            };
+
+            value_lattice.values.get(&glb.unwrap()).map(|val| val.clone())
+        }
     }
 
     pub async fn install_snapshot<T: IntoIterator<Item = (CacheKey, CachedValue)>>(&self, vc: VectorClock, worker_name: String, updates: T) {
