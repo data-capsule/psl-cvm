@@ -1,7 +1,7 @@
 use std::{collections::HashMap, ops::Deref, sync::{atomic::AtomicUsize, Arc}};
 use tokio::sync::RwLock;
 use dashmap::{DashMap, DashSet};
-use log::warn;
+use log::{trace, warn};
 use crate::worker::{block_sequencer::VectorClock, cache_manager::{CacheKey, CachedValue}};
 
 
@@ -141,7 +141,7 @@ impl _SnapshotStore {
             return None;
         }
 
-        warn!("Glb: {:?} Glb home: {:?} key: {} vc: {}", glb, glb_home, String::from_utf8(key.clone()).unwrap(), vc);
+        trace!("Glb: {:?} Glb home: {:?} key: {} vc: {}", glb, glb_home, String::from_utf8(key.clone()).unwrap(), vc);
 
         {
             let store = self.store.get(&glb_home.unwrap()).unwrap();

@@ -21,19 +21,23 @@ pub enum SequencerCommand {
         key: CacheKey,
         value: CachedValue,
         seq_num_query: BlockSeqNumQuery,
+        current_vc: oneshot::Sender<VectorClock>,
     },
 
     /// Read Op from myself
     SelfReadOp {
         key: CacheKey,
         value: Option<CachedValue>, // Could be None if the key was not found.
+        origin: SenderType,
         snapshot_propagated_signal_tx: Option<oneshot::Sender<()>>,
+        current_vc: oneshot::Sender<VectorClock>,
     },
 
     /// Write Op from other node, that I propagate
     OtherWriteOp {
         key: CacheKey,
         value: CachedValue,
+        current_vc: oneshot::Sender<VectorClock>,
     },
 
     /// Advance the vector clock in the sequencer.
@@ -232,7 +236,7 @@ pub struct BlockSequencer {
     self_write_op_bag: Vec<(CacheKey, CachedValue)>,
     dirty_keys: HashSet<CacheKey>,
     all_write_op_bag: Vec<(CacheKey, CachedValue)>,
-    self_read_op_bag: Vec<(CacheKey, Option<CachedValue>)>,
+    self_read_op_bag: Vec<(CacheKey, Option<CachedValue>, SenderType)>,
 
     curr_vector_clock: VectorClock,
     __vc_dirty: bool,
@@ -252,6 +256,8 @@ pub struct BlockSequencer {
 
     last_heartbeat_time: Instant,
     __num_times_blocked: usize,
+
+    must_flush_before_next_other_write_op: bool,
 }
 
 impl BlockSequencer {
@@ -282,6 +288,7 @@ impl BlockSequencer {
             __vc_dirty: false,
             last_heartbeat_time: Instant::now(),
             __num_times_blocked: 0,
+            must_flush_before_next_other_write_op: false,
         }
     }
 
@@ -310,7 +317,7 @@ impl BlockSequencer {
 
     async fn handle_command(&mut self, command: SequencerCommand) {
         match command {
-            SequencerCommand::SelfWriteOp { key, value, seq_num_query } => {
+            SequencerCommand::SelfWriteOp { key, value, seq_num_query, current_vc } => {
                 self.self_write_op_bag.push((key.clone(), value.clone()));
                 self.all_write_op_bag.push((key.clone(), value));
                 self.dirty_keys.insert(key);
@@ -321,25 +328,40 @@ impl BlockSequencer {
                         sender.send(self.curr_block_seq_num).unwrap();
                     }
                 }
+                current_vc.send(self.curr_vector_clock.clone()).unwrap();
             },
-            SequencerCommand::SelfReadOp { key, value, snapshot_propagated_signal_tx } => {
+            SequencerCommand::SelfReadOp { key, value, origin, snapshot_propagated_signal_tx, current_vc } => {
                 if !self.dirty_keys.contains(&key) {
-                    self.self_read_op_bag.push((key, value));
+                    self.self_read_op_bag.push((key, value, origin));
                 }
+                current_vc.send(self.curr_vector_clock.clone()).unwrap();
                 if let Some(tx) = snapshot_propagated_signal_tx {
                     self.snapshot_propagated_signal_tx.push(tx);
                 }
+                self.must_flush_before_next_other_write_op = true;
             },
-            SequencerCommand::OtherWriteOp { key, value } => {
+            SequencerCommand::OtherWriteOp { key, value, current_vc } => {
                 
                 // All OtherWriteOps come before any SelfReadOp for a given block.
                 // If I have SelfWriteOp(x) <-- OtherWriteOp(x) <-- SelfReadOp(x),
                 // I want to unmark x as dirty.
-                self.dirty_keys.remove(&key);
+                // self.dirty_keys.remove(&key);
+
+                while self.must_flush_before_next_other_write_op {
+                    // Pretend there is a ForceMakeNewBlock before this.
+                    self.force_prepare_new_block().await;
+                }
                 
                 self.all_write_op_bag.push((key, value));
+                current_vc.send(self.curr_vector_clock.clone()).unwrap();
             },
             SequencerCommand::AdvanceVC { sender, block_seq_num } => {
+                while self.must_flush_before_next_other_write_op {
+                    // Pretend there is a ForceMakeNewBlock before this.
+                    self.force_prepare_new_block().await;
+                }
+                assert!(self.self_read_op_bag.is_empty());
+                
                 if block_seq_num == 0 {
                     // We want to keep the succint reprensentation.
                     return;
@@ -484,7 +506,7 @@ impl BlockSequencer {
 
         let self_writes_and_reads = Self::wrap_vec(
             Self::dedup_vec(self.self_write_op_bag.drain(..)),
-            Self::prepare_read_set(self_reads),
+            Self::prepare_read_set(self_reads, &self.dirty_keys),
             seq_num,
             Some(read_vc.serialize()),
             origin,
@@ -523,11 +545,13 @@ impl BlockSequencer {
         }
 
         self.__vc_dirty = false;
+
+        self.must_flush_before_next_other_write_op = false;
     }
 
     fn wrap_vec(
         writes: Vec<(CacheKey, CachedValue)>,
-        reads: Vec<(CacheKey, HashType)>,
+        reads: Vec<(CacheKey, HashType, String)>,
         seq_num: u64,
         vector_clock: Option<ProtoVectorClock>,
         origin: String,
@@ -562,9 +586,10 @@ impl BlockSequencer {
 
             read_set: Some(ProtoReadSet {
                 entries: reads.into_iter()
-                    .map(|(key, value_hash)| ProtoReadSetEntry {
+                    .map(|(key, value_hash, origin)| ProtoReadSetEntry {
                         key,
                         value_hash,
+                        origin,
                     })
                     .collect(),
                 merkle_root: vec![],
@@ -628,13 +653,18 @@ impl BlockSequencer {
         // }
     }
 
-    fn prepare_read_set(reads: Vec<(CacheKey, Option<CachedValue>)>) -> Vec<(CacheKey, HashType)> {
+    fn prepare_read_set(reads: Vec<(CacheKey, Option<CachedValue>, SenderType)>, dirty_keys: &HashSet<CacheKey>) -> Vec<(CacheKey, HashType, String)> {
         reads.into_iter()
-            .map(|(key, value)| {
-                let val_hash = cached_value_to_val_hash(value);
-                (key, val_hash)
+            .filter_map(|(key, value, origin)| {
+                if dirty_keys.contains(&key) {
+                    None
+                } else {
+                    let val_hash = cached_value_to_val_hash(value);
+                    let origin = origin.to_name_and_sub_id().0;
+                    Some((key, val_hash, origin))
+                }
             })
-            .sorted_by_key(|(key, _)| key.clone())
+            .sorted_by_key(|(key, _, _)| key.clone())
             .collect()
     }
 }

@@ -137,4 +137,5 @@ message ProtoReadSet {
 message ProtoReadSetEntry {
     bytes key = 1;
     bytes value_hash = 2;
+    string origin = 3;
 }

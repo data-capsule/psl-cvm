@@ -1,6 +1,6 @@
 use std::{collections::{HashMap, VecDeque}, pin::Pin, sync::Arc, time::Duration};
 
-use log::{error, info, warn};
+use log::{error, info, trace, warn};
 use tokio::sync::{mpsc::UnboundedSender, Mutex};
 
 use crate::{config::AtomicConfig, crypto::CachedBlock, proto::consensus::{ProtoBlock, ProtoReadSet, ProtoReadSetEntry}, rpc::SenderType, sequencer::auditor::snapshot_store::SnapshotStore, utils::{channel::Receiver, timer::ResettableTimer}, worker::{block_sequencer::{cached_value_to_val_hash, VectorClock}, cache_manager::{process_tx_op, CacheKey, CachedValue}}};
@@ -9,6 +9,7 @@ use crate::{config::AtomicConfig, crypto::CachedBlock, proto::consensus::{ProtoB
 pub struct PerWorkerAuditor {
     config: AtomicConfig,
     worker_name: String,
+    cache: HashMap<CacheKey, CachedValue>,
     block_rx: Receiver<CachedBlock>,
     gc_tx: UnboundedSender<(String, VectorClock)>,
     snapshot_store: SnapshotStore,
@@ -29,6 +30,9 @@ pub struct PerWorkerAuditor {
 
     __snapshot_reused_counter: usize,
     __snapshot_generated_counter: usize,
+
+    num_correct_reads: usize,
+    num_incorrect_reads: usize,
 }
 
 impl PerWorkerAuditor {
@@ -46,6 +50,7 @@ impl PerWorkerAuditor {
         Self {
             config,
             worker_name,
+            cache: HashMap::new(),
             block_rx,
             gc_tx,
             snapshot_store,
@@ -57,6 +62,9 @@ impl PerWorkerAuditor {
 
             __snapshot_reused_counter: 0,
             __snapshot_generated_counter: 0,
+
+            num_correct_reads: 0,
+            num_incorrect_reads: 0,
         }
     }
 
@@ -97,9 +105,10 @@ impl PerWorkerAuditor {
 
     async fn log_stats(&mut self) {
         info!(
-            "Worker: {}, Unaudited buffer size: {}, Reused snapshot counter: {} Generated snapshot counter: {}",
+            "Worker: {}, Unaudited buffer size: {}, Reused snapshot counter: {} Generated snapshot counter: {}, Correct reads: {} Incorrect reads: {}",
             self.worker_name, self.unaudited_buffer.len(),
-            self.__snapshot_reused_counter, self.__snapshot_generated_counter
+            self.__snapshot_reused_counter, self.__snapshot_generated_counter,
+            self.num_correct_reads, self.num_incorrect_reads
         );  
     }
 
@@ -129,15 +138,18 @@ impl PerWorkerAuditor {
     }
 
     async fn do_audit_block(&mut self, block: CachedBlock, read_vc: VectorClock) {
-        let _ = self.snapshot_store.global_lock.lock().await;
-        if !self.snapshot_store.snapshot_exists(&read_vc) {
+        // let _ = self.snapshot_store.global_lock.lock().await;
+        if true || !self.snapshot_store.snapshot_exists(&read_vc) {
             let updates = self.generate_updates(read_vc.clone()).await;
             // let updates = vec![];
-            self.snapshot_store.install_snapshot(read_vc.clone(), self.worker_name.clone(), updates).await;
+            self.snapshot_store.install_snapshot(read_vc.clone(), self.worker_name.clone(), updates.clone()).await;
+            self.cache.extend(updates);
             self.__snapshot_generated_counter += 1;
         } else {
             self.__snapshot_reused_counter += 1;
         }
+
+
 
         let write_ops = self.filter_write_ops(&block.block);
 
@@ -179,7 +191,8 @@ impl PerWorkerAuditor {
 
         if base_vc != VectorClock::new() {
             for (key, value) in updates.iter_mut() {
-                let base_value = self.snapshot_store.get(key, &base_vc).await;
+                // let base_value = self.snapshot_store.get(key, &base_vc).await;
+                let base_value = self.cache.get(key).cloned();
                 if base_value.is_none() {
                     continue;
                 }
@@ -187,7 +200,7 @@ impl PerWorkerAuditor {
             }
         }
 
-        warn!("Updates: {:#?}", updates.iter().map(|(key, value)| (String::from_utf8(key.clone()).unwrap(), hex::encode(value.val_hash.to_bytes_be().1), read_vc.clone())).collect::<Vec<_>>());
+        trace!("Updates: {:#?}", updates.iter().map(|(key, value)| (String::from_utf8(key.clone()).unwrap(), hex::encode(value.val_hash.to_bytes_be().1), read_vc.clone())).collect::<Vec<_>>());
 
 
         updates.into_iter().collect()
@@ -265,8 +278,9 @@ impl PerWorkerAuditor {
 
     /// Precondition: The snapshot wrt read_vc already exists in the snapshot store and is not GCed.
     async fn verify_reads(&mut self, read_set: &ProtoReadSet, read_vc: &VectorClock, write_ops: &HashMap<CacheKey, CachedValue>) {
-        for ProtoReadSetEntry { key, value_hash } in &read_set.entries {
-            let correct_value = self.snapshot_store.get(key, read_vc).await;
+        for ProtoReadSetEntry { key, value_hash, origin } in &read_set.entries {
+            // let correct_value = self.snapshot_store.get(key, read_vc).await;
+            let correct_value = self.cache.get(key).cloned();
             let correct_value_hash = cached_value_to_val_hash(correct_value);
             if *value_hash != correct_value_hash {
                 let key_str = String::from_utf8(key.clone()).unwrap();
@@ -277,18 +291,22 @@ impl PerWorkerAuditor {
                 let value_hash_in_curr_block = cached_value_to_val_hash(value_in_curr_block);
                 let value_hash_in_curr_block_str = &hex::encode(value_hash_in_curr_block);
 
-                error!("❌ Read verification failed for key: {} correct_value_hash: {} value_hash: {} read_vc: {} value_hash_in_curr_block: {}, matches? {}",
-                    key_str, correct_value_hex_str, value_hex_str, read_vc, value_hash_in_curr_block_str, value_hash_in_curr_block_str == value_hex_str);
+                error!("❌ Read verification failed in {} for key: {} correct_value_hash: {} value_hash: {} read_vc: {} value_hash_in_curr_block: {}, matches? {} Value origin: {}",
+                    self.worker_name, key_str, correct_value_hex_str, value_hex_str, read_vc, value_hash_in_curr_block_str, value_hash_in_curr_block_str == value_hex_str, origin);
 
                 // if correct_value_hex_str.is_empty() {
                     // panic!("Read verification failed");
                 // }
+
+                self.num_incorrect_reads += 1;
             } else {
                 let key_str = String::from_utf8(key.clone()).unwrap();
                 let correct_value_hex_str = &hex::encode(correct_value_hash);
                 let value_hex_str = &hex::encode(value_hash);
-                warn!("✅ Read verification passed for key: {} correct_value_hash: {} value_hash: {} read_vc: {}",
+                trace!("✅ Read verification passed for key: {} correct_value_hash: {} value_hash: {} read_vc: {}",
                     key_str, correct_value_hex_str, value_hex_str, read_vc);
+
+                self.num_correct_reads += 1;
             }
         }
     }
