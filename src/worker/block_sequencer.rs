@@ -367,7 +367,9 @@ impl BlockSequencer {
                     return;
                 }
 
-                if self.curr_vector_clock.advance(sender, block_seq_num) {
+                let is_quiscent = self.self_read_op_bag.is_empty() && self.self_write_op_bag.is_empty() && self.all_write_op_bag.is_empty();
+
+                if !is_quiscent && self.curr_vector_clock.advance(sender, block_seq_num) {
                     self.__vc_dirty = true;
                 }
                 self.send_heartbeat().await;
@@ -404,10 +406,10 @@ impl BlockSequencer {
             return; // Not enough writes to form a block
         }
 
-        if self.self_write_op_bag.is_empty() && self.self_read_op_bag.is_empty() {
-            self.forward_just_other_writes().await;
-            return;
-        }
+        // if self.self_write_op_bag.is_empty() && self.self_read_op_bag.is_empty() {
+        //     self.forward_just_other_writes().await;
+        //     return;
+        // }
 
         self.do_prepare_new_block().await;
     }
@@ -417,16 +419,21 @@ impl BlockSequencer {
         trace!("Force preparing new block. VC dirty: {} , all_write_op_bag: {}, self_write_op_bag: {}, self_read_op_bag: {}",
             self.__vc_dirty, self.all_write_op_bag.len(), self.self_write_op_bag.len(), self.self_read_op_bag.len());
 
+        if !(self.__vc_dirty || self.all_write_op_bag.len() > 0 || self.self_write_op_bag.len() > 0 || self.self_read_op_bag.len() > 0) {
+            return;
+        }
+
         // if self.all_write_op_bag.is_empty() && self.self_read_op_bag.is_empty() && !self.__vc_dirty {
         //     return;
         // }
 
-        if self.self_write_op_bag.is_empty() && self.self_read_op_bag.is_empty() {
-            self.forward_just_other_writes().await;
-            return;
-        }
+        // if self.self_write_op_bag.is_empty() && self.self_read_op_bag.is_empty() {
+        //     self.forward_just_other_writes().await;
+        //     return;
+        // }
         
         self.do_prepare_new_block().await;
+
     }
 
     async fn send_heartbeat(&mut self) {

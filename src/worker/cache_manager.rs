@@ -374,7 +374,7 @@ impl CacheManager {
             CacheCommand::Get(key, response_tx) => {
                 let res = self.cache.get(&key);
                 if res.is_none() {
-                    error!("Key not found: {:?}", key);
+                    trace!("Key not found: {:?}", key);
                 }
                 let origin = self.value_origin.get(&key).cloned().unwrap_or(SenderType::Auth("devil".to_string(), 0));
                 let _ = response_tx.send(res.map(|v| (v.value.clone(), v.seq_num)).ok_or(CacheError::KeyNotFound));
@@ -400,7 +400,7 @@ impl CacheManager {
                 }).await;
                 let current_vc = current_vc_rx.await.unwrap();
 
-                warn!("Read key: {}, value_hash: {}, current_vc: {}", String::from_utf8(key.clone()).unwrap(), hex::encode(cached_value_to_val_hash(res.cloned())), current_vc);
+                trace!("Read key: {}, value_hash: {}, current_vc: {}", String::from_utf8(key.clone()).unwrap_or(hex::encode(key)), hex::encode(cached_value_to_val_hash(res.cloned())), current_vc);
 
 
 
@@ -416,7 +416,7 @@ impl CacheManager {
                     let (current_vc_tx, current_vc_rx) = oneshot::channel();
                     let _ = self.block_sequencer_tx.send(SequencerCommand::SelfWriteOp { key: key.clone(), value: CachedValue::new_with_seq_num(value, seq_num, val_hash.clone()), seq_num_query, current_vc: current_vc_tx }).await;
                     let current_vc = current_vc_rx.await.unwrap();
-                    warn!("Write key: {}, value_hash: {}, current_vc: {}", String::from_utf8(key).unwrap(), hex::encode(val_hash.to_bytes_be().1), current_vc);
+                    trace!("Write key: {}, value_hash: {}, current_vc: {}", String::from_utf8(key.clone()).unwrap_or(hex::encode(key)), hex::encode(val_hash.to_bytes_be().1), current_vc);
                     return;
                 }
 
@@ -426,7 +426,7 @@ impl CacheManager {
                 let (current_vc_tx, current_vc_rx) = oneshot::channel();
                 let _ = self.block_sequencer_tx.send(SequencerCommand::SelfWriteOp { key: key.clone(), value: CachedValue::new(value, val_hash.clone()), seq_num_query, current_vc: current_vc_tx }).await;
                 let current_vc = current_vc_rx.await.unwrap();
-                warn!("Write key: {}, value_hash: {}, current_vc: {}", String::from_utf8(key).unwrap(), hex::encode(val_hash.to_bytes_be().1), current_vc);
+                trace!("Write key: {}, value_hash: {}, current_vc: {}", String::from_utf8(key.clone()).unwrap_or(hex::encode(key)), hex::encode(val_hash.to_bytes_be().1), current_vc);
             }
             CacheCommand::Cas(key, value, expected_seq_num, response_tx) => {
                 unimplemented!();
@@ -497,7 +497,7 @@ impl CacheManager {
                             self.value_origin.insert(key.clone(), sender.clone());
                             (true, seq_num)
                         },
-                        Err(_old_seq_num) => (false, 0 /* doesn't matter */)
+                        Err(_old_seq_num) => (false, _old_seq_num)
                     }
                 } else {
                     let seq_num = cached_value.seq_num;
@@ -519,7 +519,9 @@ impl CacheManager {
                         current_vc: current_vc_tx,
                     }).await;
                     let current_vc = current_vc_rx.await.unwrap();
-                    warn!("Write key: {}, value_hash: {}, current_vc: {}", String::from_utf8(key.clone()).unwrap(), hex::encode(cached_value_to_val_hash(Some(cached_value))), current_vc);
+                    trace!("Write key: {}, value_hash: {}, current_vc: {}", String::from_utf8(key.clone()).unwrap(), hex::encode(cached_value_to_val_hash(Some(cached_value))), current_vc);
+                } else {
+                    trace!("Write rejected for key: {}, value_hash: {}, seq_num: {} origin: {}", String::from_utf8(key.clone()).unwrap(), hex::encode(cached_value_to_val_hash(Some(cached_value))), seq_num, sender.to_name_and_sub_id().0);
                 }
             }
         }
