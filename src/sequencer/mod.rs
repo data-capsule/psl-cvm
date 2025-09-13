@@ -11,7 +11,7 @@ use log::{debug, warn};
 use prost::Message as _;
 use tokio::{sync::Mutex, task::JoinSet};
 
-use crate::{config::{AtomicConfig, Config}, crypto::{AtomicKeyStore, CryptoService, KeyStore}, proto::{consensus::{ProtoAppendEntries, ProtoVectorClock}, rpc::ProtoPayload}, rpc::{client::Client, server::{MsgAckChan, RespType, Server, ServerContextType}, MessageRef, SenderType}, sequencer::{auditor::Auditor, commit_buffer::CommitBuffer, controller::Controller, heartbeat_handler::HeartbeatHandler, lockserver::{LockServer, LockServerCommand}}, utils::{channel::{make_channel, Receiver, Sender}, BlackHoleStorageEngine, StorageService}};
+use crate::{config::{AtomicConfig, Config}, crypto::{AtomicKeyStore, CryptoService, KeyStore}, proto::{consensus::{ProtoAppendEntries, ProtoHeartbeat, ProtoVectorClock}, rpc::ProtoPayload}, rpc::{client::Client, server::{MsgAckChan, RespType, Server, ServerContextType}, MessageRef, SenderType}, sequencer::{auditor::Auditor, commit_buffer::CommitBuffer, controller::Controller, heartbeat_handler::HeartbeatHandler, lockserver::{LockServer, LockServerCommand}}, utils::{channel::{make_channel, Receiver, Sender}, BlackHoleStorageEngine, StorageService}};
 use crate::storage_server::fork_receiver::ForkReceiver;
 use crate::storage_server::staging::Staging;
 
@@ -20,7 +20,7 @@ pub struct SequencerContext {
     keystore: AtomicKeyStore,
     fork_receiver_tx: Sender<(ProtoAppendEntries, SenderType)>,
     lock_server_tx: Sender<(Vec<LockServerCommand>, SenderType)>,
-    heartbeat_tx: Sender<(ProtoVectorClock, SenderType)>,
+    heartbeat_tx: Sender<(ProtoHeartbeat, SenderType)>,
 }
 
 #[derive(Clone)]
@@ -32,7 +32,7 @@ impl PinnedSequencerContext {
         keystore: AtomicKeyStore,
         fork_receiver_tx: Sender<(ProtoAppendEntries, SenderType)>,
         lock_server_tx: Sender<(Vec<LockServerCommand>, SenderType)>,
-        heartbeat_tx: Sender<(ProtoVectorClock, SenderType)>,
+        heartbeat_tx: Sender<(ProtoHeartbeat, SenderType)>,
     ) -> Self {
         let context = SequencerContext {
             config,
@@ -97,8 +97,8 @@ impl ServerContextType for PinnedSequencerContext {
                     .expect("Channel send error");
                 return Ok(RespType::NoResp);
             },
-            crate::proto::rpc::proto_payload::Message::Heartbeat(proto_heartbeat_vc) => {
-                self.heartbeat_tx.send((proto_heartbeat_vc, sender)).await
+            crate::proto::rpc::proto_payload::Message::Heartbeat(proto_heartbeat) => {
+                self.heartbeat_tx.send((proto_heartbeat, sender)).await
                     .expect("Channel send error");
                 return Ok(RespType::NoResp);
             }

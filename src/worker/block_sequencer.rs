@@ -2,11 +2,11 @@ use std::{collections::HashSet, fmt::{self, Debug, Display}, ops::{Deref, DerefM
 
 use hashbrown::HashMap;
 use itertools::Itertools;
-use log::{info, trace};
+use log::{info, trace, warn};
 use prost::Message;
 use tokio::sync::{oneshot, Mutex};
 
-use crate::{config::AtomicPSLWorkerConfig, crypto::{default_hash, CachedBlock, CryptoServiceConnector, FutureHash, HashType}, proto::{consensus::{ProtoBlock, ProtoReadSet, ProtoReadSetEntry, ProtoVectorClock, ProtoVectorClockEntry}, execution::{ProtoTransaction, ProtoTransactionOp, ProtoTransactionOpType, ProtoTransactionPhase}, rpc::ProtoPayload}, rpc::{client::PinnedClient, PinnedMessage, SenderType}, utils::{channel::{Receiver, Sender}, timer::ResettableTimer}};
+use crate::{config::AtomicPSLWorkerConfig, crypto::{default_hash, CachedBlock, CryptoServiceConnector, FutureHash, HashType}, proto::{consensus::{ProtoBlock, ProtoHeartbeat, ProtoReadSet, ProtoReadSetEntry, ProtoVectorClock, ProtoVectorClockEntry}, execution::{ProtoTransaction, ProtoTransactionOp, ProtoTransactionOpType, ProtoTransactionPhase}, rpc::ProtoPayload}, rpc::{client::PinnedClient, PinnedMessage, SenderType}, utils::{channel::{Receiver, Sender}, timer::ResettableTimer}};
 
 use super::cache_manager::{CacheKey, CachedValue};
 
@@ -49,7 +49,7 @@ pub enum SequencerCommand {
     /// Blocks can only be formed on receiving this token.
     /// Helps maintain atomicity.
     /// (Doesn't mean it is forced to form a block, just that it can)
-    MakeNewBlock,
+    MakeNewBlock(oneshot::Sender<bool>),
 
 
     /// Force a new block to be formed.
@@ -258,6 +258,7 @@ pub struct BlockSequencer {
     __num_times_blocked: usize,
 
     must_flush_before_next_other_write_op: bool,
+    is_quiscent: bool,
 }
 
 impl BlockSequencer {
@@ -289,6 +290,7 @@ impl BlockSequencer {
             last_heartbeat_time: Instant::now(),
             __num_times_blocked: 0,
             must_flush_before_next_other_write_op: false,
+            is_quiscent: true,
         }
     }
 
@@ -368,16 +370,26 @@ impl BlockSequencer {
                 }
 
                 let is_quiscent = self.self_read_op_bag.is_empty() && self.self_write_op_bag.is_empty() && self.all_write_op_bag.is_empty();
+                trace!("self.is_quiscent: {} is_quiscent: {} read_ops: {} all_write_ops: {} self_write_ops: {} vc_wait_buffer: {}", self.is_quiscent, is_quiscent, self.self_read_op_bag.len(), self.all_write_op_bag.len(), self.self_write_op_bag.len(), self.vc_wait_buffer.len());
+                
+                if self.is_quiscent && !is_quiscent {
+                    self.is_quiscent = false;
+                }
 
-                if !is_quiscent && self.curr_vector_clock.advance(sender, block_seq_num) {
+                let set_dirty_condition = !self.is_quiscent || self.vc_wait_buffer.len() > 0;
+
+                if set_dirty_condition && self.curr_vector_clock.advance(sender, block_seq_num) {
                     self.__vc_dirty = true;
                 }
                 self.send_heartbeat().await;
                 self.flush_vc_wait_buffer().await;
+
+                self.is_quiscent = is_quiscent;
             },
-            SequencerCommand::MakeNewBlock => {
+            SequencerCommand::MakeNewBlock(sender) => {
                 self.send_heartbeat().await;
-                self.maybe_prepare_new_block().await;
+                let actually_did_prepare = self.maybe_prepare_new_block().await;
+                sender.send(actually_did_prepare).unwrap();
             },
             SequencerCommand::ForceMakeNewBlock => {
                 self.send_heartbeat().await;
@@ -393,7 +405,7 @@ impl BlockSequencer {
         }
     }
 
-    async fn maybe_prepare_new_block(&mut self) {
+    async fn maybe_prepare_new_block(&mut self) -> bool {
         let config = self.config.get();
         let all_write_batch_size = config.worker_config.all_writes_max_batch_size;
         let self_write_batch_size = config.worker_config.self_writes_max_batch_size;
@@ -403,7 +415,7 @@ impl BlockSequencer {
         || self.self_write_op_bag.len() < self_write_batch_size 
         || self.self_read_op_bag.len() < self_read_batch_size
         {
-            return; // Not enough writes to form a block
+            return false; // Not enough writes to form a block
         }
 
         // if self.self_write_op_bag.is_empty() && self.self_read_op_bag.is_empty() {
@@ -412,6 +424,8 @@ impl BlockSequencer {
         // }
 
         self.do_prepare_new_block().await;
+
+        true
     }
 
     async fn force_prepare_new_block(&mut self) {
@@ -419,7 +433,12 @@ impl BlockSequencer {
         trace!("Force preparing new block. VC dirty: {} , all_write_op_bag: {}, self_write_op_bag: {}, self_read_op_bag: {}",
             self.__vc_dirty, self.all_write_op_bag.len(), self.self_write_op_bag.len(), self.self_read_op_bag.len());
 
-        if !(self.__vc_dirty || self.all_write_op_bag.len() > 0 || self.self_write_op_bag.len() > 0 || self.self_read_op_bag.len() > 0) {
+        if !(self.__vc_dirty
+            || self.all_write_op_bag.len() > 0
+            || self.self_write_op_bag.len() > 0
+            || self.self_read_op_bag.len() > 0
+            || self.vc_wait_buffer.len() > 0
+        ) {
             return;
         }
 
@@ -451,7 +470,10 @@ impl BlockSequencer {
         let vc = self.curr_vector_clock.clone();
         let vc = vc.serialize();
         let payload = ProtoPayload {
-            message: Some(crate::proto::rpc::proto_payload::Message::Heartbeat(vc)),
+            message: Some(crate::proto::rpc::proto_payload::Message::Heartbeat(ProtoHeartbeat {
+                vector_clock: Some(vc),
+                is_quiscent: self.is_quiscent,
+            })),
         };
 
         let buf = payload.encode_to_vec();

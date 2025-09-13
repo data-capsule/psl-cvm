@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use log::{info, warn};
+use log::{debug, info, warn};
 use tokio::sync::Mutex;
 use prost::Message as _;
 
@@ -107,7 +107,7 @@ impl Controller {
         // if self.blocking_state == BlockingState::Blocked {
         //     return;
         // }
-        info!("Blocking workers.");
+        debug!("Blocking workers.");
         self.blocking_state = BlockingState::Blocked;
 
         let tx = ProtoTransaction {
@@ -145,7 +145,7 @@ impl Controller {
             return;
         }
         self.blocking_state = BlockingState::Unblocked;
-        info!("Unblocking workers.");
+        debug!("Unblocking workers.");
 
         let tx = ProtoTransaction {
             on_receive: Some(ProtoTransactionPhase {
@@ -162,7 +162,6 @@ impl Controller {
 
         self._send_request_to_all_workers(tx).await;
 
-        warn!("Unblocked all workers.");
     }
 
     async fn blocking_lock_acquire(&mut self, key: CacheKey, sender: SenderType, vc: VectorClock) {

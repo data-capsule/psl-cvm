@@ -306,6 +306,14 @@ impl CacheManager {
 
         tokio::select! {
             biased;
+            _ = self.batch_timer.wait() => {
+                // This is safe to do here.
+                // The tick won't interrupt handle_command or handle_block's logic.
+                if self.last_batch_time.elapsed() > Duration::from_millis(self.config.get().worker_config.batch_max_delay_ms) {
+                    self.last_batch_time = Instant::now();
+                    let _ = self.block_sequencer_tx.send(SequencerCommand::ForceMakeNewBlock).await;
+                }
+            },
             Some((block_rx, sender, _)) = Self::check_block_rx(&mut self.block_rx, block_on_read_snapshot_is_some) => {
                 let block = block_rx.await.expect("Block rx error");
                 if let Ok(block) = block {
@@ -334,14 +342,7 @@ impl CacheManager {
                 self.handle_sequencer_request(tx).await;
             },
             
-            _ = self.batch_timer.wait() => {
-                // This is safe to do here.
-                // The tick won't interrupt handle_command or handle_block's logic.
-                if self.last_batch_time.elapsed() > Duration::from_millis(self.config.get().worker_config.batch_max_delay_ms) {
-                    self.last_batch_time = Instant::now();
-                    let _ = self.block_sequencer_tx.send(SequencerCommand::ForceMakeNewBlock).await;
-                }
-            },
+            
             _ = self.log_timer.wait() => {
                 self.log_stats().await;
             },
@@ -432,8 +433,12 @@ impl CacheManager {
                 unimplemented!();
             }
             CacheCommand::Commit => {
-                self.last_batch_time = Instant::now();
-                let _ = self.block_sequencer_tx.send(SequencerCommand::MakeNewBlock).await;
+                let (tx, rx) = oneshot::channel();
+                let _ = self.block_sequencer_tx.send(SequencerCommand::MakeNewBlock(tx)).await;
+                let actually_did_prepare = rx.await.unwrap();
+                if actually_did_prepare {
+                    self.last_batch_time = Instant::now();
+                }
             }
             // CacheCommand::WaitForVC(vc) => {
             //     let (tx, rx) = oneshot::channel();
@@ -543,8 +548,12 @@ impl CacheManager {
             }).await;
         
             // A new block can be formed now.
-            self.last_batch_time = Instant::now();
-            let _ = self.block_sequencer_tx.send(SequencerCommand::MakeNewBlock).await;
+            let (tx, rx) = oneshot::channel();
+            let _ = self.block_sequencer_tx.send(SequencerCommand::MakeNewBlock(tx)).await;
+            let actually_did_prepare = rx.await.unwrap();
+            if actually_did_prepare {
+                self.last_batch_time = Instant::now();
+            }
             
             // Confirm the block to the fork receiver.
             let _ = self.fork_receiver_cmd_tx.send(ForkReceiverCommand::Confirm(sender, block_seq_num));

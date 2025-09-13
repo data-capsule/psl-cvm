@@ -4,13 +4,14 @@ use log::{debug, error, info, trace};
 use rand::seq::IteratorRandom;
 use tokio::sync::Mutex;
 
-use crate::{config::AtomicConfig, proto::consensus::ProtoVectorClock, rpc::SenderType, sequencer::controller::ControllerCommand, utils::{channel::{Receiver, Sender}, timer::ResettableTimer}, worker::block_sequencer::VectorClock};
+use crate::{config::AtomicConfig, proto::consensus::{ProtoHeartbeat, ProtoVectorClock}, rpc::SenderType, sequencer::controller::ControllerCommand, utils::{channel::{Receiver, Sender}, timer::ResettableTimer}, worker::block_sequencer::VectorClock};
 
 pub struct HeartbeatHandler {
     config: AtomicConfig,
-    heartbeat_rx: Receiver<(ProtoVectorClock, SenderType)>,
+    heartbeat_rx: Receiver<(ProtoHeartbeat, SenderType)>,
     controller_tx: Sender<ControllerCommand>,
     heartbeat_vcs: HashMap<SenderType, VectorClock>,
+    heartbeat_quiscents: HashMap<SenderType, bool>,
     log_timer: Arc<Pin<Box<ResettableTimer>>>,
     already_blocked: bool,
 
@@ -18,16 +19,24 @@ pub struct HeartbeatHandler {
 }
 
 impl HeartbeatHandler {
-    pub fn new(config: AtomicConfig, heartbeat_rx: Receiver<(ProtoVectorClock, SenderType)>, controller_tx: Sender<ControllerCommand>) -> Self {
+    pub fn new(config: AtomicConfig, heartbeat_rx: Receiver<(ProtoHeartbeat, SenderType)>, controller_tx: Sender<ControllerCommand>) -> Self {
         let log_timer = ResettableTimer::new(Duration::from_millis(config.get().app_config.logger_stats_report_ms));
-        let __num_workers = config.get().net_config.nodes.keys()
-            .filter(|name| name.starts_with("node"))
-            .collect::<HashSet<_>>().len();
+        let __all_workers =  config.get().net_config.nodes.keys()
+        .filter(|name| name.starts_with("node"))
+        .cloned()
+        .collect::<HashSet<_>>();
+        
+        let __num_workers = __all_workers.len();
+
+        let heartbeat_vcs = __all_workers.iter().map(|w| (SenderType::Auth(w.clone(), 0), VectorClock::new())).collect();
+        let heartbeat_quiscents = __all_workers.iter().map(|w| (SenderType::Auth(w.clone(), 0), true)).collect();
+
         Self {
             config,
             heartbeat_rx,
             controller_tx,
-            heartbeat_vcs: HashMap::new(),
+            heartbeat_vcs,
+            heartbeat_quiscents,
             log_timer,
             already_blocked: false,
 
@@ -47,9 +56,9 @@ impl HeartbeatHandler {
     async fn handle_inputs(&mut self) -> Result<(), ()> {
         tokio::select! {
             biased;
-            Some((proto_heartbeat_vc, sender)) = self.heartbeat_rx.recv() => {
-                debug!("Received heartbeat from worker: {:?} with vc: {:?}", sender, proto_heartbeat_vc);
-                self.handle_heartbeat(proto_heartbeat_vc, sender).await;
+            Some((proto_heartbeat, sender)) = self.heartbeat_rx.recv() => {
+                debug!("Received heartbeat from worker: {:?} with vc: {:?}", sender, proto_heartbeat);
+                self.handle_heartbeat(proto_heartbeat, sender).await;
                 Ok(())
             }
             _ = self.log_timer.wait() => {
@@ -66,8 +75,11 @@ impl HeartbeatHandler {
             .collect()
     }
 
-    async fn handle_heartbeat(&mut self, proto_heartbeat_vc: ProtoVectorClock, sender: SenderType) {
-        self.heartbeat_vcs.insert(sender, VectorClock::from(Some(proto_heartbeat_vc)));
+    async fn handle_heartbeat(&mut self, proto_heartbeat: ProtoHeartbeat, sender: SenderType) {
+        let proto_heartbeat_vc = proto_heartbeat.vector_clock;
+        let is_quiscent = proto_heartbeat.is_quiscent;
+        self.heartbeat_quiscents.insert(sender.clone(), is_quiscent);
+        self.heartbeat_vcs.insert(sender, VectorClock::from(proto_heartbeat_vc));
         let unique_heartbeat_vcs = self.heartbeat_vcs.values().cloned().collect::<HashSet<_>>();
         if self.heartbeat_vcs.len() < self.__num_workers {
             return;
@@ -78,7 +90,9 @@ impl HeartbeatHandler {
         trace!("Heartbeat VCs: {:?}. Unique heartbeat VCs: {}, Diameter: {}", self.heartbeat_vcs, unique_heartbeat_vcs.len(), diameter);
 
         let blocking_criteria = diameter > self.config.get().consensus_config.max_audit_snapshots;
-        let unblocking_criteria = diameter <= self.config.get().consensus_config.max_audit_snapshots;
+        let unblocking_criteria = 
+            (diameter <= self.config.get().consensus_config.max_audit_snapshots)
+            || (self.heartbeat_quiscents.values().all(|&q| q));
         
 
         if unblocking_criteria {
@@ -102,7 +116,7 @@ impl HeartbeatHandler {
                 .into_iter().map(|n| n.clone())
                 .collect::<Vec<_>>();
 
-            error!("Blocking workers: {:?}. Heartbeat VCs: {:?}, Diameter: {}, Unique heartbeat VCs: {}", blocked_workers, self.heartbeat_vcs, diameter, unique_heartbeat_vcs.len());
+            trace!("Blocking workers: {:?}. Heartbeat VCs: {:?}, Diameter: {}, Unique heartbeat VCs: {}", blocked_workers, self.heartbeat_vcs, diameter, unique_heartbeat_vcs.len());
     
             // if !self.already_blocked {
                 self.already_blocked = true;
