@@ -151,7 +151,7 @@ impl PerWorkerAuditor {
 
 
 
-        let write_ops = self.filter_write_ops(&block.block);
+        let write_ops = self.filter_write_ops_into_vec(&block.block);
 
         match &block.block.read_set {
             Some(read_set) => {
@@ -178,7 +178,7 @@ impl PerWorkerAuditor {
         let (update_blocks, base_vc) = self.get_update_blocks(read_vc.clone());
 
         let update_map = update_blocks.iter()
-            .map(|block| self.filter_write_ops(&block.block))
+            .map(|block| self.filter_write_ops_into_hashmap(&block.block))
             .collect::<Vec<HashMap<CacheKey, CachedValue>>>();
 
         let mut updates = HashMap::new();
@@ -258,7 +258,7 @@ impl PerWorkerAuditor {
         (update_blocks, chosen_glb)
     }
 
-    fn filter_write_ops(&self, block: &ProtoBlock) -> HashMap<CacheKey, CachedValue> {
+    fn filter_write_ops_into_hashmap(&self, block: &ProtoBlock) -> HashMap<CacheKey, CachedValue> {
         let mut updates = HashMap::new();
         for tx in &block.tx_list {
             if tx.on_crash_commit.is_none() {
@@ -275,28 +275,56 @@ impl PerWorkerAuditor {
         updates
     }
 
+    fn filter_write_ops_into_vec(&self, block: &ProtoBlock) -> Vec<(CacheKey, CachedValue)> {
+        let mut updates = Vec::new();
+        for tx in &block.tx_list {
+            if tx.on_crash_commit.is_none() {
+                continue;
+            }
+
+            let ops = tx.on_crash_commit.as_ref().unwrap();
+            for op in &ops.ops {
+                let Some((key, cached_value)) = process_tx_op(op) else { continue };
+                let _ = updates.push((key, cached_value));
+            }
+        }
+        updates
+    }
+
 
     /// Precondition: The snapshot wrt read_vc already exists in the snapshot store and is not GCed.
-    async fn verify_reads(&mut self, read_set: &ProtoReadSet, read_vc: &VectorClock, write_ops: &HashMap<CacheKey, CachedValue>) {
-        for ProtoReadSetEntry { key, value_hash, origin } in &read_set.entries {
+    /// Precondition: The read_set is sorted by after_write_op_index.
+    async fn verify_reads(&mut self, read_set: &ProtoReadSet, read_vc: &VectorClock, write_ops: &Vec<(CacheKey, CachedValue)>) {
+        let mut local_cache = HashMap::new();
+        let mut cached_upto = 0;
+        for ProtoReadSetEntry { key, value_hash, origin, after_write_op_index } in &read_set.entries {
             // let correct_value = self.snapshot_store.get(key, read_vc).await;
-            let correct_value = self.cache.get(key).cloned();
+            while cached_upto < *after_write_op_index {
+                assert!(cached_upto < write_ops.len() as u64);
+                let (key, value) = write_ops[cached_upto as usize].clone();
+                let snapshot_value = self.snapshot_store.get(&key, read_vc).await;
+                if snapshot_value.is_some() {
+                    let _ = local_cache.entry(key).or_insert(snapshot_value.unwrap())
+                        .merge_cached(value);
+                } else {
+                    local_cache.insert(key, value);
+                }
+                cached_upto += 1;
+            }
+            let correct_value = if local_cache.contains_key(key) {
+                local_cache.get(key).cloned()
+            } else {
+                self.cache.get(key).cloned()
+            };
             let correct_value_hash = cached_value_to_val_hash(correct_value);
             if *value_hash != correct_value_hash {
                 let key_str = String::from_utf8(key.clone()).unwrap();
                 let correct_value_hex_str = &hex::encode(correct_value_hash);
                 let value_hex_str = &hex::encode(value_hash);
 
-                let value_in_curr_block = write_ops.get(key).cloned();
-                let value_hash_in_curr_block = cached_value_to_val_hash(value_in_curr_block);
-                let value_hash_in_curr_block_str = &hex::encode(value_hash_in_curr_block);
+                error!("❌ Read verification failed in {} for key: {} correct_value_hash: {} value_hash: {} read_vc: {} Value origin: {}",
+                    self.worker_name, key_str, correct_value_hex_str, value_hex_str, read_vc, origin);
 
-                error!("❌ Read verification failed in {} for key: {} correct_value_hash: {} value_hash: {} read_vc: {} value_hash_in_curr_block: {}, matches? {} Value origin: {}",
-                    self.worker_name, key_str, correct_value_hex_str, value_hex_str, read_vc, value_hash_in_curr_block_str, value_hash_in_curr_block_str == value_hex_str, origin);
-
-                // if correct_value_hex_str.is_empty() {
-                    // panic!("Read verification failed");
-                // }
 
                 self.num_incorrect_reads += 1;
             } else {

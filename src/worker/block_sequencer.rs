@@ -234,9 +234,8 @@ pub struct BlockSequencer {
     curr_block_seq_num: u64,
     last_block_hash: FutureHash,
     self_write_op_bag: Vec<(CacheKey, CachedValue)>,
-    dirty_keys: HashSet<CacheKey>,
     all_write_op_bag: Vec<(CacheKey, CachedValue)>,
-    self_read_op_bag: Vec<(CacheKey, Option<CachedValue>, SenderType)>,
+    self_read_op_bag: Vec<(CacheKey, Option<CachedValue>, SenderType, usize)>,
 
     curr_vector_clock: VectorClock,
     __vc_dirty: bool,
@@ -275,7 +274,6 @@ impl BlockSequencer {
             curr_block_seq_num: 0,
             last_block_hash: FutureHash::Immediate(default_hash()),
             self_write_op_bag: Vec::new(),
-            dirty_keys: HashSet::new(),
             all_write_op_bag: Vec::new(),
             self_read_op_bag: Vec::new(),
             curr_vector_clock: VectorClock::new(),
@@ -322,7 +320,7 @@ impl BlockSequencer {
             SequencerCommand::SelfWriteOp { key, value, seq_num_query, current_vc } => {
                 self.self_write_op_bag.push((key.clone(), value.clone()));
                 self.all_write_op_bag.push((key.clone(), value));
-                self.dirty_keys.insert(key);
+                // self.dirty_keys.insert(key);
 
                 match seq_num_query {
                     BlockSeqNumQuery::DontBother => {}
@@ -333,9 +331,7 @@ impl BlockSequencer {
                 current_vc.send(self.curr_vector_clock.clone()).unwrap();
             },
             SequencerCommand::SelfReadOp { key, value, origin, snapshot_propagated_signal_tx, current_vc } => {
-                if !self.dirty_keys.contains(&key) {
-                    self.self_read_op_bag.push((key, value, origin));
-                }
+                self.self_read_op_bag.push((key, value, origin, self.self_write_op_bag.len()));
                 current_vc.send(self.curr_vector_clock.clone()).unwrap();
                 if let Some(tx) = snapshot_propagated_signal_tx {
                     self.snapshot_propagated_signal_tx.push(tx);
@@ -488,7 +484,9 @@ impl BlockSequencer {
     /// Same as do_prepare_new_block, but without self writes and reads.
     /// Doesn't increment the seq_num.
     /// This helps to synchronize the read_vc of all workers.
+    #[allow(unused)]
     async fn forward_just_other_writes(&mut self) {
+        panic!("This breaks auditability.");
         let seq_num = self.curr_block_seq_num;
 
         let all_writes = Self::wrap_vec(
@@ -534,14 +532,13 @@ impl BlockSequencer {
         );
 
         let self_writes_and_reads = Self::wrap_vec(
-            Self::dedup_vec(self.self_write_op_bag.drain(..)),
-            Self::prepare_read_set(self_reads, &self.dirty_keys),
+            self.self_write_op_bag.drain(..).collect(),
+            Self::prepare_read_set(self_reads),
             seq_num,
             Some(read_vc.serialize()),
             origin,
             self.chain_id,
         );
-        self.dirty_keys.clear();
 
 
         let (all_writes_rx, _, _) = self.crypto.prepare_block(
@@ -580,7 +577,7 @@ impl BlockSequencer {
 
     fn wrap_vec(
         writes: Vec<(CacheKey, CachedValue)>,
-        reads: Vec<(CacheKey, HashType, String)>,
+        reads: Vec<(CacheKey, HashType, String, u64)>,
         seq_num: u64,
         vector_clock: Option<ProtoVectorClock>,
         origin: String,
@@ -615,10 +612,11 @@ impl BlockSequencer {
 
             read_set: Some(ProtoReadSet {
                 entries: reads.into_iter()
-                    .map(|(key, value_hash, origin)| ProtoReadSetEntry {
+                    .map(|(key, value_hash, origin, after_write_op_index)| ProtoReadSetEntry {
                         key,
                         value_hash,
                         origin,
+                        after_write_op_index,
                     })
                     .collect(),
                 merkle_root: vec![],
@@ -632,7 +630,7 @@ impl BlockSequencer {
         for (key, value) in vec {
             let entry = seen.entry(key).or_insert(value.clone());
 
-            entry.merge_cached(value);
+            let _ = entry.merge_cached(value);
         }
 
         seen.into_iter().collect()
@@ -682,18 +680,14 @@ impl BlockSequencer {
         // }
     }
 
-    fn prepare_read_set(reads: Vec<(CacheKey, Option<CachedValue>, SenderType)>, dirty_keys: &HashSet<CacheKey>) -> Vec<(CacheKey, HashType, String)> {
+    fn prepare_read_set(reads: Vec<(CacheKey, Option<CachedValue>, SenderType, usize)>) -> Vec<(CacheKey, HashType, String, u64)> {
         reads.into_iter()
-            .filter_map(|(key, value, origin)| {
-                if dirty_keys.contains(&key) {
-                    None
-                } else {
-                    let val_hash = cached_value_to_val_hash(value);
-                    let origin = origin.to_name_and_sub_id().0;
-                    Some((key, val_hash, origin))
-                }
+            .map(|(key, value, origin, after_write_op_index)| {
+                let val_hash = cached_value_to_val_hash(value);
+                let origin = origin.to_name_and_sub_id().0;
+                (key, val_hash, origin, after_write_op_index as u64)
             })
-            .sorted_by_key(|(key, _, _)| key.clone())
+            .sorted_by_key(|(_, _, _, after_write_op_index)| *after_write_op_index)
             .collect()
     }
 }
