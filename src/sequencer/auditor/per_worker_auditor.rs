@@ -298,14 +298,16 @@ impl PerWorkerAuditor {
         let mut local_cache = HashMap::new();
         let mut cached_upto = 0;
         for ProtoReadSetEntry { key, value_hash, origin, after_write_op_index } in &read_set.entries {
-            // let correct_value = self.snapshot_store.get(key, read_vc).await;
             while cached_upto < *after_write_op_index {
                 assert!(cached_upto < write_ops.len() as u64);
                 let (key, value) = write_ops[cached_upto as usize].clone();
-                let snapshot_value = self.snapshot_store.get(&key, read_vc).await;
+                let _snapshot_value = self.snapshot_store.get(&key, read_vc).await;
+                let snapshot_value = self.cache.get(&key).cloned();
+                assert!(_snapshot_value == snapshot_value, "key: {} read_vc: {} _snapshot_value: {:?} snapshot_value: {:?}",
+                    String::from_utf8(key.clone()).unwrap(), read_vc, _snapshot_value, snapshot_value);
                 if snapshot_value.is_some() {
-                    let _ = local_cache.entry(key).or_insert(snapshot_value.unwrap())
-                        .merge_cached(value);
+                    local_cache.insert(key.clone(), snapshot_value.unwrap());
+                    let _ = local_cache.get_mut(&key).unwrap().merge_cached(value);
                 } else {
                     local_cache.insert(key, value);
                 }
@@ -314,7 +316,12 @@ impl PerWorkerAuditor {
             let correct_value = if local_cache.contains_key(key) {
                 local_cache.get(key).cloned()
             } else {
-                self.cache.get(key).cloned()
+                let __correct_value = self.snapshot_store.get(key, read_vc).await;
+                let val = self.cache.get(key).cloned();
+                assert!(__correct_value == val, "key: {} read_vc: {} correct_value: {:?} val: {:?}",
+                    String::from_utf8(key.clone()).unwrap(), read_vc, __correct_value, val);
+
+                val
             };
             let correct_value_hash = cached_value_to_val_hash(correct_value);
             if *value_hash != correct_value_hash {

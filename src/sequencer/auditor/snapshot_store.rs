@@ -1,23 +1,27 @@
-use std::{collections::HashMap, ops::Deref, sync::{atomic::AtomicUsize, Arc}};
+use std::{collections::{HashMap, HashSet}, ops::Deref, sync::{atomic::AtomicUsize, Arc}};
+use num_bigint::{BigInt, Sign};
 use tokio::sync::RwLock;
 use dashmap::{DashMap, DashSet};
 use log::{trace, warn};
-use crate::worker::{block_sequencer::VectorClock, cache_manager::{CacheKey, CachedValue}};
+use crate::{crypto::default_hash, worker::{block_sequencer::VectorClock, cache_manager::{CacheKey, CachedValue}}};
 
 
 pub(super) struct ValueLattice {
     values: HashMap<VectorClock, CachedValue>,
+    finalized_value: Option<CachedValue>,
+    finalized_vc: VectorClock,
 }
 
 impl ValueLattice {
     fn new() -> Self {
-        Self { values: HashMap::new() }
+        Self { values: HashMap::new(), finalized_value: None, finalized_vc: VectorClock::new() }
     }
 }
 
 pub struct _SnapshotStore {
     /// worker name => snapshot store.
     pub(super) store: DashMap<String, RwLock<HashMap<CacheKey, ValueLattice>>>,
+
     /// All VCs currently installed, reverse indexed by worker name.
     log: DashMap<VectorClock, String>,
     /// All VCs that have been garbage collected.
@@ -88,27 +92,26 @@ impl _SnapshotStore {
 
     /// Returns value <= vc.
     pub async fn get(&self, key: &CacheKey, vc: &VectorClock) -> Option<CachedValue> {
-        if !self.snapshot_exists(vc) {
-            return None;
-        }
+        // if !self.snapshot_exists(vc) {
+        //     return None;
+        // }
 
-        // Fast path:
-        {
-            let home_worker = self.snapshot_home_worker(vc);
+        // // Fast path:
+        // if self.snapshot_exists(vc) {
+        //     let home_worker = self.snapshot_home_worker(vc);
     
-            let store = self.store.get(&home_worker).unwrap();
-            let store = store.read().await;
-            if let Some(value_lattice) = store.get(key) {
-                if let Some(val) = value_lattice.values.get(vc) {
-                    return Some(val.clone());
-                }
-            }
-        }
+        //     let store = self.store.get(&home_worker).unwrap();
+        //     let store = store.read().await;
+        //     if let Some(value_lattice) = store.get(key) {
+        //         if let Some(val) = value_lattice.values.get(vc) {
+        //             return Some(val.clone());
+        //         }
+        //     }
+        // }
 
         // Slow path:
         // In all homes, find the greatest vc <= vc.
-        let mut glb = None;
-        let mut glb_home = None;
+        let mut glbs = HashMap::new();
 
         for mapref in self.store.iter() {
             let store = mapref.value();
@@ -122,36 +125,71 @@ impl _SnapshotStore {
 
             value_lattice.values.iter().for_each(|(test_vc, _)| {
                 if test_vc <= vc {
-                    if glb.is_none() {
-                        glb = Some(test_vc.clone());
-                        glb_home = Some(mapref.key().clone());
-                    } else {
-                        let _glb = glb.as_ref().unwrap();
-                        if test_vc > _glb {
-                            glb = Some(test_vc.clone());
-                            glb_home = Some(home.clone());
-                        }
-                    }
+                    glbs.insert(test_vc.clone(), home.clone());
                 }
             });
+            
+            glbs.insert(value_lattice.finalized_vc.clone(), home.clone());
 
         }
 
-        if glb.is_none() {
+        // let mut to_remove = HashSet::new();
+        // if glbs.len() > 1 {
+        //     for (test_vc, _) in &glbs {
+        //         let res = glbs.iter()
+        //         .filter(|(other_vc, _)| {
+        //             *other_vc != test_vc
+        //         })
+        //         .any(|(other_vc, _)| {
+        //             test_vc < other_vc
+        //         });
+        //         if res {
+        //             to_remove.insert(test_vc.clone());
+        //         }
+        //     }
+        // }
+
+        // glbs.retain(|test_vc, _| {
+        //     !to_remove.contains(test_vc)
+        // });
+
+
+        if glbs.is_empty() {
             return None;
         }
 
-        trace!("Glb: {:?} Glb home: {:?} key: {} vc: {}", glb, glb_home, String::from_utf8(key.clone()).unwrap(), vc);
+        trace!("Glb: {:?} key: {} vc: {}", glbs, String::from_utf8(key.clone()).unwrap(), vc);
 
-        {
-            let store = self.store.get(&glb_home.unwrap()).unwrap();
+        let mut ret_val = CachedValue::new(vec![], BigInt::from_bytes_be(Sign::Plus, &default_hash()));
+
+        for (vc, home) in glbs {
+            let store = self.store.get(&home).unwrap();
             let store = store.read().await;
+
             let Some(value_lattice) = store.get(key) else {
-                return None;
+                continue;
             };
 
-            value_lattice.values.get(&glb.unwrap()).map(|val| val.clone())
+            let gced_val = value_lattice.finalized_value.clone();
+            let mut lattice_vals = value_lattice.values.iter()
+                .filter(|(test_vc, _)| {
+                    *test_vc <= &vc
+                })
+                .fold(CachedValue::new(vec![], BigInt::from_bytes_be(Sign::Plus, &default_hash())), |acc, (_, val)| {
+                    acc.merge_immutable(val)
+                });
+            if let Some(gced_val) = gced_val {
+                let _ = lattice_vals.merge_cached(gced_val);
+            }
+            
+            let _ = ret_val.merge_cached(lattice_vals);
         }
+
+        if ret_val.val_hash == BigInt::from_bytes_be(Sign::Plus, &default_hash()) {
+            return None;
+        }
+
+        Some(ret_val)
     }
 
     pub async fn install_snapshot<T: IntoIterator<Item = (CacheKey, CachedValue)>>(&self, vc: VectorClock, worker_name: String, updates: T) {
@@ -181,9 +219,31 @@ impl _SnapshotStore {
             let mut store = store.write().await;
             for mapref in store.iter_mut() {
                 let val_ref = mapref.1; // mapref.value();
-                val_ref.values.retain(|test_vc, _| {
-                    !(test_vc < vc)
+                let mut prune_set = HashSet::new();
+                val_ref.values.iter().for_each(|(test_vc, _)| {
+                    if test_vc < vc {
+                        prune_set.insert(test_vc.clone());
+                    }
                 });
+
+                prune_set.iter().for_each(|test_vc| {
+                    let val = val_ref.values.remove(test_vc).unwrap();
+                    match val_ref.finalized_value {
+                        Some(ref mut finalized_value) => {
+                            let _ = finalized_value.merge_cached(val.clone());
+                        }
+                        None => {
+                            val_ref.finalized_value = Some(val.clone());
+                        }
+                    }
+
+                    val_ref.finalized_vc = test_vc.clone();
+                });
+
+                
+                // val_ref.values.retain(|test_vc, _| {
+                //     !(test_vc < vc)
+                // });
             }
         }
 

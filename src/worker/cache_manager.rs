@@ -178,7 +178,7 @@ impl CachedValue {
 
     pub fn merge_immutable(&self, new_value: &CachedValue) -> CachedValue {
         let mut val = self.clone();
-        val.merge_cached(new_value.clone()).unwrap();
+        let _ = val.merge_cached(new_value.clone());
         val
     }
 }
