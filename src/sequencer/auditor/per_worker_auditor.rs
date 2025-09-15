@@ -9,7 +9,7 @@ use crate::{config::AtomicConfig, crypto::CachedBlock, proto::consensus::{ProtoB
 pub struct PerWorkerAuditor {
     config: AtomicConfig,
     worker_name: String,
-    cache: HashMap<CacheKey, CachedValue>,
+    // cache: HashMap<CacheKey, CachedValue>,
     block_rx: Receiver<CachedBlock>,
     gc_tx: UnboundedSender<(String, VectorClock)>,
     snapshot_store: SnapshotStore,
@@ -50,7 +50,7 @@ impl PerWorkerAuditor {
         Self {
             config,
             worker_name,
-            cache: HashMap::new(),
+            // cache: HashMap::new(),
             block_rx,
             gc_tx,
             snapshot_store,
@@ -139,11 +139,11 @@ impl PerWorkerAuditor {
 
     async fn do_audit_block(&mut self, block: CachedBlock, read_vc: VectorClock) {
         // let _ = self.snapshot_store.global_lock.lock().await;
-        if true || !self.snapshot_store.snapshot_exists(&read_vc) {
+        if !self.snapshot_store.snapshot_exists(&read_vc) {
             let updates = self.generate_updates(read_vc.clone()).await;
             // let updates = vec![];
             self.snapshot_store.install_snapshot(read_vc.clone(), self.worker_name.clone(), updates.clone()).await;
-            self.cache.extend(updates);
+            // self.cache.extend(updates);
             self.__snapshot_generated_counter += 1;
         } else {
             self.__snapshot_reused_counter += 1;
@@ -191,8 +191,8 @@ impl PerWorkerAuditor {
 
         if base_vc != VectorClock::new() {
             for (key, value) in updates.iter_mut() {
-                // let base_value = self.snapshot_store.get(key, &base_vc).await;
-                let base_value = self.cache.get(key).cloned();
+                let base_value = self.snapshot_store.get(key, &base_vc).await;
+                // let base_value = self.cache.get(key).cloned();
                 if base_value.is_none() {
                     continue;
                 }
@@ -302,11 +302,11 @@ impl PerWorkerAuditor {
                 assert!(cached_upto < write_ops.len() as u64);
                 let (key, value) = write_ops[cached_upto as usize].clone();
                 let _snapshot_value = self.snapshot_store.get(&key, read_vc).await;
-                let snapshot_value = self.cache.get(&key).cloned();
-                assert!(_snapshot_value == snapshot_value, "key: {} read_vc: {} _snapshot_value: {:?} snapshot_value: {:?}",
-                    String::from_utf8(key.clone()).unwrap(), read_vc, _snapshot_value, snapshot_value);
-                if snapshot_value.is_some() {
-                    local_cache.insert(key.clone(), snapshot_value.unwrap());
+                // let snapshot_value = self.cache.get(&key).cloned();
+                // assert!(_snapshot_value == snapshot_value, "key: {} read_vc: {} _snapshot_value: {:?} snapshot_value: {:?}",
+                //     String::from_utf8(key.clone()).unwrap(), read_vc, _snapshot_value, snapshot_value);
+                if _snapshot_value.is_some() {
+                    local_cache.insert(key.clone(), _snapshot_value.unwrap());
                     let _ = local_cache.get_mut(&key).unwrap().merge_cached(value);
                 } else {
                     local_cache.insert(key, value);
@@ -317,11 +317,11 @@ impl PerWorkerAuditor {
                 local_cache.get(key).cloned()
             } else {
                 let __correct_value = self.snapshot_store.get(key, read_vc).await;
-                let val = self.cache.get(key).cloned();
-                assert!(__correct_value == val, "key: {} read_vc: {} correct_value: {:?} val: {:?}",
-                    String::from_utf8(key.clone()).unwrap(), read_vc, __correct_value, val);
+                // // let val = self.cache.get(key).cloned();
+                // assert!(__correct_value == val, "key: {} read_vc: {} correct_value: {:?} val: {:?}",
+                //     String::from_utf8(key.clone()).unwrap(), read_vc, __correct_value, val);
 
-                val
+                __correct_value
             };
             let correct_value_hash = cached_value_to_val_hash(correct_value);
             if *value_hash != correct_value_hash {

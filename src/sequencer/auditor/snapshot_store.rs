@@ -27,8 +27,7 @@ pub struct _SnapshotStore {
     /// All VCs that have been garbage collected.
     __ghost_log: DashSet<VectorClock>,
     __ghost_reborn_counter: AtomicUsize,
-
-    pub(super) global_lock: tokio::sync::Mutex<()>,
+    __concurrent_repeated_work_counter: AtomicUsize,
 }
 
 
@@ -42,7 +41,7 @@ impl SnapshotStore {
         let store = worker_names.iter().map(|name| (name.clone(), RwLock::new(HashMap::new()))).collect();
 
         log.insert(VectorClock::new(), worker_names[0].clone());
-        Self(Arc::new(_SnapshotStore { store, log, __ghost_log: DashSet::new(), __ghost_reborn_counter: AtomicUsize::new(0), global_lock: tokio::sync::Mutex::new(()) }))
+        Self(Arc::new(_SnapshotStore { store, log, __ghost_log: DashSet::new(), __ghost_reborn_counter: AtomicUsize::new(0), __concurrent_repeated_work_counter: AtomicUsize::new(0) }))
     }
 }
 
@@ -205,6 +204,9 @@ impl _SnapshotStore {
             self.__ghost_reborn_counter.fetch_add(1, std::sync::atomic::Ordering::Release);
         }
 
+        if self.log.contains_key(&vc) {
+            self.__concurrent_repeated_work_counter.fetch_add(1, std::sync::atomic::Ordering::Release);
+        }
         
         self.log.insert(vc, worker_name);
         std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
@@ -308,5 +310,9 @@ impl _SnapshotStore {
 
     pub fn ghost_reborn_counter(&self) -> usize {
         self.__ghost_reborn_counter.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    pub fn concurrent_repeated_work_counter(&self) -> usize {
+        self.__concurrent_repeated_work_counter.load(std::sync::atomic::Ordering::Acquire)
     }
 }

@@ -126,6 +126,12 @@ impl Auditor {
         } else {
             info!("Ghost reborn counter: {}", self.snapshot_store.ghost_reborn_counter());
         }
+
+        if self.snapshot_store.concurrent_repeated_work_counter() > 0 {
+            warn!("Concurrent repeated work counter: {}", self.snapshot_store.concurrent_repeated_work_counter());
+        } else {
+            info!("Concurrent repeated work counter: {}", self.snapshot_store.concurrent_repeated_work_counter());
+        }
     }
 
     async fn handle_block(&mut self, block: CachedBlock) {
