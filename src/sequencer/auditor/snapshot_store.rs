@@ -1,4 +1,4 @@
-use std::{collections::{HashMap, HashSet}, ops::Deref, sync::{atomic::AtomicUsize, Arc}};
+use std::{collections::{HashMap, HashSet}, ops::Deref, sync::{atomic::AtomicUsize, Arc}, time::Instant};
 use num_bigint::{BigInt, Sign};
 use tokio::sync::RwLock;
 use dashmap::{DashMap, DashSet};
@@ -110,6 +110,7 @@ impl _SnapshotStore {
 
         // Slow path:
         // In all homes, find the greatest vc <= vc.
+        let start_time = Instant::now();
         let mut glbs = HashMap::new();
 
         for mapref in self.store.iter() {
@@ -131,6 +132,8 @@ impl _SnapshotStore {
             glbs.insert(value_lattice.finalized_vc.clone(), home.clone());
 
         }
+        let end_time = Instant::now();
+        warn!("Glb find time: {:?}", end_time - start_time);
 
         // let mut to_remove = HashSet::new();
         // if glbs.len() > 1 {
@@ -157,10 +160,13 @@ impl _SnapshotStore {
             return None;
         }
 
+        warn!("Values combined: {}", glbs.len());
+
         trace!("Glb: {:?} key: {} vc: {}", glbs, String::from_utf8(key.clone()).unwrap(), vc);
 
         let mut ret_val = CachedValue::new(vec![], BigInt::from_bytes_be(Sign::Plus, &default_hash()));
 
+        let start_time = Instant::now();
         for (vc, home) in glbs {
             let store = self.store.get(&home).unwrap();
             let store = store.read().await;
@@ -183,6 +189,8 @@ impl _SnapshotStore {
             
             let _ = ret_val.merge_cached(lattice_vals);
         }
+        let end_time = Instant::now();
+        warn!("Value merge time: {:?}", end_time - start_time);
 
         if ret_val.val_hash == BigInt::from_bytes_be(Sign::Plus, &default_hash()) {
             return None;

@@ -25,7 +25,7 @@ pub struct Staging {
     must_vote: bool, // Disabled in the sequencer.
 }
 
-const PER_PEER_BLOCK_WSS: u64 = 10000;
+const PER_PEER_BLOCK_WSS: u64 = 1_000;
 
 impl Staging {
     pub fn new(

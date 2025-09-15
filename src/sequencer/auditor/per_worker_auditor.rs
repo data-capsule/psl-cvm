@@ -1,4 +1,4 @@
-use std::{collections::{HashMap, VecDeque}, pin::Pin, sync::Arc, time::Duration};
+use std::{collections::{HashMap, VecDeque}, pin::Pin, sync::Arc, time::{Duration, Instant}};
 
 use log::{error, info, trace, warn};
 use tokio::sync::{mpsc::UnboundedSender, Mutex};
@@ -9,10 +9,10 @@ use crate::{config::AtomicConfig, crypto::CachedBlock, proto::consensus::{ProtoB
 pub struct PerWorkerAuditor {
     config: AtomicConfig,
     worker_name: String,
-    // cache: HashMap<CacheKey, CachedValue>,
+    cache: HashMap<CacheKey, CachedValue>,
     block_rx: Receiver<CachedBlock>,
     gc_tx: UnboundedSender<(String, VectorClock)>,
-    snapshot_store: SnapshotStore,
+    // snapshot_store: SnapshotStore,
 
     /// For each origin, all blocks committed and to be used for snapshot.
     update_buffer: HashMap<String /* origin */, VecDeque<CachedBlock>>,
@@ -31,8 +31,16 @@ pub struct PerWorkerAuditor {
     __snapshot_reused_counter: usize,
     __snapshot_generated_counter: usize,
 
+    __snapshot_block_size_sum: usize,
+    __snapshot_block_count: usize,
+
     num_correct_reads: usize,
     num_incorrect_reads: usize,
+
+    __audit_block_count: usize,
+    __audit_block_time_sum: Duration,
+    __gen_snapshot_time_sum: Duration,
+    __verify_reads_time_sum: Duration,
 }
 
 impl PerWorkerAuditor {
@@ -50,10 +58,10 @@ impl PerWorkerAuditor {
         Self {
             config,
             worker_name,
-            // cache: HashMap::new(),
+            cache: HashMap::new(),
             block_rx,
             gc_tx,
-            snapshot_store,
+            // snapshot_store,
             update_buffer,
             available_vc,
             unaudited_buffer: VecDeque::new(),
@@ -65,6 +73,14 @@ impl PerWorkerAuditor {
 
             num_correct_reads: 0,
             num_incorrect_reads: 0,
+
+            __snapshot_block_size_sum: 0,
+            __snapshot_block_count: 0,
+
+            __audit_block_count: 0,
+            __audit_block_time_sum: Duration::from_secs(0),
+            __gen_snapshot_time_sum: Duration::from_secs(0),
+            __verify_reads_time_sum: Duration::from_secs(0),
         }
     }
 
@@ -105,11 +121,32 @@ impl PerWorkerAuditor {
 
     async fn log_stats(&mut self) {
         info!(
-            "Worker: {}, Unaudited buffer size: {}, Reused snapshot counter: {} Generated snapshot counter: {}, Correct reads: {} Incorrect reads: {}",
+            "Worker: {}, Unaudited buffer size: {}, Reused snapshot counter: {} Generated snapshot counter: {}, Correct reads: {} Incorrect reads: {}, Avg update size: {}, Avg audit time: {} us, Avg gen snapshot time: {} us, Avg verify reads time: {} us",
             self.worker_name, self.unaudited_buffer.len(),
             self.__snapshot_reused_counter, self.__snapshot_generated_counter,
-            self.num_correct_reads, self.num_incorrect_reads
-        );  
+            self.num_correct_reads, self.num_incorrect_reads,
+            self.__snapshot_block_size_sum as f64 / self.__snapshot_block_count as f64,
+            if self.__audit_block_count > 0 {
+                self.__audit_block_time_sum.div_f64(self.__audit_block_count as f64).as_micros()
+            } else {
+                0
+            },
+            if self.__audit_block_count > 0 {
+                self.__gen_snapshot_time_sum.div_f64(self.__audit_block_count as f64).as_micros()
+            } else {
+                0
+            },
+            if self.__audit_block_count > 0 {
+                self.__verify_reads_time_sum.div_f64(self.__audit_block_count as f64).as_micros()
+            } else {
+                0
+            }
+        );
+
+        // self.__audit_block_time_sum = Duration::from_secs(0);
+        // self.__gen_snapshot_time_sum = Duration::from_secs(0);
+        // self.__verify_reads_time_sum = Duration::from_secs(0);
+        // self.__audit_block_count = 0;
     }
 
 
@@ -138,29 +175,39 @@ impl PerWorkerAuditor {
     }
 
     async fn do_audit_block(&mut self, block: CachedBlock, read_vc: VectorClock) {
+        let start_time = Instant::now();
         // let _ = self.snapshot_store.global_lock.lock().await;
-        if !self.snapshot_store.snapshot_exists(&read_vc) {
+        if true // || !self.snapshot_store.snapshot_exists(&read_vc) 
+        {
             let updates = self.generate_updates(read_vc.clone()).await;
             // let updates = vec![];
-            self.snapshot_store.install_snapshot(read_vc.clone(), self.worker_name.clone(), updates.clone()).await;
-            // self.cache.extend(updates);
+            // self.snapshot_store.install_snapshot(read_vc.clone(), self.worker_name.clone(), updates.clone()).await;
+            self.cache.extend(updates);
             self.__snapshot_generated_counter += 1;
         } else {
             self.__snapshot_reused_counter += 1;
         }
+        self.__gen_snapshot_time_sum += Instant::now() - start_time;
 
-
+        let _verify_reads_start_time = Instant::now();
 
         let write_ops = self.filter_write_ops_into_vec(&block.block);
+
+        trace!("Write ops time: {:?} len: {}", Instant::now() - _verify_reads_start_time, write_ops.len());
 
         match &block.block.read_set {
             Some(read_set) => {
                 self.verify_reads(read_set, &read_vc, &write_ops).await;
+                trace!("Verify reads time: {:?} len: {}", Instant::now() - _verify_reads_start_time, read_set.entries.len());
+
             },
             None => {
                 // No reads to verify.
             },
         }
+
+
+        self.__verify_reads_time_sum += Instant::now() - _verify_reads_start_time;
 
 
 
@@ -171,11 +218,17 @@ impl PerWorkerAuditor {
         }
         self.last_read_vc = read_vc.clone();
 
+        let end_time = Instant::now();
+        self.__audit_block_time_sum += end_time - start_time;
+        self.__audit_block_count += 1;
+
     }
 
     /// Precondition: base_vc <= read_vc && base_vc is in the snapshot store or is VectorClock::new()
     async fn generate_updates(&mut self, read_vc: VectorClock) -> Vec<(CacheKey, CachedValue)> {
         let (update_blocks, base_vc) = self.get_update_blocks(read_vc.clone());
+        self.__snapshot_block_size_sum += update_blocks.len();
+        self.__snapshot_block_count += 1;
 
         let update_map = update_blocks.iter()
             .map(|block| self.filter_write_ops_into_hashmap(&block.block))
@@ -191,8 +244,8 @@ impl PerWorkerAuditor {
 
         if base_vc != VectorClock::new() {
             for (key, value) in updates.iter_mut() {
-                let base_value = self.snapshot_store.get(key, &base_vc).await;
-                // let base_value = self.cache.get(key).cloned();
+                // let base_value = self.snapshot_store.get(key, &base_vc).await;
+                let base_value = self.cache.get(key).cloned();
                 if base_value.is_none() {
                     continue;
                 }
@@ -209,8 +262,8 @@ impl PerWorkerAuditor {
 
     fn get_update_blocks(&mut self, read_vc: VectorClock) -> (Vec<CachedBlock>, VectorClock) {
         let chosen_glb = self.last_read_vc.clone();
-        assert!(chosen_glb <= read_vc);
-        assert!(self.snapshot_store.snapshot_exists(&chosen_glb));
+        // assert!(chosen_glb <= read_vc);
+        // assert!(self.snapshot_store.snapshot_exists(&chosen_glb));
 
         let mut update_blocks = Vec::new();
         let mut expected_block_count = 0;
@@ -301,8 +354,9 @@ impl PerWorkerAuditor {
             while cached_upto < *after_write_op_index {
                 assert!(cached_upto < write_ops.len() as u64);
                 let (key, value) = write_ops[cached_upto as usize].clone();
-                let _snapshot_value = self.snapshot_store.get(&key, read_vc).await;
-                // let snapshot_value = self.cache.get(&key).cloned();
+                // let _snapshot_value = self.snapshot_store.get(&key, read_vc).await;
+                // let _snapshot_value: Option<CachedValue>  = None;
+                let _snapshot_value = self.cache.get(&key).cloned();
                 // assert!(_snapshot_value == snapshot_value, "key: {} read_vc: {} _snapshot_value: {:?} snapshot_value: {:?}",
                 //     String::from_utf8(key.clone()).unwrap(), read_vc, _snapshot_value, snapshot_value);
                 if _snapshot_value.is_some() {
@@ -316,8 +370,9 @@ impl PerWorkerAuditor {
             let correct_value = if local_cache.contains_key(key) {
                 local_cache.get(key).cloned()
             } else {
-                let __correct_value = self.snapshot_store.get(key, read_vc).await;
-                // // let val = self.cache.get(key).cloned();
+                // let __correct_value = self.snapshot_store.get(key, read_vc).await;
+                // let __correct_value = None;
+                let __correct_value = self.cache.get(key).cloned();
                 // assert!(__correct_value == val, "key: {} read_vc: {} correct_value: {:?} val: {:?}",
                 //     String::from_utf8(key.clone()).unwrap(), read_vc, __correct_value, val);
 
@@ -325,7 +380,7 @@ impl PerWorkerAuditor {
             };
             let correct_value_hash = cached_value_to_val_hash(correct_value);
             if *value_hash != correct_value_hash {
-                let key_str = String::from_utf8(key.clone()).unwrap();
+                let key_str = String::from_utf8(key.clone()).unwrap_or(hex::encode(key));
                 let correct_value_hex_str = &hex::encode(correct_value_hash);
                 let value_hex_str = &hex::encode(value_hash);
 
@@ -335,7 +390,7 @@ impl PerWorkerAuditor {
 
                 self.num_incorrect_reads += 1;
             } else {
-                let key_str = String::from_utf8(key.clone()).unwrap();
+                let key_str = String::from_utf8(key.clone()).unwrap_or(hex::encode(key));
                 let correct_value_hex_str = &hex::encode(correct_value_hash);
                 let value_hex_str = &hex::encode(value_hash);
                 trace!("✅ Read verification passed for key: {} correct_value_hash: {} value_hash: {} read_vc: {}",

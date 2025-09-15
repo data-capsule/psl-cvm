@@ -1,6 +1,6 @@
 use std::{collections::{HashMap, VecDeque}, pin::Pin, sync::Arc, time::Duration};
 
-use log::{debug, info, warn};
+use log::{debug, info, trace, warn};
 use prost::Message as _;
 use tokio::sync::{oneshot, Mutex};
 
@@ -195,6 +195,7 @@ impl LogServer {
         }
 
         fork.retain(|b| b.block.n > n);
+        trace!("Fork size after GC: {} for origin: {:?}", fork.len(), sender);
     }
 
     async fn handle_query(&mut self, query: ProtoBackfillQuery, is_remote: bool) -> Option<ProtoAppendEntries> {

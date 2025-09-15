@@ -408,8 +408,8 @@ impl BlockSequencer {
         let self_read_batch_size = config.worker_config.self_reads_max_batch_size;
 
         if self.all_write_op_bag.len() < all_write_batch_size
-        || self.self_write_op_bag.len() < self_write_batch_size 
-        || self.self_read_op_bag.len() < self_read_batch_size
+        && self.self_write_op_bag.len() < self_write_batch_size 
+        && self.self_read_op_bag.len() < self_read_batch_size
         {
             return false; // Not enough writes to form a block
         }
