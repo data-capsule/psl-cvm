@@ -133,12 +133,12 @@ impl ServerContextType for PinnedPSLWorkerServerContext {
 
         match msg {
             crate::proto::rpc::proto_payload::Message::AppendEntries(proto_append_entries) => {
-                error!("Received append entries from {:?}. Size: {}", sender, proto_append_entries.encoded_len());
+                // error!("Received append entries from {:?}. Size: {}", sender, proto_append_entries.encoded_len());
                 self.fork_receiver_tx
                     .send((proto_append_entries, sender))
                     .await
                     .expect("Channel send error");
-                error!("Forwarded append entries from to fork receiver");
+                // error!("Forwarded append entries from to fork receiver");
                 return Ok(RespType::NoResp);
             }
             crate::proto::rpc::proto_payload::Message::BackfillQuery(proto_backfill_query) => {

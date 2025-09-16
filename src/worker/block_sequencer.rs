@@ -50,12 +50,15 @@ pub enum SequencerCommand {
     /// Blocks can only be formed on receiving this token.
     /// Helps maintain atomicity.
     /// (Doesn't mean it is forced to form a block, just that it can)
-    MakeNewBlock(oneshot::Sender<bool>, Option<oneshot::Sender<VectorClock>>),
+    MakeNewBlock(oneshot::Sender<bool>, Option<oneshot::Sender<VectorClock>>, bool /* force prepare */),
 
 
     /// Force a new block to be formed.
     /// Only if there is at least one write in the bag.
     ForceMakeNewBlock,
+
+    /// Make a new block to propagate the given VC.
+    MakeNewBlockToPropagateVC(VectorClock),
 
     /// Buffer this request, send ack once the VC is >= the one asked for.
     WaitForVC(VectorClock, oneshot::Sender<()>, Option<oneshot::Sender<()>>),
@@ -373,10 +376,10 @@ impl BlockSequencer {
                     self.is_quiscent = false;
                 }
 
-                let set_dirty_condition = !self.is_quiscent || self.vc_wait_buffer.len() > 0;
+                // let set_dirty_condition = !self.is_quiscent || self.vc_wait_buffer.len() > 0;
                 let _actually_advanced = self.curr_vector_clock.advance(sender, block_seq_num);
 
-                if set_dirty_condition && _actually_advanced {
+                if _actually_advanced {
                     self.__vc_dirty = true;
                 }
                 self.send_heartbeat().await;
@@ -384,18 +387,33 @@ impl BlockSequencer {
 
                 self.is_quiscent = is_quiscent;
             },
-            SequencerCommand::MakeNewBlock(sender_did_prepare, sender_vc) => {
+            SequencerCommand::MakeNewBlock(sender_did_prepare, sender_vc, force_prepare) => {
                 self.send_heartbeat().await;
-                let actually_did_prepare = self.maybe_prepare_new_block().await;
+                let actually_did_prepare = self.maybe_prepare_new_block(force_prepare).await;
                 sender_did_prepare.send(actually_did_prepare).unwrap();
 
                 if let Some(sender_vc) = sender_vc {
-                    sender_vc.send(self.curr_vector_clock.clone()).unwrap();
+                    let mut vc = self.curr_vector_clock.clone();
+                    // if actually_did_prepare {
+                    //     let me = SenderType::Auth(self.config.get().net_config.name.clone(), 0);
+                    //     let seq_num = vc.0.entry(me).or_insert(0);
+                    //     if *seq_num > 0 {
+                    //         *seq_num -= 1;
+                    //     }
+                    // }
+                    sender_vc.send(vc).unwrap();
                 }
             },
             SequencerCommand::ForceMakeNewBlock => {
                 self.send_heartbeat().await;
                 self.force_prepare_new_block().await;
+            },
+            SequencerCommand::MakeNewBlockToPropagateVC(vc) => {
+                if self.curr_vector_clock >= vc {
+                    return;
+                }
+                self.send_heartbeat().await;
+                self.do_prepare_new_block().await;
             },
             SequencerCommand::WaitForVC(vc, sender, sender2) => {
                 self.buffer_vc_wait(vc.clone(), sender).await;
@@ -412,17 +430,19 @@ impl BlockSequencer {
         }
     }
 
-    async fn maybe_prepare_new_block(&mut self) -> bool {
+    async fn maybe_prepare_new_block(&mut self, force_prepare: bool) -> bool {
         let config = self.config.get();
         let all_write_batch_size = config.worker_config.all_writes_max_batch_size;
         let self_write_batch_size = config.worker_config.self_writes_max_batch_size;
         let self_read_batch_size = config.worker_config.self_reads_max_batch_size;
 
-        if self.all_write_op_bag.len() < all_write_batch_size
-        && self.self_write_op_bag.len() < self_write_batch_size 
-        && self.self_read_op_bag.len() < self_read_batch_size
-        {
-            return false; // Not enough writes to form a block
+        if !force_prepare {
+            if self.all_write_op_bag.len() < all_write_batch_size
+            && self.self_write_op_bag.len() < self_write_batch_size 
+            && self.self_read_op_bag.len() < self_read_batch_size
+            {
+                return false; // Not enough writes to form a block
+            }
         }
 
         // if self.self_write_op_bag.is_empty() && self.self_read_op_bag.is_empty() {
@@ -440,14 +460,14 @@ impl BlockSequencer {
         trace!("Force preparing new block. VC dirty: {} , all_write_op_bag: {}, self_write_op_bag: {}, self_read_op_bag: {} vc_wait_buffer: {}",
             self.__vc_dirty, self.all_write_op_bag.len(), self.self_write_op_bag.len(), self.self_read_op_bag.len(), self.vc_wait_buffer.len());
 
-        // if !(self.__vc_dirty
-        //     || self.all_write_op_bag.len() > 0
-        //     || self.self_write_op_bag.len() > 0
-        //     || self.self_read_op_bag.len() > 0
-        //     || self.vc_wait_buffer.len() > 0
-        // ) {
-        //     return;
-        // }
+        if !(self.__vc_dirty
+            || self.all_write_op_bag.len() > 0
+            || self.self_write_op_bag.len() > 0
+            || self.self_read_op_bag.len() > 0
+            || self.vc_wait_buffer.len() > 0
+        ) {
+            return;
+        }
 
         // if self.all_write_op_bag.is_empty() && self.self_read_op_bag.is_empty() && !self.__vc_dirty {
         //     return;

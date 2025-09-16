@@ -38,8 +38,9 @@ pub enum CacheCommand {
         u64 /* Expected SeqNum */,
         oneshot::Sender<Result<u64 /* seq_num */, CacheError>>,
     ),
-    Commit(oneshot::Sender<VectorClock>),
+    Commit(oneshot::Sender<VectorClock>, bool /* force prepare */),
     WaitForVC(VectorClock, oneshot::Sender<()>),
+    ClearVC(VectorClock),
     
 }
 
@@ -387,7 +388,7 @@ impl CacheManager {
             },
             // It is important that command_rx be checked before commit_command_rx.
             Some(cmd) = self.commit_command_rx.recv() => {
-                if let CacheCommand::Commit(_) = cmd {
+                if let CacheCommand::Commit(_, _) = cmd {
                     self.handle_command(cmd).await;
                 } else {
                     error!("Unexpected commit command: {:?}", cmd);
@@ -525,9 +526,9 @@ impl CacheManager {
             CacheCommand::Cas(key, value, expected_seq_num, response_tx) => {
                 unimplemented!();
             }
-            CacheCommand::Commit(sender) => {
+            CacheCommand::Commit(sender, force_prepare) => {
                 let (tx, rx) = oneshot::channel();
-                let _ = self.block_sequencer_tx.send(SequencerCommand::MakeNewBlock(tx, Some(sender))).await;
+                let _ = self.block_sequencer_tx.send(SequencerCommand::MakeNewBlock(tx, Some(sender), force_prepare)).await;
                 let actually_did_prepare = rx.await.unwrap();
                 if actually_did_prepare {
                     self.last_batch_time = Instant::now();
@@ -537,6 +538,9 @@ impl CacheManager {
                 let (tx, rx) = oneshot::channel();
                 self.blocked_on_vc_wait = Some(rx);
                 let _ = self.block_sequencer_tx.send(SequencerCommand::WaitForVC(vc, tx, Some(tx2))).await;
+            }
+            CacheCommand::ClearVC(vc) => {
+                let _ = self.block_sequencer_tx.send(SequencerCommand::MakeNewBlockToPropagateVC(vc)).await;
             }
         }
     }
@@ -643,7 +647,7 @@ impl CacheManager {
         
             // A new block can be formed now.
             let (tx, rx) = oneshot::channel();
-            let _ = self.block_sequencer_tx.send(SequencerCommand::MakeNewBlock(tx, None)).await;
+            let _ = self.block_sequencer_tx.send(SequencerCommand::MakeNewBlock(tx, None, false)).await;
             let actually_did_prepare = rx.await.unwrap();
             if actually_did_prepare {
                 self.last_batch_time = Instant::now();

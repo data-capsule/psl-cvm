@@ -142,7 +142,7 @@ impl ExternalCacheManager {
             CacheCommand::Cas(key, value, expected_seq_num, response_tx) => {
                 unimplemented!();
             }
-            CacheCommand::Commit(sender) => {
+            CacheCommand::Commit(sender, force_prepare) => {
                 // The remote KV store is linearizable, but not serializable and has no sense of atomic multi-ops.
                 // So we don't need to commit anything.
                 sender.send(VectorClock::new()).unwrap();
@@ -150,6 +150,9 @@ impl ExternalCacheManager {
             CacheCommand::WaitForVC(_, tx) => {
                 // This is No-op as well.
                 tx.send(()).unwrap();
+            }
+            CacheCommand::ClearVC(vc) => {
+                let _ = self.block_sequencer_tx.send(SequencerCommand::MakeNewBlockToPropagateVC(vc)).await;
             }
         }
     }

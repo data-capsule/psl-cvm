@@ -56,11 +56,16 @@ impl CacheConnector {
         key: Vec<u8>,
     ) -> anyhow::Result<(Vec<u8>, u64), CacheError> {
         let (tx, rx) = tokio::sync::oneshot::channel();
-        let command = CacheCommand::Get(key, tx);
+        let command = CacheCommand::Get(key.clone(), tx);
 
+        error!("Dispatching read request for key: {:?}", key);
         self.cache_tx.send(command).unwrap();
 
+        error!("Waiting on result from read request for key: {:?}", key);
+
         let result = rx.await.unwrap();
+
+        error!("Got result from read request for key: {:?}", key);
 
         result
     }
@@ -73,21 +78,31 @@ impl CacheConnector {
         let (tx, rx) = tokio::sync::oneshot::channel();
         let (response_tx, response_rx) = tokio::sync::oneshot::channel();
         let val_hash = BigInt::from_bytes_be(Sign::Plus, &hash(&value));
-        let command = CacheCommand::Put(key, value, val_hash, BlockSeqNumQuery::WaitForSeqNum(tx), response_tx);
+        let command = CacheCommand::Put(key.clone(), value, val_hash, BlockSeqNumQuery::WaitForSeqNum(tx), response_tx);
+
+        error!("Dispatching write request for key: {:?}", key);
 
         self.cache_tx.send(command).unwrap();
 
+        error!("Waiting on result from write request for key: {:?}", key);
+
+
         let result = response_rx.await.unwrap()?;
+        error!("Got result from write request for key: {:?}", key);
         std::result::Result::Ok((result, rx))
     }
 
-    pub async fn dispatch_commit_request(&self) -> VectorClock {
+    pub async fn dispatch_commit_request(&self, force_prepare: bool) -> VectorClock {
         let (tx, rx) = oneshot::channel();
-        let command = CacheCommand::Commit(tx);
+        let command = CacheCommand::Commit(tx, force_prepare);
+
+        error!("Dispatching commit request with force_prepare: {}", force_prepare);
 
         self.cache_commit_tx.send(command).await;
-
-        rx.await.unwrap()
+        error!("Dispatched commit request with force_prepare: {}!!!!", force_prepare);
+        let vc = rx.await.unwrap();
+        error!("Got result from commit request with force_prepare: {}!!!!", force_prepare);
+        vc
     }
 
     pub async fn dispatch_lock_request(&mut self, key: Vec<u8>, is_read: bool) -> Result<(), CacheError> {
@@ -191,12 +206,17 @@ impl CacheConnector {
         // return;
         
         let op_type = ProtoTransactionOpType::Unblock;
+        let mut aggregate_vc = VectorClock::new();
 
         let _locks = keys_and_vcs.iter().map(|(key, _)| String::from_utf8(key.clone()).unwrap_or(hex::encode(key.clone()))).collect::<Vec<_>>();
 
         let tx = ProtoTransaction {
             on_crash_commit: Some(ProtoTransactionPhase {
                 ops: keys_and_vcs.drain(..).map(|(key, vc)| {
+                    vc.iter().for_each(|(sender, seq_num)| {
+                        aggregate_vc.advance(sender.clone(), *seq_num);
+                    });
+                    
                     ProtoTransactionOp {
                         op_type: op_type as i32,
                         operands: vec![key, vc.serialize().encode_to_vec()],
@@ -226,6 +246,8 @@ impl CacheConnector {
         let buf = payload.encode_to_vec();
         let sz = buf.len();
         let request = PinnedMessage::from(buf, sz, crate::rpc::SenderType::Anon);
+
+        self.cache_tx.send(CacheCommand::ClearVC(aggregate_vc)).unwrap();
 
         let start_time = Instant::now();
         let err = PinnedClient::send_and_await_reply(&self.blocking_client, &"sequencer1".to_string(), request.as_ref()).await;
@@ -534,7 +556,7 @@ impl KVSTask {
             assert_eq!(&lk, _lock);
         }
         
-        let vc = self.cache_connector.dispatch_commit_request().await;
+        let vc = self.cache_connector.dispatch_commit_request(locked_keys.len() > 0).await;
         warn!("Committed with VC: {} Locked keys: {:?}", vc,
             locked_keys.iter().map(|key| String::from_utf8(key.clone()).unwrap_or(hex::encode(key.clone()))).collect::<Vec<_>>());
         self.cache_connector.dispatch_unlock_request(locked_keys.iter().map(|key| (key.clone(), vc.clone())).collect()).await;

@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use log::{debug, info, warn};
+use log::{debug, info, trace, warn};
 use tokio::sync::Mutex;
 use prost::Message as _;
 
@@ -203,7 +203,7 @@ impl Controller {
         // if self.blocking_state == BlockingState::Blocked {
         //     return;
         // }
-        info!("Blocking worker {:?} till VC {} to acquire lock on {}.", sender, vc, String::from_utf8(key.clone()).unwrap_or(hex::encode(key.clone())));
+        trace!("Blocking worker {:?} till VC {} to acquire lock on {}.", sender, vc, String::from_utf8(key.clone()).unwrap_or(hex::encode(key.clone())));
 
         let reply = ProtoClientReply {
             client_tag,
