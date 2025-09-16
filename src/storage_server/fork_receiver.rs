@@ -1,7 +1,7 @@
 use std::{collections::{HashMap, VecDeque}, io::Error, sync::Arc};
 
-use log::{debug, warn};
-use tokio::sync::{mpsc::UnboundedReceiver, oneshot, Mutex};
+use log::{debug, error, warn};
+use tokio::sync::{mpsc::{UnboundedReceiver, UnboundedSender}, oneshot, Mutex};
 
 use crate::{config::AtomicConfig, crypto::{AtomicKeyStore, CachedBlock, CryptoServiceConnector, FutureHash}, proto::consensus::{HalfSerializedBlock, ProtoAppendEntries}, rpc::{client::{Client, PinnedClient}, SenderType}, utils::{channel::{Receiver, Sender}, StorageServiceConnector}};
 
@@ -26,7 +26,7 @@ pub struct ForkReceiver {
     ae_rx: Receiver<(ProtoAppendEntries, SenderType)>,
     crypto: CryptoServiceConnector,
     storage: StorageServiceConnector,
-    staging_tx: Sender<(oneshot::Receiver<Result<CachedBlock, Error>>, SenderType /* sender */, SenderType /* origin */)>, // Sender may not be equal to origin.
+    staging_tx: UnboundedSender<(oneshot::Receiver<Result<CachedBlock, Error>>, SenderType /* sender */, SenderType /* origin */)>, // Sender may not be equal to origin.
 
     /// This is back-channel from staging, hence unbounded.
     /// Otherwise, it may cause a deadlock.
@@ -46,7 +46,7 @@ impl ForkReceiver {
         ae_rx: Receiver<(ProtoAppendEntries, SenderType)>,
         crypto: CryptoServiceConnector,
         storage: StorageServiceConnector,
-        staging_tx: Sender<(oneshot::Receiver<Result<CachedBlock, Error>>, SenderType /* sender */, SenderType /* origin */)>, // Sender may not be equal to origin.
+        staging_tx: UnboundedSender<(oneshot::Receiver<Result<CachedBlock, Error>>, SenderType /* sender */, SenderType /* origin */)>, // Sender may not be equal to origin.
         cmd_rx: UnboundedReceiver<ForkReceiverCommand>,
     ) -> Self {
 
@@ -183,7 +183,6 @@ impl ForkReceiver {
             
             let parent_hash = Self::find_parent_hash(stats, &block);
             let (fut_block, hash, _parent_hash) = self.crypto.verify_and_prepare_block_simple(block.serialized_body, parent_hash, origin.clone(), self.check_parent_hash).await;
-            
             if needs_continuity_check {
                 Self::append_block(stats, _n, hash).await;
             }
@@ -192,7 +191,8 @@ impl ForkReceiver {
 
             // Forward it to storage.
             let storage_acked_block = self.storage.put_nonblocking(fut_block).await;
-            let _ = self.staging_tx.send((storage_acked_block, sender.clone(), origin.clone())).await;
+           
+            let _ = self.staging_tx.send((storage_acked_block, sender.clone(), origin.clone()));
         }
         Ok(())
     }

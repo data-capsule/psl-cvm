@@ -10,6 +10,7 @@ use crate::{config::AtomicPSLWorkerConfig, crypto::{default_hash, CachedBlock, C
 
 use super::cache_manager::{CacheKey, CachedValue};
 
+#[derive(Debug)]
 pub enum BlockSeqNumQuery {
     DontBother,
     WaitForSeqNum(oneshot::Sender<u64>),
@@ -57,7 +58,7 @@ pub enum SequencerCommand {
     ForceMakeNewBlock,
 
     /// Buffer this request, send ack once the VC is >= the one asked for.
-    WaitForVC(VectorClock, oneshot::Sender<()>),
+    WaitForVC(VectorClock, oneshot::Sender<()>, Option<oneshot::Sender<()>>),
 
     /// Force unblock all buffered waiters >= the given VC.
     UnblockVC(VectorClock),
@@ -373,8 +374,9 @@ impl BlockSequencer {
                 }
 
                 let set_dirty_condition = !self.is_quiscent || self.vc_wait_buffer.len() > 0;
+                let _actually_advanced = self.curr_vector_clock.advance(sender, block_seq_num);
 
-                if set_dirty_condition && self.curr_vector_clock.advance(sender, block_seq_num) {
+                if set_dirty_condition && _actually_advanced {
                     self.__vc_dirty = true;
                 }
                 self.send_heartbeat().await;
@@ -395,9 +397,14 @@ impl BlockSequencer {
                 self.send_heartbeat().await;
                 self.force_prepare_new_block().await;
             },
-            SequencerCommand::WaitForVC(vc, sender) => {
-                self.buffer_vc_wait(vc, sender).await;
+            SequencerCommand::WaitForVC(vc, sender, sender2) => {
+                self.buffer_vc_wait(vc.clone(), sender).await;
                 self.__num_times_blocked += 1;
+
+                if let Some(sender2) = sender2 {
+                    self.buffer_vc_wait(vc, sender2).await;
+                    self.__num_times_blocked += 1;
+                }
             }
             SequencerCommand::UnblockVC(vc) => {
                 self._flush_vc_wait_buffer(vc);
@@ -430,17 +437,17 @@ impl BlockSequencer {
 
     async fn force_prepare_new_block(&mut self) {
         // Force to send null blocks if needed.
-        warn!("Force preparing new block. VC dirty: {} , all_write_op_bag: {}, self_write_op_bag: {}, self_read_op_bag: {} vc_wait_buffer: {}",
+        trace!("Force preparing new block. VC dirty: {} , all_write_op_bag: {}, self_write_op_bag: {}, self_read_op_bag: {} vc_wait_buffer: {}",
             self.__vc_dirty, self.all_write_op_bag.len(), self.self_write_op_bag.len(), self.self_read_op_bag.len(), self.vc_wait_buffer.len());
 
-        if !(self.__vc_dirty
-            || self.all_write_op_bag.len() > 0
-            || self.self_write_op_bag.len() > 0
-            || self.self_read_op_bag.len() > 0
-            || self.vc_wait_buffer.len() > 0
-        ) {
-            return;
-        }
+        // if !(self.__vc_dirty
+        //     || self.all_write_op_bag.len() > 0
+        //     || self.self_write_op_bag.len() > 0
+        //     || self.self_read_op_bag.len() > 0
+        //     || self.vc_wait_buffer.len() > 0
+        // ) {
+        //     return;
+        // }
 
         // if self.all_write_op_bag.is_empty() && self.self_read_op_bag.is_empty() && !self.__vc_dirty {
         //     return;

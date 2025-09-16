@@ -6,7 +6,7 @@ use std::{io::{Error, ErrorKind}, ops::Deref, pin::Pin, sync::Arc};
 
 use log::{debug, warn};
 use prost::Message as _;
-use tokio::{sync::Mutex, task::JoinSet};
+use tokio::{sync::{mpsc::unbounded_channel, Mutex}, task::JoinSet};
 
 use crate::{config::{AtomicConfig, Config}, crypto::{AtomicKeyStore, CryptoService, KeyStore}, proto::{checkpoint::ProtoBackfillQuery, consensus::ProtoAppendEntries, rpc::ProtoPayload}, rpc::{client::Client, server::{MsgAckChan, RespType, Server, ServerContextType}, MessageRef, SenderType}, utils::{channel::{make_channel, Receiver, Sender}, RocksDBStorageEngine, StorageService}, worker::block_broadcaster::BroadcasterConfig};
 use fork_receiver::ForkReceiver;
@@ -168,7 +168,7 @@ impl StorageNode {
 
         let fork_receiver_crypto = crypto.get_connector();
         let fork_receiver_storage = storage.get_connector(crypto.get_connector());
-        let (staging_tx, staging_rx) = make_channel(_chan_depth);
+        let (staging_tx, staging_rx) = unbounded_channel();
         let (logserver_tx, logserver_rx) = make_channel(_chan_depth);
         let (fork_receiver_cmd_tx, fork_receiver_cmd_rx) = tokio::sync::mpsc::unbounded_channel();
         let (gc_tx, gc_rx) = make_channel(_chan_depth);

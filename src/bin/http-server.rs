@@ -14,6 +14,7 @@ use psl::rpc::SenderType;
 use psl::utils::channel::{make_channel, Receiver, Sender};
 use psl::worker;
 use serde::Deserialize;
+use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use tokio::{runtime, signal};
 use std::process::exit;
 use std::sync::atomic::AtomicU64;
@@ -114,7 +115,7 @@ struct KeyValue {
 }
 
 struct SharedState {
-    tx_sender: Sender<TxWithAckChanTag>,
+    tx_sender: UnboundedSender<TxWithAckChanTag>,
     config: PSLWorkerConfig,
     tag_counter: AtomicU64,
 }
@@ -219,7 +220,7 @@ async fn http_get(data: web::Data<SharedState>, key: web::Json<Key>) -> impl Res
     let sender = SenderType::Auth(sender, 0);
 
     let (act_tx, mut act_rx) = tokio::sync::mpsc::channel(1);
-    data.tx_sender.send((Some(tx), (act_tx, tag, sender))).await.unwrap();
+    data.tx_sender.send((Some(tx), (act_tx, tag, sender))).unwrap();
 
     let result = act_rx.recv().await.unwrap();
     let result = result.0.as_ref();
@@ -258,7 +259,7 @@ async fn http_post(data: web::Data<SharedState>, key_value: web::Json<KeyValue>)
     let sender = SenderType::Auth(sender, 0);
 
     let (act_tx, mut act_rx) = tokio::sync::mpsc::channel(1);
-    data.tx_sender.send((Some(tx), (act_tx, tag, sender))).await.unwrap();
+    data.tx_sender.send((Some(tx), (act_tx, tag, sender))).unwrap();
 
     let result = act_rx.recv().await.unwrap();
     let result = result.0.as_ref();
@@ -269,14 +270,14 @@ async fn http_post(data: web::Data<SharedState>, key_value: web::Json<KeyValue>)
 }
 
 
-async fn run_main(cfg: PSLWorkerConfig, client_request_tx: Sender<TxWithAckChanTag>, client_request_rx: Receiver<TxWithAckChanTag>) -> Result<(), io::Error> {
+async fn run_main(cfg: PSLWorkerConfig, client_request_tx: UnboundedSender<TxWithAckChanTag>, client_request_rx: UnboundedReceiver<TxWithAckChanTag>) -> Result<(), io::Error> {
     let mut node = worker::PSLWorker::<worker::app::KVSTask>::mew(cfg, client_request_tx.clone(), client_request_rx);
     handle_signal_till_end!(node);
 
     Ok(())
 }
 
-async fn run_actix_server(client_request_tx: Sender<TxWithAckChanTag>, port: usize, config: PSLWorkerConfig) -> Result<(), io::Error> {
+async fn run_actix_server(client_request_tx: UnboundedSender<TxWithAckChanTag>, port: usize, config: PSLWorkerConfig) -> Result<(), io::Error> {
     let server = HttpServer::new(move || {
         App::new()
             .app_data(web::Data::new(SharedState {
@@ -315,7 +316,7 @@ fn main() {
         }
     }
 
-    let (client_request_tx, client_request_rx) = make_channel(cfg.rpc_config.channel_depth as usize);
+    let (client_request_tx, client_request_rx) = unbounded_channel();
 
     let i = Box::pin(AtomicUsize::new(0));
     let runtime = runtime::Builder::new_multi_thread()

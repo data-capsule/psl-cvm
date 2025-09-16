@@ -9,7 +9,7 @@ use std::{io::{Error, ErrorKind}, ops::Deref, pin::Pin, sync::Arc};
 
 use log::{debug, warn};
 use prost::Message as _;
-use tokio::{sync::Mutex, task::JoinSet};
+use tokio::{sync::{mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender}, Mutex}, task::JoinSet};
 
 use crate::{config::{AtomicConfig, Config}, crypto::{AtomicKeyStore, CryptoService, KeyStore}, proto::{consensus::{ProtoAppendEntries, ProtoHeartbeat, ProtoVectorClock}, rpc::ProtoPayload}, rpc::{client::Client, server::{MsgAckChan, RespType, Server, ServerContextType}, MessageRef, SenderType}, sequencer::{auditor::Auditor, commit_buffer::CommitBuffer, controller::Controller, heartbeat_handler::HeartbeatHandler, lockserver::{LockServer, LockServerCommand}}, utils::{channel::{make_channel, Receiver, Sender}, BlackHoleStorageEngine, StorageService}};
 use crate::storage_server::fork_receiver::ForkReceiver;
@@ -19,8 +19,9 @@ pub struct SequencerContext {
     config: AtomicConfig,
     keystore: AtomicKeyStore,
     fork_receiver_tx: Sender<(ProtoAppendEntries, SenderType)>,
-    lock_server_tx: Sender<(Vec<LockServerCommand>, SenderType, MsgAckChan)>,
+    lock_server_tx: UnboundedSender<(LockServerCommand, SenderType, MsgAckChan, u64)>,
     heartbeat_tx: Sender<(ProtoHeartbeat, SenderType)>,
+    heartbeat_handler_tx: UnboundedSender<(ProtoHeartbeat, SenderType)>,
 }
 
 #[derive(Clone)]
@@ -31,8 +32,9 @@ impl PinnedSequencerContext {
         config: AtomicConfig,
         keystore: AtomicKeyStore,
         fork_receiver_tx: Sender<(ProtoAppendEntries, SenderType)>,
-        lock_server_tx: Sender<(Vec<LockServerCommand>, SenderType, MsgAckChan)>,
+        lock_server_tx: UnboundedSender<(LockServerCommand, SenderType, MsgAckChan, u64)>,
         heartbeat_tx: Sender<(ProtoHeartbeat, SenderType)>,
+        heartbeat_handler_tx: UnboundedSender<(ProtoHeartbeat, SenderType)>,
     ) -> Self {
         let context = SequencerContext {
             config,
@@ -40,6 +42,7 @@ impl PinnedSequencerContext {
             fork_receiver_tx,
             lock_server_tx,
             heartbeat_tx,
+            heartbeat_handler_tx,
         };
         Self(Arc::new(Box::pin(context)))
     }
@@ -92,12 +95,17 @@ impl ServerContextType for PinnedSequencerContext {
                 return Ok(RespType::NoResp);
             },
             crate::proto::rpc::proto_payload::Message::ClientRequest(proto_client_request) => {
+                let client_tag = proto_client_request.client_tag;
                 let (only_release_commands, lock_server_command) = LockServer::to_lock_server_command(proto_client_request);
-                self.lock_server_tx.send((lock_server_command, sender, ack_chan)).await
+                self.lock_server_tx.send((lock_server_command[0].clone(), sender, ack_chan, client_tag))
                     .expect("Channel send error");
-                return Ok(if !only_release_commands { RespType::Resp } else { RespType::NoResp });
+                // return Ok(if !only_release_commands { RespType::Resp } else { RespType::NoResp });
+                return Ok(RespType::Resp);
             },
             crate::proto::rpc::proto_payload::Message::Heartbeat(proto_heartbeat) => {
+                self.heartbeat_handler_tx.send((proto_heartbeat.clone(), sender.clone()))
+                    .expect("Channel send error");
+                
                 self.heartbeat_tx.send((proto_heartbeat, sender)).await
                     .expect("Channel send error");
                 return Ok(RespType::NoResp);
@@ -140,8 +148,8 @@ pub struct SequencerNode {
 impl SequencerNode {
     pub fn new(config: Config) -> Self {
         let (fork_receiver_tx, fork_receiver_rx) = make_channel(config.rpc_config.channel_depth as usize);
-        let (lock_server_tx, lock_server_rx) = make_channel(config.rpc_config.channel_depth as usize);
-        // let (backfill_request_tx, backfill_request_rx) = make_channel(config.rpc_config.channel_depth as usize);
+        // let (lock_server_tx, lock_server_rx) = make_channel(config.rpc_config.channel_depth as usize);
+        let (lock_server_tx, lock_server_rx) = unbounded_channel();
         Self::mew(config, fork_receiver_tx, fork_receiver_rx, lock_server_tx, lock_server_rx)
     }
 
@@ -149,8 +157,8 @@ impl SequencerNode {
         config: Config,
         fork_receiver_tx: Sender<(ProtoAppendEntries, SenderType)>,
         fork_receiver_rx: Receiver<(ProtoAppendEntries, SenderType)>,
-        lock_server_tx: Sender<(Vec<LockServerCommand>, SenderType, MsgAckChan)>,
-        lock_server_rx: Receiver<(Vec<LockServerCommand>, SenderType, MsgAckChan)>,
+        lock_server_tx: UnboundedSender<(LockServerCommand, SenderType, MsgAckChan, u64)>,
+        lock_server_rx: UnboundedReceiver<(LockServerCommand, SenderType, MsgAckChan, u64)>,
     ) -> Self {
         let _chan_depth = config.rpc_config.channel_depth as usize;
         let _num_crypto_tasks = config.consensus_config.num_crypto_workers;
@@ -166,6 +174,7 @@ impl SequencerNode {
         crypto.run();
         let storage = StorageService::new(config.clone(), BlackHoleStorageEngine{}, _chan_depth);
         let (heartbeat_tx, heartbeat_rx) = make_channel(_chan_depth);
+        let (heartbeat_handler_tx, heartbeat_handler_rx) = unbounded_channel();
 
         let ctx = PinnedSequencerContext::new(
             config.clone(),
@@ -173,12 +182,13 @@ impl SequencerNode {
             fork_receiver_tx,
             lock_server_tx, 
             heartbeat_tx,
+            heartbeat_handler_tx,
         );
         let server = Server::new_atomic(config.clone(), ctx, keystore.clone());
 
         let fork_receiver_crypto = crypto.get_connector();
         let fork_receiver_storage = storage.get_connector(crypto.get_connector());
-        let (staging_tx, staging_rx) = make_channel(_chan_depth);
+        let (staging_tx, staging_rx) = unbounded_channel();
         let (logserver_tx, logserver_rx) = make_channel(_chan_depth);
         let (fork_receiver_cmd_tx, fork_receiver_cmd_rx) = tokio::sync::mpsc::unbounded_channel();
         let (auditor_tx, auditor_rx) = make_channel(_chan_depth);
@@ -190,7 +200,7 @@ impl SequencerNode {
         let auditor = Auditor::new(config.clone(), auditor_rx);
 
         let (lock_server_controller_tx, lock_server_controller_rx) = make_channel(_chan_depth);
-        let lock_server = LockServer::new(config.clone(), lock_server_rx, lock_server_controller_tx);
+        let lock_server = LockServer::new(config.clone(), heartbeat_handler_rx, lock_server_rx, lock_server_controller_tx);
         
         let (heartbeat_handler_controller_tx, heartbeat_handler_controller_rx) = make_channel(_chan_depth);
         let heartbeat_handler = HeartbeatHandler::new(config.clone(), heartbeat_rx, heartbeat_handler_controller_tx);

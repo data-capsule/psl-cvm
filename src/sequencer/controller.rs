@@ -12,7 +12,8 @@ pub enum ControllerCommand {
     UnblockAllWorkers,
 
     /// This is used to grant release-consistent locks to a worker.
-    BlockingLockAcquire(CacheKey, SenderType, VectorClock, MsgAckChan)
+    BlockingLockAcquire(CacheKey, SenderType, VectorClock, MsgAckChan, u64),
+    UnlockAck(MsgAckChan, u64),
 }
 
 #[derive(PartialEq, Eq, PartialOrd, Ord, Copy, Clone)]
@@ -72,12 +73,37 @@ impl Controller {
             ControllerCommand::UnblockAllWorkers => {
                 self.unblock_all_workers().await;
             }
-            ControllerCommand::BlockingLockAcquire(key, sender, vc, ack_chan) => {
-                self.blocking_lock_acquire(key, sender, vc, ack_chan).await;
+            ControllerCommand::BlockingLockAcquire(key, sender, vc, ack_chan, client_tag) => {
+                self.blocking_lock_acquire(key, sender, vc, ack_chan, client_tag).await;
+            }
+            ControllerCommand::UnlockAck(ack_chan, client_tag) => {
+                self.unlock_ack(ack_chan, client_tag).await;
             }
         }
 
         Ok(())
+    }
+
+    async fn unlock_ack(&mut self, ack_chan: MsgAckChan, client_tag: u64) {
+        let reply = ProtoClientReply {
+            client_tag,
+            reply: Some(crate::proto::client::proto_client_reply::Reply::Receipt(ProtoTransactionReceipt {
+                req_digest: vec![],
+                block_n: 0,
+                tx_n: 0,
+                results: Some(ProtoTransactionResult {
+                    result: vec![ProtoTransactionOpResult { success: true, values: vec![vec![5u8; 4096]] }],
+                }),
+                await_byz_response: false,
+                byz_responses: vec![],
+            })),
+        };
+
+        let reply_ser = reply.encode_to_vec();
+        let _sz = reply_ser.len();
+        let reply_msg = PinnedMessage::from(reply_ser, _sz, crate::rpc::SenderType::Anon);
+        let _ = ack_chan.send((reply_msg, LatencyProfile::new())).await;
+
     }
 
     async fn _send_request_to_all_workers(&mut self, tx: ProtoTransaction) {
@@ -173,14 +199,14 @@ impl Controller {
 
     }
 
-    async fn blocking_lock_acquire(&mut self, key: CacheKey, sender: SenderType, vc: VectorClock, ack_chan: MsgAckChan) {
+    async fn blocking_lock_acquire(&mut self, key: CacheKey, sender: SenderType, vc: VectorClock, ack_chan: MsgAckChan, client_tag: u64) {
         // if self.blocking_state == BlockingState::Blocked {
         //     return;
         // }
         info!("Blocking worker {:?} till VC {} to acquire lock on {}.", sender, vc, String::from_utf8(key.clone()).unwrap_or(hex::encode(key.clone())));
 
         let reply = ProtoClientReply {
-            client_tag: 0,
+            client_tag,
             reply: Some(crate::proto::client::proto_client_reply::Reply::Receipt(ProtoTransactionReceipt {
                 req_digest: vec![],
                 block_n: 0,

@@ -4,10 +4,10 @@ use std::{
 
 use app::PSLAppEngine;
 use cache_manager::CacheManager;
-use log::{debug, warn};
+use log::{debug, error, warn};
 use prost::Message as _;
 use tokio::{
-    sync::{mpsc::unbounded_channel, Mutex},
+    sync::{mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender}, Mutex},
     task::JoinSet,
 };
 
@@ -56,7 +56,7 @@ pub struct PSLWorkerServerContext {
     keystore: AtomicKeyStore,
     backfill_request_tx: Sender<ProtoBackfillQuery>,
     fork_receiver_tx: Sender<(ProtoAppendEntries, SenderType)>,
-    client_request_tx: Sender<TxWithAckChanTag>,
+    client_request_tx: UnboundedSender<TxWithAckChanTag>,
     sequencer_request_tx: Sender<TxWithAckChanTag>,
     staging_tx: Sender<VoteWithSender>,
 }
@@ -70,7 +70,7 @@ impl PinnedPSLWorkerServerContext {
         keystore: AtomicKeyStore,
         backfill_request_tx: Sender<ProtoBackfillQuery>,
         fork_receiver_tx: Sender<(ProtoAppendEntries, SenderType)>,
-        client_request_tx: Sender<TxWithAckChanTag>,
+        client_request_tx: UnboundedSender<TxWithAckChanTag>,
         staging_tx: Sender<VoteWithSender>,
         sequencer_request_tx: Sender<TxWithAckChanTag>,
     ) -> Self {
@@ -133,10 +133,12 @@ impl ServerContextType for PinnedPSLWorkerServerContext {
 
         match msg {
             crate::proto::rpc::proto_payload::Message::AppendEntries(proto_append_entries) => {
+                error!("Received append entries from {:?}. Size: {}", sender, proto_append_entries.encoded_len());
                 self.fork_receiver_tx
                     .send((proto_append_entries, sender))
                     .await
                     .expect("Channel send error");
+                error!("Forwarded append entries from to fork receiver");
                 return Ok(RespType::NoResp);
             }
             crate::proto::rpc::proto_payload::Message::BackfillQuery(proto_backfill_query) => {
@@ -160,7 +162,7 @@ impl ServerContextType for PinnedPSLWorkerServerContext {
                 
                 self.client_request_tx
                     .send((client_request.tx, (ack_chan, client_tag, sender)))
-                    .await
+                    // .await
                     .expect("Channel send error");
 
                 return Ok(RespType::Resp);
@@ -208,7 +210,7 @@ pub struct PSLWorker<E: ClientHandlerTask + Send + Sync + 'static> {
 impl<E: ClientHandlerTask + Send + Sync + 'static> PSLWorker<E> {
     pub fn new(config: PSLWorkerConfig) -> Self {
         let (client_request_tx, client_request_rx) =
-            make_channel(config.rpc_config.channel_depth as usize);
+            unbounded_channel();
         Self::mew(config, client_request_tx, client_request_rx)
     }
 
@@ -221,8 +223,8 @@ impl<E: ClientHandlerTask + Send + Sync + 'static> PSLWorker<E> {
     /// ```
     pub fn mew(
         config: PSLWorkerConfig,
-        client_request_tx: Sender<TxWithAckChanTag>,
-        client_request_rx: Receiver<TxWithAckChanTag>,
+        client_request_tx: UnboundedSender<TxWithAckChanTag>,
+        client_request_rx: UnboundedReceiver<TxWithAckChanTag>,
     ) -> Self {
         let _chan_depth = config.rpc_config.channel_depth as usize;
         let _num_crypto_tasks = config.worker_config.num_crypto_workers;
@@ -262,8 +264,8 @@ impl<E: ClientHandlerTask + Send + Sync + 'static> PSLWorker<E> {
         let (backfill_request_tx, backfill_request_rx) = make_channel(_chan_depth as usize);
         let (fork_receiver_tx, fork_receiver_rx) = make_channel(_chan_depth as usize);
         let (vote_tx, vote_rx) = make_channel(_chan_depth as usize);
-        let (cache_tx, cache_rx) = make_channel(_chan_depth as usize);
-        let (block_tx, block_rx) = make_channel(_chan_depth as usize);
+        let (cache_tx, cache_rx) = unbounded_channel();
+        let (block_tx, block_rx) = unbounded_channel();
         let (command_tx, command_rx) = unbounded_channel();
         let (block_sequencer_tx, block_sequencer_rx) = make_channel(_chan_depth as usize);
         let (node_broadcaster_tx, node_broadcaster_rx) = make_channel(_chan_depth as usize);
@@ -276,6 +278,7 @@ impl<E: ClientHandlerTask + Send + Sync + 'static> PSLWorker<E> {
         let (gc_tx, gc_rx) = make_channel(_chan_depth as usize);
         let (staging_tx, staging_rx) = make_channel(_chan_depth as usize);
         let (sequencer_request_tx, sequencer_request_rx) = make_channel(_chan_depth as usize);
+        let (cache_commit_tx, cache_commit_rx) = make_channel(_chan_depth as usize);
 
         let context = PinnedPSLWorkerServerContext::new(
             og_config.clone(),
@@ -299,6 +302,7 @@ impl<E: ClientHandlerTask + Send + Sync + 'static> PSLWorker<E> {
             config.clone(),
             keystore.clone(),
             cache_tx,
+            cache_commit_tx,
             client_request_rx,
             commit_tx_spawner.clone(),
         )));
@@ -321,6 +325,7 @@ impl<E: ClientHandlerTask + Send + Sync + 'static> PSLWorker<E> {
         let cache_manager = Arc::new(Mutex::new(CacheManager::new(
             config.clone(),
             cache_rx,
+            cache_commit_rx,
             sequencer_request_rx,
             block_rx,
             block_sequencer_tx,

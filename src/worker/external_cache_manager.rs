@@ -147,8 +147,9 @@ impl ExternalCacheManager {
                 // So we don't need to commit anything.
                 sender.send(VectorClock::new()).unwrap();
             }
-            CacheCommand::WaitForVC(_) => {
+            CacheCommand::WaitForVC(_, tx) => {
                 // This is No-op as well.
+                tx.send(()).unwrap();
             }
         }
     }

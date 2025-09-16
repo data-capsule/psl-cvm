@@ -3,7 +3,7 @@ use std::{io::Error, pin::Pin, sync::Arc, u64};
 use hashbrown::HashMap;
 use log::{debug, error};
 use prost::Message as _;
-use tokio::sync::{mpsc::UnboundedSender, oneshot, Mutex};
+use tokio::sync::{mpsc::{UnboundedReceiver, UnboundedSender}, oneshot, Mutex};
 
 use crate::{config::AtomicConfig, crypto::{AtomicKeyStore, CachedBlock}, proto::{checkpoint::{ProtoAuthSenderType, ProtoBackfillQuery}, consensus::ProtoVote, rpc::ProtoPayload}, rpc::{client::{Client, PinnedClient}, MessageRef, SenderType}, utils::{channel::{Receiver, Sender}, timer::ResettableTimer}};
 
@@ -13,7 +13,7 @@ pub struct Staging {
     config: AtomicConfig,
     keystore: AtomicKeyStore,
     client: PinnedClient,
-    block_rx: Receiver<(oneshot::Receiver<Result<CachedBlock, Error>>, SenderType /* sender */, SenderType /* origin */)>, // Sender may not be equal to origin.
+    block_rx: UnboundedReceiver<(oneshot::Receiver<Result<CachedBlock, Error>>, SenderType /* sender */, SenderType /* origin */)>, // Sender may not be equal to origin.
     logserver_tx: Sender<(SenderType, CachedBlock)>,
     gc_tx: Option<Sender<(SenderType, u64)>>,
     gc_timer: Arc<Pin<Box<ResettableTimer>>>,
@@ -30,7 +30,7 @@ const PER_PEER_BLOCK_WSS: u64 = 1_000;
 impl Staging {
     pub fn new(
         config: AtomicConfig, keystore: AtomicKeyStore,
-        block_rx: Receiver<(oneshot::Receiver<Result<CachedBlock, Error>>, SenderType /* sender */, SenderType /* origin */)>, // Sender may not be equal to origin.
+        block_rx: UnboundedReceiver<(oneshot::Receiver<Result<CachedBlock, Error>>, SenderType /* sender */, SenderType /* origin */)>, // Sender may not be equal to origin.
         logserver_tx: Sender<(SenderType, CachedBlock)>,
         gc_tx: Option<Sender<(SenderType, u64)>>,
         fork_receiver_cmd_tx: UnboundedSender<ForkReceiverCommand>,
