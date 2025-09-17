@@ -167,11 +167,11 @@ impl LockServer {
                         self.release_lock(key.clone(), sender.clone(), vc.clone());
                         self.__total_unlock_commands += 1;
 
-                        // if i == _n - 1 {
-                        //     self.controller_tx.send(ControllerCommand::UnlockAck(Some((ack_chan.clone(), client_tag, sender.clone())))).await.unwrap();
-                        // } else {
+                        if i == _n - 1 {
+                            self.controller_tx.send(ControllerCommand::UnlockAck(Some((ack_chan.clone(), client_tag, sender.clone())))).await.unwrap();
+                        } else {
                             self.controller_tx.send(ControllerCommand::UnlockAck(None)).await.unwrap();
-                        // }
+                        }
                         key.clone()
                     },
                     LockServerCommand::AcquireReadLock(ref key) | LockServerCommand::AcquireWriteLock(ref key) => {
@@ -397,7 +397,7 @@ impl LockServer {
 
     async fn notify(&mut self, key: CacheKey, sender: SenderType, vc: VectorClock, ack_chan_tag: Option<MsgAckChanWithTag>) {
         let cmd = ControllerCommand::BlockingLockAcquire(key, sender, vc, ack_chan_tag);
-        // self.controller_tx.send(cmd).await.unwrap();
+        self.controller_tx.send(cmd).await.unwrap();
     }
 
 

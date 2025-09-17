@@ -100,8 +100,8 @@ impl ServerContextType for PinnedSequencerContext {
                 self.lock_server_tx.send((lock_server_command, sender, ack_chan, client_tag))
                     .expect("Channel send error");
                 // return Ok(if !only_release_commands { RespType::Resp } else { RespType::NoResp });
-                // return Ok(RespType::Resp);
-                return Ok(RespType::NoResp);
+                return Ok(RespType::Resp);
+                // return Ok(RespType::NoResp);
             },
             crate::proto::rpc::proto_payload::Message::Heartbeat(proto_heartbeat) => {
                 // self.heartbeat_handler_tx.send((proto_heartbeat.clone(), sender.clone()))
