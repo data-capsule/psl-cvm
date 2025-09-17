@@ -3,7 +3,7 @@ use std::{future::Future, marker::PhantomData, pin::Pin, sync::Arc, time::Durati
 use anyhow::Ok;
 use futures::{stream::FuturesUnordered, StreamExt};
 use hashbrown::HashSet;
-use log::{error, info, warn};
+use log::{error, info, trace, warn};
 use num_bigint::{BigInt, Sign};
 use prost::Message as _;
 use tokio::{sync::{mpsc::{UnboundedReceiver, UnboundedSender}, oneshot, Mutex}, task::JoinSet, time::Instant};
@@ -58,14 +58,8 @@ impl CacheConnector {
         let (tx, rx) = tokio::sync::oneshot::channel();
         let command = CacheCommand::Get(key.clone(), tx);
 
-        error!("Dispatching read request for key: {:?}", key);
         self.cache_tx.send(command).unwrap();
-
-        error!("Waiting on result from read request for key: {:?}", key);
-
         let result = rx.await.unwrap();
-
-        error!("Got result from read request for key: {:?}", key);
 
         result
     }
@@ -80,28 +74,19 @@ impl CacheConnector {
         let val_hash = BigInt::from_bytes_be(Sign::Plus, &hash(&value));
         let command = CacheCommand::Put(key.clone(), value, val_hash, BlockSeqNumQuery::WaitForSeqNum(tx), response_tx);
 
-        error!("Dispatching write request for key: {:?}", key);
 
         self.cache_tx.send(command).unwrap();
 
-        error!("Waiting on result from write request for key: {:?}", key);
-
-
         let result = response_rx.await.unwrap()?;
-        error!("Got result from write request for key: {:?}", key);
         std::result::Result::Ok((result, rx))
     }
 
     pub async fn dispatch_commit_request(&self, force_prepare: bool) -> VectorClock {
         let (tx, rx) = oneshot::channel();
         let command = CacheCommand::Commit(tx, force_prepare);
-
-        error!("Dispatching commit request with force_prepare: {}", force_prepare);
-
+        
         self.cache_commit_tx.send(command).await;
-        error!("Dispatched commit request with force_prepare: {}!!!!", force_prepare);
         let vc = rx.await.unwrap();
-        error!("Got result from commit request with force_prepare: {}!!!!", force_prepare);
         vc
     }
 
@@ -109,7 +94,6 @@ impl CacheConnector {
         // return std::result::Result::Ok(());
         
         let ____key = String::from_utf8(key.clone()).unwrap_or(hex::encode(key.clone()));
-        info!("Dispatching lock request for key: {:?}", ____key);
 
         let start_time = Instant::now();
         let op_type = if is_read {
@@ -191,9 +175,8 @@ impl CacheConnector {
             let vc = VectorClock::from(Some(proto_vc));
             let (tx, rx) = oneshot::channel();
             let _ = self.cache_tx.send(CacheCommand::WaitForVC(vc.clone(), tx)).unwrap();
-            info!("Lock request time: {:?} for key: {:?} vc: {}", start_time.elapsed(), ____key, vc);
             rx.await.unwrap();
-            info!("Lock request time: {:?} for key: {:?} vc: {}. VC completed!", start_time.elapsed(), ____key, vc);
+            trace!("Lock request time: {:?} for key: {:?} vc: {}. VC completed!", start_time.elapsed(), ____key, vc);
 
             std::result::Result::Ok(())
         } else {
@@ -251,7 +234,7 @@ impl CacheConnector {
 
         let start_time = Instant::now();
         let err = PinnedClient::send_and_await_reply(&self.blocking_client, &"sequencer1".to_string(), request.as_ref()).await;
-        info!("Unlock request time: {:?} for keys: {:?}", start_time.elapsed(), _locks);
+        trace!("Unlock request time: {:?} for keys: {:?}", start_time.elapsed(), _locks);
         if err.is_err() {
             error!("Failed to send unlock request: {:?}", err);
         }
@@ -267,7 +250,7 @@ pub trait ClientHandlerTask {
     fn get_id(&self) -> usize;
     fn get_total_work(&self) -> usize; // Useful for throghput calculation.
     fn get_locked_keys(&self) -> Vec<CacheKey>;
-    fn on_client_request(&mut self, request: TxWithAckChanTag, reply_handler_tx: &Sender<UncommittedResultSet>) -> impl Future<Output = Result<(), anyhow::Error>> + Send + Sync;
+    fn on_client_request(&mut self, request: Vec<TxWithAckChanTag>, reply_handler_tx: &Sender<UncommittedResultSet>) -> impl Future<Output = Result<(), anyhow::Error>> + Send + Sync;
 }
 
 pub struct PSLAppEngine<T: ClientHandlerTask> {
@@ -275,7 +258,7 @@ pub struct PSLAppEngine<T: ClientHandlerTask> {
     key_store: AtomicKeyStore,
     cache_tx: UnboundedSender<CacheCommand>,
     cache_commit_tx: Sender<CacheCommand>,
-    client_command_rx: Option<UnboundedReceiver<TxWithAckChanTag>>,
+    client_command_rx: UnboundedReceiver<TxWithAckChanTag>,
     commit_tx_spawner: tokio::sync::broadcast::Sender<u64>,
     handles: JoinSet<()>,
     client_handler_phantom: PhantomData<T>,
@@ -290,7 +273,7 @@ impl<T: ClientHandlerTask + Send + Sync + 'static> PSLAppEngine<T> {
             key_store,
             cache_tx,
             cache_commit_tx,
-            client_command_rx: Some(client_command_rx),
+            client_command_rx,
             commit_tx_spawner,
             handles: JoinSet::new(),
             client_handler_phantom: PhantomData,
@@ -312,6 +295,9 @@ impl<T: ClientHandlerTask + Send + Sync + 'static> PSLAppEngine<T> {
 
         let client_config = AtomicConfig::new(app.config.get().to_config());
 
+        let mut handler_txs = Vec::new();
+
+
         for id in 0..app.config.get().worker_config.num_worker_threads_per_worker {
             let blocking_client = Client::new_atomic(client_config.clone(), app.key_store.clone(), true, (id + 0xcafebabe) as u64).into();
             // let nonblocking_client = Client::new_atomic(client_config.clone(), app.key_store.clone(), true, (id + 200) as u64).into();
@@ -319,20 +305,23 @@ impl<T: ClientHandlerTask + Send + Sync + 'static> PSLAppEngine<T> {
             let cache_commit_tx = app.cache_commit_tx.clone();
             let cache_connector = CacheConnector::new(cache_tx, cache_commit_tx, blocking_client);
             let _reply_tx = reply_tx.clone();
-            let mut client_command_rx = app.client_command_rx.take().unwrap();
             let (total_work_tx, total_work_rx) = make_channel(_chan_depth);
             total_work_txs.push(total_work_tx);
+            let (handler_tx, mut handler_rx) = tokio::sync::mpsc::channel(_chan_depth);
+            handler_txs.push(handler_tx);
+
 
             app.handles.spawn(async move {
                 let mut handler_task = T::new(cache_connector, id);
 
                 loop {
                     tokio::select! {
-                        Some(command) = client_command_rx.recv() => {
-                            handler_task.on_client_request(command, &_reply_tx).await;
+                        biased;
+                        Some(commands) = handler_rx.recv() => {
+                            handler_task.on_client_request(commands, &_reply_tx).await;
                         }
                         Some(_tx) = total_work_rx.recv() => {
-                            error!("Locked keys: {:?}", handler_task.get_locked_keys());
+                            trace!("Locked keys: {:?}", handler_task.get_locked_keys());
                             _tx.send(handler_task.get_total_work());
                         }
                     }
@@ -394,18 +383,41 @@ impl<T: ClientHandlerTask + Send + Sync + 'static> PSLAppEngine<T> {
             });
         }
 
+
+        let cmd_rx = &mut app.client_command_rx;
+        let mut __rr_cnt = 0;
         loop {
-            app.log_timer.wait().await;
+            let cmd_len = cmd_rx.len();
+            if cmd_len > 0 {
+                let mut cmds = Vec::new();
+                cmd_rx.recv_many(&mut cmds, cmd_len).await;
+                
+                handler_txs[__rr_cnt % handler_txs.len()].send(cmds).await;
+                __rr_cnt += 1;
 
-            let mut total_work = 0;
-            for tx in &total_work_txs {
-                let (_tx, _rx) = tokio::sync::oneshot::channel();
-                tx.send(_tx).await.unwrap();
-
-                total_work += _rx.await.unwrap();
+                continue;
             }
+            tokio::select! {
+                biased;
+                Some(cmd) = cmd_rx.recv() => {
+                    handler_txs[__rr_cnt % handler_txs.len()].send(vec![cmd]).await;
+                    __rr_cnt += 1;
+                }
+                // _ = app.log_timer.wait() => {
+                //     let mut total_work = 0;
+                //     for tx in &total_work_txs {
+                //         let (_tx, _rx) = tokio::sync::oneshot::channel();
+                //         tx.send(_tx).await.unwrap();
 
-            info!("Total requests processed: {}", total_work);
+                //         total_work += _rx.await.unwrap();
+                //     }
+
+                //     info!("Total requests processed: {}", total_work);
+                // }
+            }
+            // app.log_timer.wait().await;
+
+            
         }
         Ok(())
     }
@@ -418,6 +430,11 @@ pub struct KVSTask {
     total_work: usize,
 
     locked_keys: Vec<CacheKey>,
+}
+
+enum Response {
+    Invalid(MsgAckChanWithTag),
+    Receipt(MsgAckChanWithTag, Vec<ProtoTransactionOpResult>, Option<u64>),
 }
 
 impl ClientHandlerTask for KVSTask {
@@ -446,34 +463,55 @@ impl ClientHandlerTask for KVSTask {
         self.id
     }
 
-    async fn on_client_request(&mut self, request: TxWithAckChanTag, reply_handler_tx: &Sender<UncommittedResultSet>) -> anyhow::Result<()> {
-        let req = &request.0;
-        let resp = &request.1;
-        self.total_work += 1;
+    async fn on_client_request(&mut self, requests: Vec<TxWithAckChanTag>, reply_handler_tx: &Sender<UncommittedResultSet>) -> anyhow::Result<()> {
+        let mut response_vec = Vec::new();
+
+        for request in requests {
+
+            let req = &request.0;
+            let resp = &request.1;
+            self.total_work += 1;
+            
+            
+            if req.is_none() {
+                response_vec.push(Response::Invalid(resp.clone()));
+                continue;
+            }
+    
+    
+            let req = req.as_ref().unwrap();
+            if req.on_receive.is_none() {
+    
+                // For PSL, all transactions must be on_receive.
+                // on_crash_commit and on_byz_commit are meaningless.
+                response_vec.push(Response::Invalid(resp.clone()));
+                continue;
+            }
+    
+            let on_receive = req.on_receive.as_ref().unwrap();
+    
+    
+            if let std::result::Result::Ok((results, seq_num)) = self.execute_ops(on_receive.ops.as_ref()).await {
+                response_vec.push(Response::Receipt(resp.clone(), results, seq_num));
+                continue;
+            }
+    
+            response_vec.push(Response::Invalid(resp.clone()));
+            continue;
+        }
         
-        
-        if req.is_none() {
-            return self.reply_invalid(resp, reply_handler_tx).await;
+        for response in response_vec {
+            match response {
+                Response::Invalid(resp) => {
+                    self.reply_invalid(&resp, reply_handler_tx).await;
+                }
+                Response::Receipt(resp, results, seq_num) => {
+                    self.reply_receipt(&resp, results, seq_num, reply_handler_tx).await;
+                }
+            }
         }
 
-
-        let req = req.as_ref().unwrap();
-        if req.on_receive.is_none() {
-
-            // For PSL, all transactions must be on_receive.
-            // on_crash_commit and on_byz_commit are meaningless.
-            return self.reply_invalid(resp, reply_handler_tx).await;
-        }
-
-        let on_receive = req.on_receive.as_ref().unwrap();
-
-
-        if let std::result::Result::Ok((results, seq_num)) = self.execute_ops(on_receive.ops.as_ref()).await {
-            return self.reply_receipt(resp, results, seq_num, reply_handler_tx).await;
-        }
-
-        self.reply_invalid(resp, reply_handler_tx).await
-        
+        Ok(())
 
     }
 }
@@ -557,7 +595,7 @@ impl KVSTask {
         }
         
         let vc = self.cache_connector.dispatch_commit_request(locked_keys.len() > 0).await;
-        warn!("Committed with VC: {} Locked keys: {:?}", vc,
+        trace!("Committed with VC: {} Locked keys: {:?}", vc,
             locked_keys.iter().map(|key| String::from_utf8(key.clone()).unwrap_or(hex::encode(key.clone()))).collect::<Vec<_>>());
         self.cache_connector.dispatch_unlock_request(locked_keys.iter().map(|key| (key.clone(), vc.clone())).collect()).await;
 

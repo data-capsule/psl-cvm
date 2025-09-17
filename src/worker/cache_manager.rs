@@ -330,7 +330,7 @@ impl CacheManager {
         let block_on_read_snapshot_is_some = self.block_on_read_snapshot.is_some();
 
         if block_on_vc_wait_is_some && block_on_read_snapshot_is_some {
-            error!("Both block_on_vc_wait and block_on_read_snapshot are set!!");
+            trace!("Both block_on_vc_wait and block_on_read_snapshot are set!!");
         }
 
         /*
@@ -374,7 +374,7 @@ impl CacheManager {
             },
             Some(Ok(_)) = Self::check_block_on_read_snapshot(&mut self.block_on_read_snapshot) => {
                 self.block_on_read_snapshot = None;
-                warn!("Snapshot cleared");
+                trace!("Snapshot cleared");
             },
             Some(command) = Self::check_command_rx(&mut self.command_rx, block_on_vc_wait_is_some) => {
                 if block_on_vc_wait_is_some {
@@ -481,7 +481,7 @@ impl CacheManager {
                 } else {
                     let (tx, rx) = oneshot::channel();
                     self.block_on_read_snapshot = Some(rx);
-                    warn!("Snapshot set");
+                    trace!("Snapshot set");
 
                     Some(tx)
                 };
