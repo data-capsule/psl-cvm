@@ -92,10 +92,10 @@ impl CacheConnector {
         vc
     }
 
-    pub async fn dispatch_lock_request(&mut self, key_and_is_read: &Vec<(CacheKey, bool)>) -> Result<(), CacheError> {
+    pub async fn dispatch_lock_request(&mut self, key_and_is_read: &Vec<(CacheKey, bool)>) -> Result<VectorClock, CacheError> {
         // return std::result::Result::Ok(());
         if key_and_is_read.len() == 0 {
-            return std::result::Result::Ok(());
+            return std::result::Result::Ok(VectorClock::new());
         }
 
         let mut ops = Vec::new();
@@ -184,16 +184,25 @@ impl CacheConnector {
             };
 
             let vc = VectorClock::from(Some(proto_vc));
-            // let (tx, rx) = oneshot::channel();
-
+            
             let start_time = Instant::now();
+            
+            loop {
+                let (tx, rx) = oneshot::channel();
+                let _ = self.cache_tx.send(CacheCommand::QueryVC(tx)).await.unwrap();
+                let curr_vc = rx.await.unwrap();
+                if curr_vc >= vc {
+                    break;
+                }
 
-            // let _ = self.cache_tx.send(CacheCommand::WaitForVC(vc.clone(), tx)).await.unwrap();
-            // rx.await.unwrap();
+                trace!("VC wait time: {:?} curr_vc: {} need vc: {}", start_time.elapsed(), curr_vc, vc);
 
-            trace!("VC wait time: {:?}", start_time.elapsed());
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
 
-            std::result::Result::Ok(())
+            // error!("VC wait time: {:?}", start_time.elapsed());
+
+            std::result::Result::Ok(vc)
         } else {
             Err(CacheError::LockNotAcquirable)
         }
@@ -527,8 +536,14 @@ impl ClientHandlerTask for KVSTask {
 
 
         let start_time = Instant::now();
+        let mut glob_vc = VectorClock::new();
         for key in &locked_keys {
-            self.cache_connector.dispatch_lock_request(&vec![key.clone()]).await;
+            let vc = self.cache_connector.dispatch_lock_request(&vec![key.clone()]).await;
+            if let std::result::Result::Ok(vc) = vc {
+                for (sender, seq_num) in vc.iter() {
+                        glob_vc.advance(sender.clone(), *seq_num);
+                }
+            }
         }
         trace!("Lock request time: {:?}", start_time.elapsed());
 
@@ -536,12 +551,17 @@ impl ClientHandlerTask for KVSTask {
 
         let start_time = Instant::now();
 
+        let mut all_reads = true;
+
         for (on_receive, resp) in tx_phases_resp {
             // for _ in 0..99 {
             //     self.execute_ops(on_receive.ops.as_ref()).await;
             // }
     
-            if let std::result::Result::Ok((results, seq_num)) = self.execute_ops(on_receive.ops.as_ref()).await {
+            if let std::result::Result::Ok((results, seq_num, atleast_one_write)) = self.execute_ops(on_receive.ops.as_ref()).await {
+                if atleast_one_write {
+                    all_reads = false;
+                }
                 response_vec.push(Response::Receipt(resp, results, seq_num));
             } else {
                 response_vec.push(Response::Invalid(resp));
@@ -557,6 +577,12 @@ impl ClientHandlerTask for KVSTask {
         let vc = self.cache_connector.dispatch_commit_request(locked_keys.len() > 0).await;
         trace!("Committed with VC: {} Locked keys: {:?}", vc,
             locked_keys.iter().map(|(key, _)| String::from_utf8(key.clone()).unwrap_or(hex::encode(key.clone()))).collect::<Vec<_>>());
+
+        let vc = if all_reads {
+            glob_vc
+        } else {
+            vc
+        };
         self.cache_connector.dispatch_unlock_request(locked_keys.iter().map(|(key, _)| (key.clone(), vc.clone())).collect()).await;
         trace!("Commit and unlock time: {:?}", start_time.elapsed());
 
@@ -597,7 +623,7 @@ impl KVSTask {
         }
     }
 
-    async fn execute_ops(&mut self, ops: &Vec<ProtoTransactionOp>) -> Result<(Vec<ProtoTransactionOpResult>, Option<u64>), anyhow::Error> {
+    async fn execute_ops(&mut self, ops: &Vec<ProtoTransactionOp>) -> Result<(Vec<ProtoTransactionOpResult>, Option<u64>, bool), anyhow::Error> {
         let mut atleast_one_write = false;
         let mut last_write_index = 0;
         let mut highest_committed_block_seq_num_needed = 0;
@@ -674,7 +700,7 @@ impl KVSTask {
         //     return Ok((results, Some(highest_committed_block_seq_num_needed)));
         // }
 
-        Ok((results, None))
+        Ok((results, None, atleast_one_write))
     }
 
     async fn reply_receipt(&self, resp: &MsgAckChanWithTag, results: Vec<ProtoTransactionOpResult>, seq_num: Option<u64>, reply_handler_tx: &Sender<UncommittedResultSet>) -> anyhow::Result<()> {

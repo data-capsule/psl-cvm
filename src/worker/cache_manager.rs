@@ -41,6 +41,7 @@ pub enum CacheCommand {
     Commit(oneshot::Sender<VectorClock>, bool /* force prepare */),
     WaitForVC(VectorClock, oneshot::Sender<()>),
     ClearVC(VectorClock),
+    QueryVC(oneshot::Sender<VectorClock>),
     
 }
 
@@ -336,7 +337,7 @@ impl CacheManager {
     async fn worker(&mut self) -> Result<(), ()> {
 
         let block_on_vc_wait_is_some = self.blocked_on_vc_wait.is_some();
-        let block_on_read_snapshot_is_some = self.block_on_read_snapshot.is_some();
+        let block_on_read_snapshot_is_some = if block_on_vc_wait_is_some { false } else { self.block_on_read_snapshot.is_some() };
 
         if block_on_vc_wait_is_some && block_on_read_snapshot_is_some {
             trace!("Both block_on_vc_wait and block_on_read_snapshot are set!!");
@@ -554,6 +555,9 @@ impl CacheManager {
             }
             CacheCommand::ClearVC(vc) => {
                 let _ = self.block_sequencer_tx.send(SequencerCommand::MakeNewBlockToPropagateVC(vc)).await;
+            }
+            CacheCommand::QueryVC(sender) => {
+                let _ = self.block_sequencer_tx.send(SequencerCommand::QueryVC(sender)).await;
             }
         }
     }

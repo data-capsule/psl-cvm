@@ -65,6 +65,9 @@ pub enum SequencerCommand {
 
     /// Force unblock all buffered waiters >= the given VC.
     UnblockVC(VectorClock),
+
+    /// Query the current VC.
+    QueryVC(oneshot::Sender<VectorClock>),
 }
 
 #[derive(Clone)]
@@ -395,11 +398,11 @@ impl BlockSequencer {
                 if let Some(sender_vc) = sender_vc {
                     let mut vc = self.curr_vector_clock.clone();
                     // if actually_did_prepare {
-                    //     let me = SenderType::Auth(self.config.get().net_config.name.clone(), 0);
-                    //     let seq_num = vc.0.entry(me).or_insert(0);
-                    //     if *seq_num > 0 {
-                    //         *seq_num -= 1;
-                    //     }
+                        let me = SenderType::Auth(self.config.get().net_config.name.clone(), 0);
+                        let seq_num = vc.0.entry(me).or_insert(0);
+                        if *seq_num > 0 {
+                            *seq_num -= 1;
+                        }
                     // }
                     sender_vc.send(vc).unwrap();
                 }
@@ -426,6 +429,9 @@ impl BlockSequencer {
             }
             SequencerCommand::UnblockVC(vc) => {
                 self._flush_vc_wait_buffer(vc);
+            },
+            SequencerCommand::QueryVC(sender) => {
+                sender.send(self.curr_vector_clock.clone()).unwrap();
             }
         }
     }
@@ -460,14 +466,14 @@ impl BlockSequencer {
         trace!("Force preparing new block. VC dirty: {} , all_write_op_bag: {}, self_write_op_bag: {}, self_read_op_bag: {} vc_wait_buffer: {}",
             self.__vc_dirty, self.all_write_op_bag.len(), self.self_write_op_bag.len(), self.self_read_op_bag.len(), self.vc_wait_buffer.len());
 
-        if !(self.__vc_dirty
-            || self.all_write_op_bag.len() > 0
-            || self.self_write_op_bag.len() > 0
-            || self.self_read_op_bag.len() > 0
-            || self.vc_wait_buffer.len() > 0
-        ) {
-            return;
-        }
+        // if !(self.__vc_dirty
+        //     || self.all_write_op_bag.len() > 0
+        //     || self.self_write_op_bag.len() > 0
+        //     || self.self_read_op_bag.len() > 0
+        //     || self.vc_wait_buffer.len() > 0
+        // ) {
+        //     return;
+        // }
 
         // if self.all_write_op_bag.is_empty() && self.self_read_op_bag.is_empty() && !self.__vc_dirty {
         //     return;
@@ -673,6 +679,8 @@ impl BlockSequencer {
         //     warn!("Current VC: {}, VC wait buffer: {:?}", self.curr_vector_clock, self.vc_wait_buffer);
         // }
 
+        // warn!("Flushing VC wait buffer: {:?}", self.vc_wait_buffer);
+
         self._flush_vc_wait_buffer(self.curr_vector_clock.clone());
     }
     
@@ -684,6 +692,8 @@ impl BlockSequencer {
                 to_remove.push(vc.clone());
             }
         }
+
+        // error!("Flushing VC wait buffer: {:?}", to_remove);
 
         for vc in to_remove.iter() {
             let mut senders = self.vc_wait_buffer.remove(vc).unwrap();
@@ -699,6 +709,10 @@ impl BlockSequencer {
     }
 
     async fn buffer_vc_wait(&mut self, vc: VectorClock, sender: oneshot::Sender<()>) {
+        if self.curr_vector_clock >= vc {
+            let _ = sender.send(());
+            return;
+        }
         // let i_was_blocked = self.vc_wait_buffer.len() > 0;
         let buffer = self.vc_wait_buffer.entry(vc).or_insert(Vec::new());
         buffer.push(sender);

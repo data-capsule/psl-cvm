@@ -154,6 +154,9 @@ impl ExternalCacheManager {
             CacheCommand::ClearVC(vc) => {
                 let _ = self.block_sequencer_tx.send(SequencerCommand::MakeNewBlockToPropagateVC(vc)).await;
             }
+            CacheCommand::QueryVC(sender) => {
+                let _ = self.block_sequencer_tx.send(SequencerCommand::QueryVC(sender)).await;
+            }
         }
     }
 
