@@ -98,6 +98,7 @@ gossip = []
 app_logger = []
 app_kvs = []
 app_sql = []
+app_ml = []
 # Protocols specs
 lucky_raft = ["fixed_leader", "never_sign", "no_qc"]
 signed_raft = ["fixed_leader", "dynamic_sign", "no_qc"]

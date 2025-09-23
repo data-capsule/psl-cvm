@@ -75,7 +75,7 @@ fn get_feature_set() -> (&'static str, &'static str) {
 
 enum NodeType {
     Sequencer(sequencer::SequencerNode),
-    Worker(worker::PSLWorker<worker::app::KVSTask>),
+    Worker(worker::PSLWorker<worker::engines::KVSTask>),
     Storage(storage_server::StorageNode),
 
 }
@@ -87,7 +87,7 @@ async fn run_sequencer(cfg: Config) -> NodeType {
 
 
 async fn run_worker(cfg: PSLWorkerConfig) -> NodeType {
-    let node = worker::PSLWorker::<worker::app::KVSTask>::new(cfg);
+    let node = worker::PSLWorker::<worker::engines::KVSTask>::new(cfg);
     NodeType::Worker(node)
 }
 

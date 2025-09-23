@@ -48,7 +48,7 @@ pub mod block_sequencer;
 pub mod cache_manager;
 pub mod external_cache_manager;
 pub mod staging;
-
+pub mod engines;
 use staging::Staging;
 
 pub struct PSLWorkerServerContext {
