@@ -7,7 +7,7 @@ use std::{collections::HashMap, sync::Arc, time::Duration};
 use tokio::{join, time::sleep};
 
 use crate::config::{AppConfig, ClientConfig, ClientNetConfig, ClientRpcConfig, Config, ConsensusConfig, EvilConfig, KVReadWriteUniform, NetConfig, NodeNetInfo, RocksDBConfig, RpcConfig, WorkloadConfig};
-
+use crate::config::SLIDEConfig;
 use super::AtomicConfig;
 
 #[test]
@@ -76,6 +76,9 @@ fn test_nodeconfig_serialize() {
     let app_config = AppConfig {
         logger_stats_report_ms: 100,
         checkpoint_interval_ms: 60000,
+
+        #[cfg(feature = "app_ml")]
+        slide_config: SLIDEConfig::default(),
     };
 
     let evil_config = EvilConfig {
@@ -241,6 +244,9 @@ async fn test_atomic_config_access() {
     let app_config = AppConfig {
         logger_stats_report_ms: 100,
         checkpoint_interval_ms: 60000,
+
+        #[cfg(feature = "app_ml")]
+        slide_config: SLIDEConfig::default(),
     };
 
     let evil_config = EvilConfig {

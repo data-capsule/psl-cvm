@@ -156,6 +156,27 @@ impl ConsensusConfig {
 pub struct AppConfig {
     pub logger_stats_report_ms: u64,
     pub checkpoint_interval_ms: u64,
+
+    #[cfg(feature = "app_ml")]
+    #[serde(default = "default_slide_config")]
+    pub slide_config: SLIDEConfig,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct SLIDEConfig {
+    // @Nurzhan: Add config here.
+}
+
+impl Default for SLIDEConfig {
+    fn default() -> Self {
+        Self {
+            // @Nurzhan: Add default config here.
+        }
+    }
+}
+
+fn default_slide_config() -> SLIDEConfig {
+    SLIDEConfig::default()
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -334,6 +355,9 @@ impl ClientConfig {
             app_config: AppConfig {
                 logger_stats_report_ms: 100,
                 checkpoint_interval_ms: 60000,
+
+                #[cfg(feature = "app_ml")]
+                slide_config: SLIDEConfig::default(),
             },
             
             #[cfg(feature = "evil")]

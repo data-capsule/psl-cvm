@@ -111,7 +111,7 @@ pirateship = ["round_robin_leader", "dynamic_sign", "view_change"]
 # Worker features.
 external_cache = []
 
-default = ["pirateship", "app_logger", "storage", "fast_path", "platforms", "gossip", "evil"]
+default = ["pirateship", "app_ml", "storage", "fast_path", "platforms", "gossip", "evil"]
 # default = ["signed_raft", "app_kvs", "storage", "fast_path", "platforms", "gossip", "external_cache"]
 # default = ["jolteon", "app_logger", "storage"]
 # default = ["engraft", "app_kvs", "storage", "fast_path", "platforms"]

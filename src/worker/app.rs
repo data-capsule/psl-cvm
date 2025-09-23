@@ -272,7 +272,7 @@ impl CacheConnector {
 pub type UncommittedResultSet = (Vec<ProtoTransactionOpResult>, MsgAckChanWithTag, Option<u64> /* Some(potential seq_num; wait till committed) | None(reply immediately) */);
 
 pub trait ClientHandlerTask {
-    fn new(cache_tx: CacheConnector, id: usize) -> Self;
+    fn new(config: AtomicPSLWorkerConfig, cache_tx: CacheConnector, id: usize) -> Self;
     fn get_cache_connector(&self) -> &CacheConnector;
     fn get_id(&self) -> usize;
     fn get_total_work(&self) -> usize; // Useful for throghput calculation.
@@ -335,11 +335,12 @@ impl<T: ClientHandlerTask + Send + Sync + 'static> PSLAppEngine<T> {
             let (total_work_tx, total_work_rx) = make_channel(_chan_depth);
             total_work_txs.push(total_work_tx);
             let handler_rx = app.client_command_rx.clone();
+            let config = app.config.clone();
             
 
 
             app.handles.spawn(async move {
-                let mut handler_task = T::new(cache_connector, id);
+                let mut handler_task = T::new(config, cache_connector, id);
 
                 loop {
                     tokio::select! {
