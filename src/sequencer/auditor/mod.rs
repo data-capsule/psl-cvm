@@ -23,8 +23,17 @@ impl SnapshotStore {
     }
 
     pub fn insert(&self, key: CacheKey, value: CachedValue) {
-        let _ = self.0.entry(key).or_insert(value.clone())
-            .merge_cached(value);
+        let mut entry = self.0.entry(key).or_insert(value.clone());
+        let val = entry.value_mut();
+
+        match val {
+            CachedValue::DWW(dww_val) => {
+                dww_val.merge_cached(value.get_dww().unwrap().clone());
+            },
+            CachedValue::PNCounter(pn_counter_val) => {
+                pn_counter_val.merge(value.get_pn_counter().unwrap().clone());
+            }
+        }
     }
 
     pub fn size(&self) -> usize {

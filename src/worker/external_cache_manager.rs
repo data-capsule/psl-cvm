@@ -114,7 +114,9 @@ impl ExternalCacheManager {
 
     async fn log_stats(&mut self) {
         let (max_seq_num, max2_seq_num, max_key, max2_key) = self.cache.iter()
+        .filter(|(_, val)| val.is_dww())
         .fold((0u64, 0u64, CacheKey::new(), CacheKey::new()), |acc, (key, val)| {
+            let val = val.get_dww().unwrap();
             if val.seq_num > acc.0 {
                 (val.seq_num, acc.0, key.clone(), acc.2)
             } else if val.seq_num > acc.1 {
@@ -237,7 +239,7 @@ impl ExternalCacheManager {
 
                 let result = &result.result[0];
                 if result.success {
-                    response_tx.send(Ok(CachedValue::new(result.values[0].clone(), BigInt::from(0) /* this is unused here */)));
+                    response_tx.send(Ok(CachedValue::new_dww(result.values[0].clone(), BigInt::from(0) /* this is unused here */)));
                 } else {
                     response_tx.send(Err(CacheError::KeyNotFound));
                 }
@@ -255,6 +257,8 @@ impl ExternalCacheManager {
     }
 
     async fn put_to_external_kvs(&mut self, key: CacheKey, value: CachedValue, seq_num_query: BlockSeqNumQuery, response_tx: oneshot::Sender<Result<u64, CacheError>>) {
+        assert!(value.is_dww());
+        let value = value.get_dww().unwrap();
         let tx = ProtoTransaction {
             on_receive: Some(ProtoTransactionPhase {
                 ops: vec![ProtoTransactionOp {

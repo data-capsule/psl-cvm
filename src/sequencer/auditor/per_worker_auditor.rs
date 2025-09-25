@@ -276,8 +276,17 @@ impl PerWorkerAuditor {
         let mut updates = HashMap::new();
         for map in update_map {
             for (key, value) in map {
-                let _ = updates.entry(key).or_insert(value.clone())
-                    .merge_cached(value);
+                let entry = updates.entry(key).or_insert(value.clone());
+                    // .merge_cached(value);
+
+                match entry {
+                    CachedValue::DWW(dww_val) => {
+                        dww_val.merge_cached(value.get_dww().unwrap().clone());
+                    },
+                    CachedValue::PNCounter(pn_counter_val) => {
+                        pn_counter_val.merge(value.get_pn_counter().unwrap().clone());
+                    }
+                }
             }
         }
 
@@ -288,11 +297,19 @@ impl PerWorkerAuditor {
                 if base_value.is_none() {
                     continue;
                 }
-                let _ = value.merge_cached(base_value.unwrap());
+                // let _ = value.merge_cached(base_value.unwrap());
+                match value {
+                    CachedValue::DWW(dww_val) => {
+                        dww_val.merge_cached(base_value.unwrap().get_dww().unwrap().clone());
+                    },
+                    CachedValue::PNCounter(pn_counter_val) => {
+                        pn_counter_val.merge(base_value.unwrap().get_pn_counter().unwrap().clone());
+                    }
+                }
             }
         }
 
-        trace!("Updates: {:#?}", updates.iter().map(|(key, value)| (String::from_utf8(key.clone()).unwrap(), hex::encode(value.val_hash.to_bytes_be().1), read_vc.clone())).collect::<Vec<_>>());
+        // trace!("Updates: {:#?}", updates.iter().map(|(key, value)| (String::from_utf8(key.clone()).unwrap(), hex::encode(value.val_hash.to_bytes_be().1), read_vc.clone())).collect::<Vec<_>>());
 
 
         updates.into_iter().collect()
@@ -379,8 +396,16 @@ impl PerWorkerAuditor {
             let ops = tx.on_crash_commit.as_ref().unwrap();
             for op in &ops.ops {
                 let Some((key, cached_value)) = process_tx_op(op) else { continue };
-                let _ = updates.entry(key).or_insert(cached_value.clone())
-                    .merge_cached(cached_value);
+                let entry = updates.entry(key).or_insert(cached_value.clone());
+                    // .merge_cached(cached_value);
+                match entry {
+                    CachedValue::DWW(dww_val) => {
+                        dww_val.merge_cached(cached_value.get_dww().unwrap().clone());
+                    },
+                    CachedValue::PNCounter(pn_counter_val) => {
+                        pn_counter_val.merge(cached_value.get_pn_counter().unwrap().clone());
+                    }
+                }
             }
         }
         updates
@@ -419,7 +444,15 @@ impl PerWorkerAuditor {
                 //     String::from_utf8(key.clone()).unwrap(), read_vc, _snapshot_value, snapshot_value);
                 if _snapshot_value.is_some() {
                     local_cache.insert(key.clone(), _snapshot_value.unwrap());
-                    let _ = local_cache.get_mut(&key).unwrap().merge_cached(value);
+                    let entry= local_cache.get_mut(&key).unwrap(); // .merge_cached(value);
+                    match entry {
+                        CachedValue::DWW(dww_val) => {
+                            let _ = dww_val.merge_cached(value.get_dww().unwrap().clone());
+                        },
+                        CachedValue::PNCounter(pn_counter_val) => {
+                            pn_counter_val.merge(value.get_pn_counter().unwrap().clone());
+                        }
+                    }
                 } else {
                     local_cache.insert(key, value);
                 }

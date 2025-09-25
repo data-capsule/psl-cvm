@@ -63,7 +63,17 @@ impl CacheConnector {
         self.cache_tx.send(command).await.unwrap();
         let result = rx.await.unwrap();
 
-        result.map(|v| (v.value, v.seq_num))
+        if let std::result::Result::Ok(CachedValue::PNCounter(_)) = &result {
+            return Err(CacheError::TypeMismatch);
+        }
+
+        result.map(|v| {
+            if let CachedValue::DWW(v) = v {
+                (v.value.clone(), v.seq_num)
+            } else {
+                unreachable!()
+            }
+        })
     }
 
     pub async fn dispatch_write_request(
@@ -74,7 +84,7 @@ impl CacheConnector {
         // let (tx, rx) = tokio::sync::oneshot::channel();
         let (response_tx, response_rx) = tokio::sync::oneshot::channel();
         let val_hash = BigInt::from_bytes_be(Sign::Plus, &hash(&value));
-        let value = CachedValue::new(value, val_hash);
+        let value = CachedValue::new_dww(value, val_hash);
         let command = CacheCommand::Put(key.clone(), value, BlockSeqNumQuery::DontBother, response_tx);
 
 

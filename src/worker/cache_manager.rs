@@ -20,6 +20,9 @@ pub enum CacheError {
 
     #[error("Lock not acquirable")]
     LockNotAcquirable,
+
+    #[error("Type mismatch")]
+    TypeMismatch,
 }
 
 #[derive(Debug)]
@@ -99,13 +102,13 @@ impl CacheConnector {
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Eq, PartialEq)]
-pub struct CachedValue {
+pub struct DWWValue {
     pub(crate) value: Vec<u8>,
     pub(crate) seq_num: u64,
     pub(crate) val_hash: BigInt,
 }
 
-impl CachedValue {
+impl DWWValue {
 
     pub fn get_value(&self) -> Vec<u8> {
         self.value.clone()
@@ -167,7 +170,7 @@ impl CachedValue {
     /// This is the same as merge, but with CachedValue as input.
     pub fn merge_cached(
         &mut self,
-        new_value: CachedValue,
+        new_value: Self,
     ) -> Result<u64, u64> {
         if new_value.seq_num > self.seq_num {
             self.value = new_value.value;
@@ -186,12 +189,151 @@ impl CachedValue {
         Err(self.seq_num)
     }
 
-    pub fn merge_immutable(&self, new_value: &CachedValue) -> CachedValue {
+    pub fn merge_immutable(&self, new_value: &Self) -> Self {
         let mut val = self.clone();
         let _ = val.merge_cached(new_value.clone());
         val
     }
 }
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+
+pub struct PNCounterValue {
+    pub(crate) increment_value: HashMap<String /* origin */, f64>,
+    pub(crate) decrement_value: HashMap<String /* origin */, f64>,
+}
+
+impl PNCounterValue {
+    pub fn new() -> Self {
+        Self {
+            increment_value: HashMap::new(),
+            decrement_value: HashMap::new(),
+        }
+    }
+
+    pub fn size(&self) -> usize {
+        self.increment_value.iter().map(|(key, _)| key.len() + std::mem::size_of::<f64>()).sum::<usize>()
+        + self.decrement_value.iter().map(|(key, _)| key.len() + std::mem::size_of::<f64>()).sum::<usize>()
+    }
+
+    pub fn get_value(&self) -> f64 {
+        let incr_value_total = self.increment_value.values().sum::<f64>();
+        let decr_value_total = self.decrement_value.values().sum::<f64>();
+        incr_value_total - decr_value_total
+    }
+
+    pub fn merge(&mut self, new_value: Self) {
+        let all_incr_keys = self.increment_value.keys().chain(new_value.increment_value.keys()).cloned().collect::<HashSet<_>>();
+        for key in &all_incr_keys {
+            let val1 = *self.increment_value.get(key).unwrap_or(&0.0);
+            let val2 = *new_value.increment_value.get(key).unwrap_or(&0.0);
+            self.increment_value.insert(key.clone(), val1.max(val2));
+        }
+
+        let all_decr_keys = self.decrement_value.keys().chain(new_value.decrement_value.keys()).cloned().collect::<HashSet<_>>();
+        for key in &all_decr_keys {
+            let val1 = *self.decrement_value.get(key).unwrap_or(&0.0);
+            let val2 = *new_value.decrement_value.get(key).unwrap_or(&0.0);
+            self.decrement_value.insert(key.clone(), val1.max(val2));
+        }
+
+    }
+
+    pub fn merge_immutable(&self, new_value: &Self) -> Self {
+        let mut val = self.clone();
+        val.merge(new_value.clone());
+        val
+    }
+
+    pub fn blind_increment(&mut self, origin: String, value: f64) {
+        assert!(value >= 0.0);
+        let entry = self.increment_value.entry(origin).or_insert(0.0);
+        *entry += value;
+    }
+
+    pub fn blind_decrement(&mut self, origin: String, value: f64) {
+        assert!(value >= 0.0);
+        let entry = self.decrement_value.entry(origin).or_insert(0.0);
+        *entry += value;
+    }  
+}
+
+impl PartialEq for PNCounterValue {
+    fn eq(&self, other: &Self) -> bool {
+        self.get_value() == other.get_value()
+    }
+}
+
+impl Eq for PNCounterValue {}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Eq, PartialEq)]
+pub enum CachedValue {
+    DWW(DWWValue),
+    PNCounter(PNCounterValue),
+}
+
+impl CachedValue {
+    pub fn is_dww(&self) -> bool {
+        matches!(self, CachedValue::DWW(_))
+    }
+
+    pub fn is_pn_counter(&self) -> bool {
+        matches!(self, CachedValue::PNCounter(_))
+    }
+
+    pub fn get_dww(&self) -> Option<&DWWValue> {
+        if let CachedValue::DWW(value) = self {
+            Some(value)
+        } else {
+            None
+        }
+    }
+
+    pub fn get_pn_counter(&self) -> Option<&PNCounterValue> {
+        if let CachedValue::PNCounter(value) = self {
+            Some(value)
+        } else {
+            None
+        }
+    }
+
+    pub fn get_dww_mut(&mut self) -> Option<&mut DWWValue> {
+        if let CachedValue::DWW(value) = self {
+            Some(value)
+        } else {
+            None
+        }
+    }
+
+    pub fn get_pn_counter_mut(&mut self) -> Option<&mut PNCounterValue> {
+        if let CachedValue::PNCounter(value) = self {
+            Some(value)
+        } else {
+            None
+        }
+    }
+
+    pub fn new_dww(value: Vec<u8>, val_hash: BigInt) -> Self {
+        Self::DWW(DWWValue::new(value, val_hash))
+    }
+
+    pub fn new_dww_with_seq_num(value: Vec<u8>, seq_num: u64, val_hash: BigInt) -> Self {
+        Self::DWW(DWWValue::new_with_seq_num(value, seq_num, val_hash))
+    }
+
+    pub fn new_pn_counter() -> Self {
+        Self::PNCounter(PNCounterValue::new())
+    }
+
+    pub fn size(&self) -> usize {
+        match self {
+            CachedValue::DWW(value) => value.size(),
+            CachedValue::PNCounter(value) => value.size(),
+        }
+    }
+}
+
+
 
 pub type CacheKey = Vec<u8>;
 
@@ -417,7 +559,9 @@ impl CacheManager {
 
     async fn log_stats(&mut self) {
         let (max_seq_num, max2_seq_num, max_key, max2_key) = self.cache.iter()
+        .filter(|(_, val)| val.is_dww())
         .fold((0u64, 0u64, CacheKey::new(), CacheKey::new()), |acc, (key, val)| {
+            let val = val.get_dww().unwrap();
             if val.seq_num > acc.0 {
                 (val.seq_num, acc.0, key.clone(), acc.2)
             } else if val.seq_num > acc.1 {
@@ -517,21 +661,24 @@ impl CacheManager {
             }
             CacheCommand::Put(key, value, seq_num_query, response_tx) => {
                 self.value_origin.insert(key.clone(), SenderType::Auth(self.config.get().net_config.name.clone(), 0));
+                assert!(value.is_dww());
+
+                let value = value.get_dww().unwrap();
                 if self.cache.contains_key(&key) {
-                    let seq_num = self.cache.get_mut(&key).unwrap().blind_update(value.value.clone(), value.val_hash.clone());
+                    let seq_num = self.cache.get_mut(&key).unwrap().get_dww_mut().unwrap().blind_update(value.value.clone(), value.val_hash.clone());
                     response_tx.send(Ok(seq_num)).unwrap();
                     let (current_vc_tx, current_vc_rx) = oneshot::channel();
-                    let _ = self.block_sequencer_tx.send(SequencerCommand::SelfWriteOp { key: key.clone(), value: CachedValue::new_with_seq_num(value.value.clone(), seq_num, value.val_hash.clone()), seq_num_query, current_vc: current_vc_tx }).await;
+                    let _ = self.block_sequencer_tx.send(SequencerCommand::SelfWriteOp { key: key.clone(), value: CachedValue::new_dww_with_seq_num(value.value.clone(), seq_num, value.val_hash.clone()), seq_num_query, current_vc: current_vc_tx }).await;
                     let current_vc = current_vc_rx.await.unwrap();
                     trace!("Write key: {}, value_hash: {}, current_vc: {}", String::from_utf8(key.clone()).unwrap_or(hex::encode(key)), hex::encode(value.val_hash.to_bytes_be().1), current_vc);
                     return;
                 }
 
-                let cached_value = CachedValue::new(value.value.clone(), value.val_hash.clone());
+                let cached_value = CachedValue::new_dww(value.value.clone(), value.val_hash.clone());
                 self.cache.insert(key.clone(), cached_value);
                 response_tx.send(Ok(1)).unwrap();
                 let (current_vc_tx, current_vc_rx) = oneshot::channel();
-                let _ = self.block_sequencer_tx.send(SequencerCommand::SelfWriteOp { key: key.clone(), value: CachedValue::new(value.value.clone(), value.val_hash.clone()), seq_num_query, current_vc: current_vc_tx }).await;
+                let _ = self.block_sequencer_tx.send(SequencerCommand::SelfWriteOp { key: key.clone(), value: CachedValue::new_dww(value.value.clone(), value.val_hash.clone()), seq_num_query, current_vc: current_vc_tx }).await;
                 let current_vc = current_vc_rx.await.unwrap();
                 trace!("Write key: {}, value_hash: {}, current_vc: {}", String::from_utf8(key.clone()).unwrap_or(hex::encode(key)), hex::encode(value.val_hash.to_bytes_be().1), current_vc);
             }
@@ -613,19 +760,28 @@ impl CacheManager {
                 // It should be propagated downstream in the gossip/multicast tree,
                 // As they may or may not receive the update directly.
                 let (should_propagate, seq_num) = if self.cache.contains_key(&key) {
-                    let res = self.cache.get_mut(&key).unwrap().merge_cached(cached_value.clone());
+                    let val = self.cache.get_mut(&key).unwrap();
+                    let res = match val {
+                        CachedValue::DWW(dww_val) => {
+                            dww_val.merge_cached(cached_value.get_dww().unwrap().clone())
+                        },
+                        CachedValue::PNCounter(pn_counter_val) => {
+                            pn_counter_val.merge(cached_value.get_pn_counter().unwrap().clone());
+                            Ok(0) // The number doesn't matter here
+                            // PN Counters must always be propagated.
+                        }
+                    };
                     match res {
-                        Ok(seq_num) => {
+                        Ok(_seq_num) => {
                             self.value_origin.insert(key.clone(), sender.clone());
-                            (true, seq_num)
+                            (true, _seq_num)
                         },
                         Err(_old_seq_num) => (false, _old_seq_num)
                     }
                 } else {
-                    let seq_num = cached_value.seq_num;
                     self.cache.insert(key.clone(), cached_value.clone());
                     self.value_origin.insert(key.clone(), sender.clone());
-                    (true, seq_num)
+                    (true, 0)
                 };
 
                 // let should_propagate = true;
@@ -707,9 +863,9 @@ mod tests {
 
     #[test]
     fn test_commutativity() {
-        let val1 = CachedValue::new(b"not_important1".to_vec(),
+        let val1 = DWWValue::new(b"not_important1".to_vec(),
             BigInt::from_bytes_be(Sign::Plus, &hex::decode("3fb43b0c4f06f6d6d3860f57f1040ab2c70594f5be33b9b2e0f1d14850b4f93f6f84f8901579f0cef45d83d19c048455eafae5e945553ac9db0cecb20f17aa24").unwrap()));
-        let val2 = CachedValue::new(b"not_important2".to_vec(),
+        let val2 = DWWValue::new(b"not_important2".to_vec(),
             BigInt::from_bytes_be(Sign::Plus, &hex::decode("e36e2d6085a127a4989d428f38df7e3a632bd5cef4a5216c76196909786ffb1badb575a5757af1ca4f0c8d97d8c6334701d85c9238fa5de297aaa62580491855").unwrap()));
 
         let mut test1 = val1.clone();
@@ -724,5 +880,31 @@ mod tests {
 
         assert_eq!(test1.val_hash, val2.val_hash);
         assert_eq!(test2.val_hash, val2.val_hash);
+    }
+
+    #[test]
+    fn test_idempotence() {
+        let mut val1 = PNCounterValue::new();
+        val1.blind_decrement("foo".to_string(), 8.0);
+        val1.blind_increment("bar".to_string(), 10.0);
+
+        let _v1 = val1.get_value();
+
+        let mut val2 = PNCounterValue::new();
+        val2.blind_increment("foo".to_string(), 10.0);
+        val2.blind_decrement("bar".to_string(), 8.0);
+
+        let _v2 = val2.get_value();
+
+        val1.merge(val2.clone());
+        let _v3 = val1.get_value();
+        val1.merge(val2);
+        let _v4 = val1.get_value();
+
+
+        assert_eq!(_v3, _v4);
+        assert_eq!(_v1, 2.0);
+        assert_eq!(_v2, 2.0);
+        assert_eq!(_v3, 4.0);
     }
 }

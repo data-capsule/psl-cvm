@@ -6,7 +6,7 @@ use log::{error, info, trace, warn};
 use prost::Message;
 use tokio::sync::{oneshot, Mutex};
 
-use crate::{config::AtomicPSLWorkerConfig, crypto::{default_hash, CachedBlock, CryptoServiceConnector, FutureHash, HashType}, proto::{consensus::{ProtoBlock, ProtoHeartbeat, ProtoReadSet, ProtoReadSetEntry, ProtoVectorClock, ProtoVectorClockEntry}, execution::{ProtoTransaction, ProtoTransactionOp, ProtoTransactionOpType, ProtoTransactionPhase}, rpc::ProtoPayload}, rpc::{client::PinnedClient, PinnedMessage, SenderType}, utils::{channel::{Receiver, Sender}, timer::ResettableTimer}};
+use crate::{config::AtomicPSLWorkerConfig, crypto::{default_hash, hash, CachedBlock, CryptoServiceConnector, FutureHash, HashType}, proto::{consensus::{ProtoBlock, ProtoHeartbeat, ProtoReadSet, ProtoReadSetEntry, ProtoVectorClock, ProtoVectorClockEntry}, execution::{ProtoTransaction, ProtoTransactionOp, ProtoTransactionOpType, ProtoTransactionPhase}, rpc::ProtoPayload}, rpc::{client::PinnedClient, PinnedMessage, SenderType}, utils::{channel::{Receiver, Sender}, timer::ResettableTimer}};
 
 use super::cache_manager::{CacheKey, CachedValue};
 
@@ -667,7 +667,16 @@ impl BlockSequencer {
         for (key, value) in vec {
             let entry = seen.entry(key).or_insert(value.clone());
 
-            let _ = entry.merge_cached(value);
+            match entry {
+                CachedValue::DWW(dww_val) => {
+                    dww_val.merge_cached(value.get_dww().unwrap().clone());
+                },
+                CachedValue::PNCounter(pn_counter_val) => {
+                    pn_counter_val.merge(value.get_pn_counter().unwrap().clone());
+                }
+            }
+
+            // let _ = entry.merge_cached(value);
         }
 
         seen.into_iter().collect()
@@ -739,7 +748,8 @@ impl BlockSequencer {
 
 pub fn cached_value_to_val_hash(value: Option<CachedValue>) -> HashType {
     match value {
-        Some(value) => value.val_hash.to_bytes_be().1,
+        Some(CachedValue::DWW(value)) => value.val_hash.to_bytes_be().1,
+        Some(CachedValue::PNCounter(value)) => hash(&value.get_value().to_ne_bytes().to_vec()),
         None => vec![],
     }
 }
