@@ -469,8 +469,24 @@ impl PerWorkerAuditor {
 
                 __correct_value
             };
-            let correct_value_hash = cached_value_to_val_hash(correct_value);
-            if *value_hash != correct_value_hash {
+            let correct_value_hash = cached_value_to_val_hash(correct_value.clone());
+
+            let read_match = match correct_value {
+                Some(CachedValue::PNCounter(_)) => {
+                    let buf1 = value_hash.as_slice().try_into();
+                    let buf2 = correct_value_hash.as_slice().try_into();
+
+                    if buf1.is_err() || buf2.is_err() {
+                        false
+                    } else {
+                        (f64::from_be_bytes(buf1.unwrap()) - f64::from_be_bytes(buf2.unwrap())).abs() < 1e-6
+                    }
+                },
+                _ => {
+                    *value_hash == correct_value_hash
+                }
+            };
+            if !read_match {
                 let key_str = String::from_utf8(key.clone()).unwrap_or(hex::encode(key));
                 let correct_value_hex_str = &hex::encode(correct_value_hash);
                 let value_hex_str = &hex::encode(value_hash);

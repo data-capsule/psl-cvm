@@ -749,7 +749,7 @@ impl BlockSequencer {
 pub fn cached_value_to_val_hash(value: Option<CachedValue>) -> HashType {
     match value {
         Some(CachedValue::DWW(value)) => value.val_hash.to_bytes_be().1,
-        Some(CachedValue::PNCounter(value)) => hash(&value.get_value().to_ne_bytes().to_vec()),
+        Some(CachedValue::PNCounter(value)) => value.get_value().to_be_bytes().to_vec(),
         None => vec![],
     }
 }
