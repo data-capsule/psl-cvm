@@ -23,6 +23,7 @@ import json
 import tqdm
 from crypto import *
 from app_experiments import AppExperiment
+from flink_experiments import FlinkExperiment
 from ssh_utils import *
 from deployment import Deployment, AWSDeployment
 from experiments import Experiment
@@ -151,6 +152,8 @@ def parse_config(path, workdir=None, existing_experiments=None):
             klass = PSLExperiment
         elif experiment_type == "nimble":
             klass = NimbleExperiment
+        elif experiment_type == "flink":
+            klass = FlinkExperiment
         project_home = toml_dict["project_home"]
 
         if "sweeping_parameters" in e:
