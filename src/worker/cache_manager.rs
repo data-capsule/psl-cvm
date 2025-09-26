@@ -54,6 +54,7 @@ pub enum CacheCommand {
     ),
     Commit(oneshot::Sender<VectorClock>, bool /* force prepare */),
     WaitForVC(VectorClock, oneshot::Sender<()>),
+    TransparentWaitForVC(VectorClock, oneshot::Sender<()>),
     ClearVC(VectorClock),
     QueryVC(oneshot::Sender<VectorClock>),
     
@@ -883,6 +884,10 @@ impl CacheManager {
                 let (tx, rx) = oneshot::channel();
                 self.blocked_on_vc_wait = Some(rx);
                 let _ = self.block_sequencer_tx.send(SequencerCommand::WaitForVC(vc, tx, Some(tx2))).await;
+            }
+
+            CacheCommand::TransparentWaitForVC(vc, tx) => {
+                let _ = self.block_sequencer_tx.send(SequencerCommand::WaitForVC(vc, tx, None)).await;
             }
             CacheCommand::ClearVC(vc) => {
                 let _ = self.block_sequencer_tx.send(SequencerCommand::MakeNewBlockToPropagateVC(vc)).await;

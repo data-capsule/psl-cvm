@@ -159,6 +159,10 @@ impl ExternalCacheManager {
                 // This is No-op as well.
                 tx.send(()).unwrap();
             }
+            CacheCommand::TransparentWaitForVC(_, tx) => {
+                // This is No-op as well.
+                tx.send(()).unwrap();
+            }
             CacheCommand::ClearVC(vc) => {
                 let _ = self.block_sequencer_tx.send(SequencerCommand::MakeNewBlockToPropagateVC(vc)).await;
             }
