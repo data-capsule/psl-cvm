@@ -530,14 +530,8 @@ impl CacheManager {
         cache_manager.log_timer.run().await;
 
         // File to log cache_manager stats
-        let file_path = format!("cache_manager_stats_{}.log", cache_manager.config.get().net_config.name);
-        let file = File::create(file_path).unwrap();
-        let mut writer = BufWriter::new(file);
-        
-        while let Ok(_) = cache_manager.worker(&mut writer).await {
+        while let Ok(_) = cache_manager.worker().await {
             // Handle errors if needed
-            writer.write_all(b"done\n").unwrap();
-            writer.flush().unwrap();
         }
     }
 
@@ -588,7 +582,7 @@ impl CacheManager {
         }
     }
 
-    async fn worker(&mut self, writer: &mut BufWriter<File>) -> Result<(), ()> {
+    async fn worker(&mut self) -> Result<(), ()> {
 
         let block_on_vc_wait_is_some = self.blocked_on_vc_wait.is_some();
         let block_on_read_snapshot_is_some = if block_on_vc_wait_is_some { false } else { self.block_on_read_snapshot.is_some() };
@@ -617,8 +611,6 @@ impl CacheManager {
                     error!("Command received while blocked on VC wait!!");
                 }
                 if commands.len() > 0 {
-                    writer.write_all(b"commands\n").unwrap();
-                    writer.flush().unwrap();
                     self.handle_command(commands).await;
                 }
             },
@@ -626,8 +618,6 @@ impl CacheManager {
                 // This is safe to do here.
                 // The tick won't interrupt handle_command or handle_block's logic.
                 if self.last_batch_time.elapsed() > Duration::from_millis(self.config.get().worker_config.batch_max_delay_ms) {
-                    writer.write_all(b"batch_timer\n").unwrap();
-                    writer.flush().unwrap();
                     self.last_batch_time = Instant::now();
                     let _ = self.block_sequencer_tx.send(SequencerCommand::ForceMakeNewBlock).await;
                     if block_on_vc_wait_is_some && block_on_read_snapshot_is_some {
@@ -638,8 +628,6 @@ impl CacheManager {
             Some((block_rx, sender, _)) = Self::check_block_rx(&mut self.block_rx, block_on_read_snapshot_is_some) => {
                 let block = block_rx.await.expect("Block rx error");
                 if let Ok(block) = block {
-                    writer.write_all(b"block\n").unwrap();
-                    writer.flush().unwrap();
                     self.handle_block(sender, block).await;
                 } else {
                     warn!("Failed to get block from block_rx");
@@ -648,27 +636,19 @@ impl CacheManager {
 
             Some(Ok(_)) = Self::check_block_on_vc_wait(&mut self.blocked_on_vc_wait) => {
                 trace!("VC wait cleared");
-                writer.write_all(b"vc_wait_cleared\n").unwrap();
-                writer.flush().unwrap();
                 self.blocked_on_vc_wait = None;
             },
             Some(Ok(_)) = Self::check_block_on_read_snapshot(&mut self.block_on_read_snapshot) => {
-                writer.write_all(b"snapshot_cleared\n").unwrap();
-                writer.flush().unwrap();
                 self.block_on_read_snapshot = None;
                 trace!("Snapshot cleared");
             },
             
 
             Some((Some(tx), _)) = self.sequencer_request_rx.recv() => {
-                writer.write_all(b"sequencer_request\n").unwrap();
-                writer.flush().unwrap();
                 self.handle_sequencer_request(tx).await;
             },
             // It is important that command_rx be checked before commit_command_rx.
             Some(cmd) = self.commit_command_rx.recv() => {
-                writer.write_all(b"commit_command\n").unwrap();
-                writer.flush().unwrap();
                 if let CacheCommand::Commit(_, _) = cmd {
                     self.handle_command(vec![cmd]).await;
                 } else {
@@ -678,8 +658,6 @@ impl CacheManager {
             
             
             _ = self.log_timer.wait() => {
-                writer.write_all(b"log_timer\n").unwrap();
-                writer.flush().unwrap();
                 self.log_stats().await;
             },
         }
