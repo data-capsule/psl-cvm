@@ -253,9 +253,12 @@ impl AbortableKVSTask {
                     if let std::result::Result::Err(e) = res {
                         return Err(e.into());
                     }
-                    let approx_curr_val = res.unwrap();
+                    let (approx_curr_val, block_seq_num_rx) = res.unwrap();
+                    if let Some(block_seq_num_rx) = block_seq_num_rx {
+                        block_seq_num_rx_vec.push(block_seq_num_rx);
+                    }
 
-                    info!("Counter: {} incremented to {}", String::from_utf8(key.clone()).unwrap_or(hex::encode(key)), approx_curr_val);
+                    trace!("Counter: {} incremented to {}", String::from_utf8(key.clone()).unwrap_or(hex::encode(key)), approx_curr_val);
                     results.push(ProtoTransactionOpResult {
                         success: true,
                         values: vec![approx_curr_val.to_be_bytes().to_vec()],
@@ -328,8 +331,11 @@ impl AbortableKVSTask {
                     if let std::result::Result::Err(e) = res {
                         return Err(e.into());
                     }
-                    let final_val = res.unwrap();
-                    info!("Counter: {} decremented to {}", String::from_utf8(key.clone()).unwrap_or(hex::encode(key)), final_val);
+                    let (final_val, block_seq_num_rx) = res.unwrap();
+                    if let Some(block_seq_num_rx) = block_seq_num_rx {
+                        block_seq_num_rx_vec.push(block_seq_num_rx);
+                    }
+                    trace!("Counter: {} decremented to {}", String::from_utf8(key.clone()).unwrap_or(hex::encode(key)), final_val);
 
                     results.push(ProtoTransactionOpResult {
                         success: true,
@@ -343,20 +349,20 @@ impl AbortableKVSTask {
             
         }
 
-        // if atleast_one_write {
+        if atleast_one_write {
 
-        //     // Find the highest block seq num needed.
-        //     while let Some(seq_num) = block_seq_num_rx_vec.next().await {
-        //         if seq_num.is_err() {
-        //             continue;
-        //         }
+            // Find the highest block seq num needed.
+            while let Some(seq_num) = block_seq_num_rx_vec.next().await {
+                if seq_num.is_err() {
+                    continue;
+                }
 
-        //         let seq_num = seq_num.unwrap();
-        //         highest_committed_block_seq_num_needed = std::cmp::max(highest_committed_block_seq_num_needed, seq_num);
-        //     }
+                let seq_num = seq_num.unwrap();
+                highest_committed_block_seq_num_needed = std::cmp::max(highest_committed_block_seq_num_needed, seq_num);
+            }
 
-        //     return Ok((results, Some(highest_committed_block_seq_num_needed)));
-        // }
+            return Ok((results, Some(highest_committed_block_seq_num_needed), atleast_one_write, locked_keys));
+        }
 
         Ok((results, None, atleast_one_write, locked_keys))
     }

@@ -72,6 +72,7 @@ In case where an intermediate value needs to read and conditioned on, we have to
 
 */
 
+use log::{info, trace};
 use rand::{distr::{Uniform, weighted::WeightedIndex}};
 use rand::prelude::*;
 use rand_chacha::ChaCha20Rng;
@@ -173,6 +174,7 @@ impl SmallbankGenerator {
         let name = self.get_name_from_custid(custid);
         let savings_balance = self.get_rand_balance();
         let checking_balance = self.get_rand_balance();
+        trace!("CreateAccount({}, {}, {}, {})", custid, name, savings_balance, checking_balance);
 
         self.load_phase_cnt += 1;
 
@@ -236,6 +238,8 @@ impl SmallbankGenerator {
     fn amalgamate_next(&mut self) -> Vec<ProtoTransactionOp> {
         let custid1 = self.get_rand_custid();
         let custid2 = self.get_rand_custid();
+        trace!("Amalgamate({}, {})", custid1, custid2);
+
         vec![
             ProtoTransactionOp {
                 op_type: ProtoTransactionOpType::Read.into(),
@@ -255,6 +259,7 @@ impl SmallbankGenerator {
     fn write_check_next(&mut self) -> Vec<ProtoTransactionOp> {
         let custid = self.get_rand_custid();
         let amount = 5.0f64; // From H-store.
+        trace!("WriteCheck({}, {})", custid, amount);
         vec![
             ProtoTransactionOp {
                 op_type: ProtoTransactionOpType::Read.into(),
@@ -270,6 +275,7 @@ impl SmallbankGenerator {
     fn deposit_checking_next(&mut self) -> Vec<ProtoTransactionOp> {
         let custid = self.get_rand_custid();
         let amount = 1.3f64; // From H-store.
+        trace!("DepositChecking({}, {})", custid, amount);
         vec![
             ProtoTransactionOp {
                 op_type: ProtoTransactionOpType::Read.into(),
@@ -291,6 +297,7 @@ impl SmallbankGenerator {
             ProtoTransactionOpType::CheckedDecrement
         };
         let amount = amount.abs();
+        trace!("TransactSavings({}, {})", custid, amount);
         vec![
             ProtoTransactionOp {
                 op_type: ProtoTransactionOpType::Read.into(),
@@ -307,6 +314,7 @@ impl SmallbankGenerator {
         let sender_custid = self.get_rand_custid();
         let receiver_custid = self.get_rand_custid();
         let amount = 5.00f64; // From H-store.
+        trace!("SendPayment({}, {}, {})", sender_custid, receiver_custid, amount);
         vec![
             ProtoTransactionOp {
                 op_type: ProtoTransactionOpType::Read.into(),
@@ -329,6 +337,7 @@ impl SmallbankGenerator {
 
     fn balance_next(&mut self) -> Vec<ProtoTransactionOp> {
         let custid = self.get_rand_custid();
+        trace!("Balance({})", custid);
         vec![
             ProtoTransactionOp {
                 op_type: ProtoTransactionOpType::Read.into(),

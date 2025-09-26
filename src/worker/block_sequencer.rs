@@ -22,7 +22,7 @@ pub enum SequencerCommand {
         key: CacheKey,
         value: CachedValue,
         seq_num_query: BlockSeqNumQuery,
-        current_vc: oneshot::Sender<VectorClock>,
+        // current_vc: oneshot::Sender<VectorClock>,
     },
 
     /// Read Op from myself
@@ -31,14 +31,14 @@ pub enum SequencerCommand {
         value: Option<CachedValue>, // Could be None if the key was not found.
         origin: SenderType,
         snapshot_propagated_signal_tx: Option<oneshot::Sender<()>>,
-        current_vc: oneshot::Sender<VectorClock>,
+        // current_vc: oneshot::Sender<VectorClock>,
     },
 
     /// Write Op from other node, that I propagate
     OtherWriteOp {
         key: CacheKey,
         value: CachedValue,
-        current_vc: oneshot::Sender<VectorClock>,
+        // current_vc: oneshot::Sender<VectorClock>,
     },
 
     /// Advance the vector clock in the sequencer.
@@ -324,9 +324,12 @@ impl BlockSequencer {
 
     async fn handle_command(&mut self, command: SequencerCommand) {
         match command {
-            SequencerCommand::SelfWriteOp { key, value, seq_num_query, current_vc } => {
+            SequencerCommand::SelfWriteOp { key, value, seq_num_query, /* current_vc */} => {
                 self.self_write_op_bag.push((key.clone(), value.clone()));
-                self.all_write_op_bag.push((key.clone(), value));
+
+                // if let CachedValue::DWW(_) = &value {
+                    self.all_write_op_bag.push((key.clone(), value));
+                // }
                 // self.dirty_keys.insert(key);
 
                 match seq_num_query {
@@ -335,30 +338,35 @@ impl BlockSequencer {
                         sender.send(self.curr_block_seq_num).unwrap();
                     }
                 }
-                current_vc.send(self.curr_vector_clock.clone()).unwrap();
+                // current_vc.send(self.curr_vector_clock.clone()).unwrap();
             },
-            SequencerCommand::SelfReadOp { key, value, origin, snapshot_propagated_signal_tx, current_vc } => {
+            SequencerCommand::SelfReadOp { key, value, origin, snapshot_propagated_signal_tx, /* current_vc */ } => {
                 self.self_read_op_bag.push((key, value, origin, self.self_write_op_bag.len()));
-                current_vc.send(self.curr_vector_clock.clone()).unwrap();
+                // current_vc.send(self.curr_vector_clock.clone()).unwrap();
                 if let Some(tx) = snapshot_propagated_signal_tx {
                     self.snapshot_propagated_signal_tx.push(tx);
                 }
                 self.must_flush_before_next_other_write_op = true;
             },
-            SequencerCommand::OtherWriteOp { key, value, current_vc } => {
+            SequencerCommand::OtherWriteOp { key, value, /* current_vc */ } => {
                 
                 // All OtherWriteOps come before any SelfReadOp for a given block.
                 // If I have SelfWriteOp(x) <-- OtherWriteOp(x) <-- SelfReadOp(x),
                 // I want to unmark x as dirty.
                 // self.dirty_keys.remove(&key);
+                
 
                 while self.must_flush_before_next_other_write_op {
                     // Pretend there is a ForceMakeNewBlock before this.
                     self.force_prepare_new_block().await;
                 }
+
+                // if let CachedValue::PNCounter(_) = &value {
+                //     return;
+                // }
                 
                 self.all_write_op_bag.push((key, value));
-                current_vc.send(self.curr_vector_clock.clone()).unwrap();
+                // current_vc.send(self.curr_vector_clock.clone()).unwrap();
             },
             SequencerCommand::AdvanceVC { sender, block_seq_num } => {
                 while self.must_flush_before_next_other_write_op {
@@ -622,17 +630,24 @@ impl BlockSequencer {
     ) -> ProtoBlock {
         ProtoBlock {
             tx_list: writes.into_iter()
-                .map(|(key, value)| ProtoTransaction {
-                    on_receive: None,
-                    on_crash_commit: Some(ProtoTransactionPhase {
-                        ops: vec![ProtoTransactionOp { 
-                            op_type: ProtoTransactionOpType::Write as i32,
-                            operands: vec![key, bincode::serialize(&value).unwrap()], 
-                        }],
-                    }),
-                    on_byzantine_commit: None,
-                    is_reconfiguration: false,
-                    is_2pc: false,
+                .map(|(key, value)| {
+                    let op_type = if let CachedValue::PNCounter(_) = &value {
+                        ProtoTransactionOpType::Increment as i32
+                    } else {
+                        ProtoTransactionOpType::Write as i32
+                    };
+                    ProtoTransaction {
+                        on_receive: None,
+                        on_crash_commit: Some(ProtoTransactionPhase {
+                            ops: vec![ProtoTransactionOp { 
+                                op_type,
+                                operands: vec![key, bincode::serialize(&value).unwrap()], 
+                            }],
+                        }),
+                        on_byzantine_commit: None,
+                        is_reconfiguration: false,
+                        is_2pc: false,
+                    }
                 })
                 .collect(),
             n: seq_num,

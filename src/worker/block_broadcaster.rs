@@ -115,12 +115,12 @@ impl BlockBroadcaster {
         }
     }
 
-    fn wrap_block_for_broadcast(&self, block: &CachedBlock) -> ProtoAppendEntries {
+    fn wrap_block_for_broadcast(&self, mut blocks: Vec<CachedBlock>) -> ProtoAppendEntries {
         ProtoAppendEntries {
-            view: block.block.view,
-            config_num: block.block.config_num,
+            view: blocks[0].block.view,
+            config_num: blocks[0].block.config_num,
             fork: Some(ProtoFork {
-                serialized_blocks: vec![HalfSerializedBlock {
+                serialized_blocks: blocks.drain(..).map(|block| HalfSerializedBlock {
                     n: block.block.n,
                     serialized_body: block.block_ser.clone(),
                     origin: block.block.origin.clone(),
@@ -130,7 +130,7 @@ impl BlockBroadcaster {
                     view: block.block.view,
                     view_is_stable: block.block.view_is_stable,
                     config_num: block.block.config_num,
-                }]
+                }).collect(),
             }),
 
             // Unused fields
@@ -172,7 +172,9 @@ impl BlockBroadcaster {
             let peers = self.get_peers();
             let threshold = self.get_success_threshold();
 
+            
             if peers.len() > 0 {
+                let mut blocks_to_broadcast = Vec::new();
 
                 for (n, block) in self.block_buffer.iter() {
                     if !block.block.origin.contains("god") {
@@ -184,29 +186,34 @@ impl BlockBroadcaster {
                         }
                     }
     
-                    let ae = self.wrap_block_for_broadcast(block);
+                    // let ae = self.wrap_block_for_broadcast(block);
+                    blocks_to_broadcast.push(block.clone());
+                    if self.forward_to_staging {
+                        let _ = self.staging_tx.as_ref().unwrap().send(block.clone()).await;
+                    }
+                }
+
+                if blocks_to_broadcast.len() > 0 {
+
+                    let ae = self.wrap_block_for_broadcast(blocks_to_broadcast);
+                    
                     let payload = ProtoPayload {
                         message: Some(crate::proto::rpc::proto_payload::Message::AppendEntries(ae)),
                     };
                     let data = payload.encode_to_vec();
-    
+                    
                     let sz = data.len();
                     let data = PinnedMessage::from(data, sz, SenderType::Anon);
-    
+                    
                     let _ = PinnedClient::broadcast(
                         &self.client,
                         &peers, &data, 
                         &mut LatencyProfile::new(),
                         threshold
                     ).await;
-    
-                    if self.forward_to_staging {
-                        let _ = self.staging_tx.as_ref().unwrap().send(block.clone()).await;
-                    }
                 }
-
             }
-
+                
             if self.wait_for_signal {
                 self.block_buffer.retain(|n, _| *n > self.deliver_index);
             } else {
