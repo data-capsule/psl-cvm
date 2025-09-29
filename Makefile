@@ -6,6 +6,11 @@
 pirateship_logger:
 	CC=clang CXX=clang++ cargo build --release
 
+
+.PHONY: nimble
+nimble:
+	make -C Nimble
+
 .PHONY: contrib
 contrib:
 	CC=clang CXX=clang++ cargo build --release --manifest-path contrib/Cargo.toml
