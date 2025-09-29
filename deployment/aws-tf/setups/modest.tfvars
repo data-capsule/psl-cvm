@@ -1,5 +1,5 @@
-sevpool_count = 1
+sevpool_count = 16
 storagepool_count = 3
-clientpool_count = 2
+clientpool_count = 3
 deploy_ebs_on_sevpool = false
 use_spot = false

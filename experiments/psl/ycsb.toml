@@ -44,8 +44,8 @@ batch_max_delay_ms = 2
 signature_max_delay_ms = 20000
 signature_max_delay_blocks = 50
 num_crypto_workers = 5
-num_worker_threads_per_worker = 4
-num_replier_threads_per_worker = 4
+num_worker_threads_per_worker = 8
+num_replier_threads_per_worker = 8
 
 
 [node_config.app_config]
@@ -79,14 +79,15 @@ zipf_exponent = 0.99
 read_ratio = 0.75
 
 [[experiments]]
-name = "ycsb"
+name = "ycsb_r50_w16_psl"
 type = "psl_storage"
 # git_hash = "209b1804ff2c2259aced1f0960f48167b1966b94"
 repeats = 1
-num_clients = 100
-num_storage_nodes = 1
+# num_clients = 500
+num_nodes = 16
+num_storage_nodes = 3
 num_sequencer_nodes = 1
-node_distribution = "uniform"
+node_distribution = "tag:worker"
 storage_distribution = "uniform"
 sequencer_distribution = "tag:sequencer"
 build_command = "make"
@@ -94,19 +95,19 @@ duration = 90
 data_dir = "/data/"
 
 [experiments.sweeping_parameters]
-# num_nodes = [1, 2, 4, 8]
-num_nodes = [3]
+# num_nodes = [1, 2, 4, 8, 16]
+# num_nodes = [8]
+num_clients = [10, 20, 30, 40, 50, 70, 100, 200, 500]
+
+
 
 [[results]]
 name = "throughput_client_sweep"
 plotter = "throughput_client_sweep"
-ramp_up = 0
-ramp_down = 0
+ramp_up = 10
+ramp_down = 10
 output = "storage.pdf"
 force_parse = true
 
-# input_rate_slope = 100.0 # 100 rps x 1 MiB = 100 MiB/s
-
-
 [results.legends]
-storage_sig_1 = "sig\\_interval=1"
+ycsb_r50_w16 = "psl"
