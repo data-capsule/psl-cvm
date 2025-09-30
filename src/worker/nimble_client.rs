@@ -81,6 +81,8 @@ impl NimbleClient {
         let my_name = &client.config.get().net_config.name;
         if my_name == "node1" {
             client.propose_new_counter(vec![0u8; 32]).await;
+        } else {
+            client.current_counter += 1;
         }
 
         loop {
