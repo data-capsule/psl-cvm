@@ -407,6 +407,8 @@ sleep 10
                         binary_name = "client"
                     elif "controller" in bin:
                         binary_name = "controller"
+                    elif "endorser" in bin:
+                        binary_name = "endorser"
                 
                     if binary_name == "kvs":
                         if self.num_storage_nodes > 0:

@@ -78,7 +78,10 @@ impl NimbleClient {
         let mut client = client.lock().await;
         client.log_timer.run().await;
 
-        client.propose_new_counter(vec![0u8; 32]).await;
+        let my_name = &client.config.get().net_config.name;
+        if my_name == "node1" {
+            client.propose_new_counter(vec![0u8; 32]).await;
+        }
 
         loop {
             tokio::select! {
