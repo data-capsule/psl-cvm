@@ -144,10 +144,14 @@ impl Staging {
                     }
 
                     let mut to_remove = Vec::new();
-                    for client_tag in &client_reply_tags {
-                        // if nimble_commit_buffer.contains_key(client_tag) {
-                            to_remove.push(*client_tag);
-                        // }
+                    // for client_tag in &client_reply_tags {
+                    //     // if nimble_commit_buffer.contains_key(client_tag) {
+                    //         to_remove.push(*client_tag);
+                    //     // }
+                    // }
+
+                    for (client_tag, _) in nimble_commit_buffer.iter() {
+                        to_remove.push(*client_tag);
                     }
 
                     let mut idxs = Vec::new();
