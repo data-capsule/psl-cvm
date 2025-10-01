@@ -69,6 +69,8 @@ impl ClientStatLogger {
 
         let logger_start_time = Instant::now();
 
+        let mut benchmark_state = 0; // 0: not benchmarking, 1: benchmarking, 2: done.
+
         while logger_start_time.elapsed() < self.max_duration {
 
             tokio::select! {
@@ -76,17 +78,19 @@ impl ClientStatLogger {
                     self.log_stats();
                 }
                 _ = self.ramp_up_timer.wait() => {
-                    if !self.currently_benchmarking {
+                    if benchmark_state == 0 {
                         self.currently_benchmarking = true;
                         info!("Ramp up complete, starting benchmark");
+                        benchmark_state = 1;
                     }
 
                     // Ignore other ticks.
                 }
                 _ = self.ramp_down_timer.wait() => {
-                    if self.currently_benchmarking {
+                    if benchmark_state == 1 {
                         self.currently_benchmarking = false;
                         info!("Starting ramp down, stopping benchmark");
+                        benchmark_state = 2;
                     }
 
                     // Ignore other ticks.

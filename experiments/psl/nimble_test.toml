@@ -68,6 +68,8 @@ client_max_retry = 10
 
 [client_config.workload_config]
 max_concurrent_requests = 1
+ramp_up_ms = 10_000
+ramp_down_ms = 10_000
 
 [client_config.workload_config.request_config.KVReadWriteYCSB]
 num_keys = 300_000
