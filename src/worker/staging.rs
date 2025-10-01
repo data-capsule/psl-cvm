@@ -158,10 +158,8 @@ impl Staging {
 
                     // Preserve invariant that commit indices are sent in ascending order.
                     idxs.sort();
-
-                    for ci in idxs {
-                        // Reply downstream
-
+                    if idxs.len() > 0 {
+                        let ci = *idxs.last().unwrap();
                         if ci > 1000 {
                             let _ = gc_tx.send((me.clone(), ci - 1000)).await;
                         }
@@ -172,6 +170,7 @@ impl Staging {
                         // Send the commit index to the client reply handler.
                         let _ = client_reply_tx.send(ci);
                         info!("Sent commit index to client reply handler: {}", ci);
+
                     }
                 }
 
@@ -263,6 +262,7 @@ impl Staging {
 
         #[cfg(feature = "nimble")]
         let mut total_committed_blocks = 0;
+        #[cfg(feature = "nimble")]
         let mut block_hash_buffer = Vec::new();
 
         for block in &self.block_buffer {

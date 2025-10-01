@@ -449,6 +449,8 @@ impl<T: ClientHandlerTask + Send + Sync + 'static> PSLAppEngine<T> {
                             pending_results.push((result, ack_chan, seq_num));
                         }
                     }
+
+                    let mut total_replies = 0;
                     for (result, ack_chan, seq_num) in &pending_results {
                         if *seq_num > commit_seq_num {
                             continue;
@@ -475,9 +477,13 @@ impl<T: ClientHandlerTask + Send + Sync + 'static> PSLAppEngine<T> {
                         let msg = PinnedMessage::from(buf, len, SenderType::Anon);
                         ack_chan.0.send((msg, LatencyProfile::new())).await;
 
+                        total_replies += 1;
+
                     }
 
                     pending_results.retain(|(_, _, seq_num)| *seq_num > commit_seq_num);
+
+                    info!("Sent {} replies", total_replies);
                 }  
             });
         }
