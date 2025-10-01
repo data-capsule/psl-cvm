@@ -148,7 +148,7 @@ impl Staging {
                         },
                         Ok(response) = PinnedClient::await_reply(&client, &sequencer) => {
                             let reply = ProtoClientReply::decode(&response.as_ref().0.as_slice()[0..response.as_ref().1]);
-                            info!("Received reply from nimble: {:?}", reply);
+                            // info!("Received reply from nimble: {:?}", reply);
                             let Ok(reply) = reply else {
                                 continue;
                             };
@@ -191,7 +191,7 @@ impl Staging {
                 
                         // Send the commit index to the client reply handler.
                         let _ = client_reply_tx.send(ci);
-                        info!("Sent commit index to client reply handler: {}", ci);
+                        // info!("Sent commit index to client reply handler: {}", ci);
 
                     }
                 }

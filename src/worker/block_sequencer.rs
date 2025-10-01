@@ -499,7 +499,11 @@ impl BlockSequencer {
 
     }
 
+    #[allow(unused)]
     async fn send_heartbeat(&mut self) {
+        #[cfg(feature = "nimble")]
+        return;
+
         let heartbeat_timeout = self.last_heartbeat_time.elapsed().as_millis() >= self.config.get().worker_config.heartbeat_max_delay_ms as u128;
         // let i_am_blocked = self.vc_wait_buffer.len() > 0;
         let i_am_blocked = false;
