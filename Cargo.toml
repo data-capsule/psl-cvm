@@ -114,7 +114,7 @@ pirateship = ["round_robin_leader", "dynamic_sign", "view_change"]
 # Baseline
 nimble = []
 
-default = ["pirateship", "app_banking", "storage", "fast_path", "platforms", "gossip", "evil", "nimble"]
+default = ["pirateship", "app_banking", "storage", "fast_path", "platforms", "gossip", "evil"]
 
 
 [profile.release]
