@@ -119,8 +119,9 @@ impl Staging {
 
                 loop {
                     use prost::Message as _;
-
                     use crate::proto::client::ProtoClientReply;
+                    use log::info;
+
 
                     let sequencer = "sequencer1".to_string();
 
@@ -131,6 +132,7 @@ impl Staging {
                         },
                         Ok(response) = PinnedClient::await_reply(&client, &sequencer) => {
                             let reply = ProtoClientReply::decode(&response.as_ref().0.as_slice()[0..response.as_ref().1]);
+                            info!("Received reply from nimble: {:?}", reply);
                             let Ok(reply) = reply else {
                                 continue;
                             };
@@ -160,7 +162,6 @@ impl Staging {
                     for ci in idxs {
                         // Reply downstream
 
-                        use log::info;
                         if ci > 1000 {
                             let _ = gc_tx.send((me.clone(), ci - 1000)).await;
                         }
@@ -259,19 +260,33 @@ impl Staging {
         // Send all blocks > self.commit_index <= new_ci to the logserver.
         let me = self.config.get().net_config.name.clone();
         let me = SenderType::Auth(me, self.chain_id);
+
+        #[cfg(feature = "nimble")]
+        let mut total_committed_blocks = 0;
+        let mut block_hash_buffer = Vec::new();
+
         for block in &self.block_buffer {
             if block.block.n > self.commit_index && block.block.n <= new_ci {
                 #[cfg(feature = "nimble")]
                 {
-                    self.nimble_client_tag += 1;
-                    self.commit_to_nimble(block.block_hash.clone()).await;
-
-                    let _ = self.nimble_reply_handler_tx.send((block.block.n, self.nimble_client_tag)).await;
+                    total_committed_blocks += 1;
+                    block_hash_buffer.extend_from_slice(block.block_hash.as_ref());
                 }
 
                 let _ = self.logserver_tx.send((me.clone(), block.clone())).await;
             }
         }
+
+        #[cfg(feature = "nimble")]
+        if total_committed_blocks > 0 {
+            use crate::crypto::hash;
+
+            self.nimble_client_tag += 1;
+            let hsh = hash(&block_hash_buffer);
+            self.commit_to_nimble(hsh).await;
+            let _ = self.nimble_reply_handler_tx.send((new_ci, self.nimble_client_tag)).await;
+        }
+
 
         #[cfg(not(feature = "nimble"))]
         {
