@@ -46,6 +46,9 @@ client_rgx = re.compile(r"\[INFO\]\[.*\]\[(.*)\] Average Crash commit latency: (
 # Sample log: [INFO][psl::storage_server::logserver][2025-06-14T01:17:15.208949993+00:00] Total blocks stored: 1062 blocks or 1062.1507863998413 MiB
 storage_rgx = re.compile(r"\[INFO\]\[.*\]\[(.*)\] Total blocks stored: ([0-9]+) blocks or ([0-9.]+) MiB")
 
+
+psl_client_rgx = re.compile(r"\[INFO\]\[.*\]\[(.*)\] Average benchmark latency: ([0-9]+) us Total benchmarked requests: ([0-9]+) Benchmark state: Running")
+
 def process_tput(points, duration, ramp_up, ramp_down, tputs, tputs_unbatched, byz=False, read_points=[[]]) -> List:
     '''
     Parses given points for throughput information.
@@ -765,7 +768,7 @@ class Result:
 
                 y_range_total = max([v[3] for v in bounding_boxes.values()]) - min([v[2] for v in bounding_boxes.values()])
                 # if y_range_total > 200:
-                # plt.yscale("log")
+                plt.yscale("log")
                 # plt.ylim((0, 125))
                 # plt.xlim((50, 550))
                 plt.legend(loc='upper center', bbox_to_anchor=(0.5, 1.4), ncol=legends_ncols, fontsize=70)
@@ -820,8 +823,135 @@ class Result:
 
 
 
+    def tput_latency_sweep_psl(self):
+        # Parse args
+        ramp_up = self.kwargs.get('ramp_up', 0)
+        ramp_down = self.kwargs.get('ramp_down', 0)
+        legends = self.kwargs.get('legends', {})
+        force_parse = self.kwargs.get('force_parse', False)
+        
+        # Try to fetch plot dict from cache
+        try:
+            if force_parse:
+                raise Exception("Force parse")
+
+            with open(os.path.join(self.workdir, "plot_dict.pkl"), "rb") as f:
+                plot_dict = pickle.load(f)
+        except:
+            plot_dict = self.tput_latency_sweep_psl_parse(ramp_up, ramp_down, legends)
+
+        # Save plot dict
+        with open(os.path.join(self.workdir, "plot_dict.pkl"), "wb") as f:
+            pickle.dump(plot_dict, f)
+
+        output = self.kwargs.get('output', None)
+        self.tput_latency_sweep_plot(plot_dict, output)
+
+        # Print a summary of the results
+        with open(os.path.join(self.workdir, "summary.txt"), "w") as f:
+            for legend, stats in plot_dict.items():
+                f.write(f"{legend}\n")
+                for stat in stats:
+                    f.write(f"=============Num Nodes: {stat.num_nodes}, Num Clients: {stat.num_clients}================\n")
+                    f.write(f"Mean Tput: {stat.mean_tput} ktx/s, Mean Latency: {stat.mean_latency} ms\n")
+                    f.write(f"Median Latency: {stat.median_latency} ms, 99th Percentile Latency: {stat.p99_latency} ms\n")
+                    f.write(f"Max Latency: {stat.max_latency} ms, Min Latency: {stat.min_latency} ms\n")
+                    f.write(f"Stdev Tput: {stat.stdev_tput} ktx/s, Stdev Latency: {stat.stdev_latency} ms\n")
+                    f.write("==================================\n")
 
 
+    def tput_latency_sweep_psl_parse(self, ramp_up, ramp_down, legends):
+        plot_dict = {}
+
+        # Which indices do I skip?
+        skip_indices = self.kwargs.get('skip_indices', [])
+
+        # Find parsing log files for each group
+        for group_name, experiments in self.experiment_groups.items():
+            print("========", group_name, "========")
+            experiments.sort(key=lambda x: x.seq_num)
+            legend = legends.get(group_name, None)
+            if legend is None:
+                print("\x1b[31;1mNo legend found for", group_name, ". Skipping...\x1b[0m")
+                continue
+            
+            final_stats = []
+
+            for idx, experiment in enumerate(experiments):
+                if idx in skip_indices:
+                    print("\x1b[31;1mSkipping experiment", experiment.name, "for crash commit\x1b[0m")
+                    continue
+
+                stats = self.process_psl_experiment(experiment, ramp_up, ramp_down)
+                if stats is not None:
+                    final_stats.append(stats)
+                else:
+                    print("\x1b[31;1mSkipping experiment", experiment.name, "for crash commit\x1b[0m")
+
+            plot_dict[legend] = final_stats
+
+        pprint(plot_dict)
+        return plot_dict
+
+
+    def process_psl_experiment(self, experiment, ramp_up, ramp_down):
+        duration = experiment.duration
+        tputs = []
+        latencies = []
+        for repeat_num in range(experiment.repeats):
+            log_dir = os.path.join(experiment.local_workdir, "logs", str(repeat_num))
+            # Find the first node log file and all client log files in log_dir
+            client_log_files = [f for f in os.listdir(log_dir) if f.startswith("client") and f.endswith(".log")]
+            client_log_files = [os.path.join(log_dir, f) for f in client_log_files]
+
+            pprint(client_log_files)
+            tput, latency = self.parse_psl_client_logs(client_log_files, duration, ramp_up, ramp_down)
+
+            if tput is None or latency is None:
+                continue
+            tputs.append(tput / 1000.0) # Convert to ktx/s
+            latencies.append(latency / 1000.0) # Convert to ms
+        
+        return Stats(
+            num_nodes=experiment.num_nodes,
+            num_clients=experiment.num_clients,
+            mean_tput=np.mean(tputs),
+            stdev_tput=np.std(tputs),
+            mean_tput_unbatched=np.mean(tputs),
+            stdev_tput_unbatched=np.std(tputs),
+            latency_prob_dist=np.array(latencies),
+            mean_latency=np.mean(latencies),
+            median_latency=np.median(latencies),
+            p25_latency=np.percentile(latencies, 25),
+            p75_latency=np.percentile(latencies, 75),
+            p99_latency=np.percentile(latencies, 99),
+            max_latency=np.max(latencies),
+            min_latency=np.min(latencies),
+            stdev_latency=np.std(latencies)
+        )
+
+    def parse_psl_client_logs(self, client_log_files, duration, ramp_up, ramp_down):
+        latency_sum = 0
+        num_requests = 0
+        for client_log_file in client_log_files:
+            with open(client_log_file, "r") as f:
+                # Keep just the last line
+                last_capture = None
+                for line in f.readlines():
+                    captures = psl_client_rgx.findall(line)
+                    if len(captures) == 1:
+                        last_capture = (int(captures[0][1]), int(captures[0][2]))
+            
+                latency_sum += last_capture[0] * last_capture[1]
+                num_requests += last_capture[1]
+
+        if num_requests == 0:
+            return None, None
+        mean_latency = latency_sum / num_requests
+        tput = num_requests / duration
+        return tput, mean_latency
+
+    
 
     def tput_latency_sweep(self):
         '''

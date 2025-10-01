@@ -67,6 +67,8 @@ client_max_retry = 10
 
 [client_config.workload_config]
 max_concurrent_requests = 5
+ramp_up_ms = 10_000
+ramp_down_ms = 10_000
 
 [client_config.workload_config.request_config.KVReadWriteYCSB]
 num_keys = 300_000
@@ -95,19 +97,35 @@ duration = 90
 data_dir = "/data/"
 
 [experiments.sweeping_parameters]
-# num_nodes = [1, 2, 4, 8, 16]
-num_clients = [100]
-# num_clients = [10, 20, 30, 40, 50, 70, 100, 200, 500]
+num_clients = [10, 20, 30, 40, 50, 70, 100, 200, 500]
 
+[[experiments]]
+name = "ycsb_r50_w16_nimble"
+type = "nimble"
+# git_hash = "209b1804ff2c2259aced1f0960f48167b1966b94"
+repeats = 1
+# num_clients = 500
+num_nodes = 16
+num_storage_nodes = 3
+num_sequencer_nodes = 4 # 1 coordinator + 3 endorsers
+node_distribution = "tag:worker"
+storage_distribution = "uniform"
+sequencer_distribution = "uniform"
+build_command = "make nimble"
+duration = 90
+data_dir = "/data/"
 
+[experiments.sweeping_parameters]
+num_clients = [10, 20, 30, 40, 50, 70, 100, 200, 500]
 
 [[results]]
-name = "throughput_client_sweep"
-plotter = "throughput_client_sweep"
+name = "throughput_latency_client_sweep"
+plotter = "tput_latency_sweep_psl"
 ramp_up = 10
 ramp_down = 10
 output = "storage.pdf"
 force_parse = true
 
 [results.legends]
-ycsb_r50_w16 = "psl"
+ycsb_r50_w16_psl = "psl"
+ycsb_r50_w16_nimble = "nimble"
