@@ -456,7 +456,7 @@ where
         let mut parked_streams = HashMap::new();
 
         loop {
-            let res =   Self::server_main_loop(&listener, &tls_acceptor, server.clone(), &mut parked_streams).await;
+            let res = Self::server_main_loop(&listener, &tls_acceptor, server.clone(), &mut parked_streams).await;
             if let Err(e) = res {
                 error!("Error in server main loop: {}", e);
             }
