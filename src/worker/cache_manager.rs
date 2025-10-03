@@ -740,8 +740,8 @@ impl CacheManager {
                     trace!("Key not found: {:?}", key);
                 }
                 let origin = self.value_origin.get(&key).cloned().unwrap_or(SenderType::Auth("devil".to_string(), 0));
-                // let _ = response_tx.send(res.cloned().ok_or(CacheError::KeyNotFound));
-                let _ = response_tx.send(Err(CacheError::KeyNotFound));
+                let _ = response_tx.send(res.cloned().ok_or(CacheError::KeyNotFound));
+                // let _ = response_tx.send(Err(CacheError::KeyNotFound));
                 let snapshot_propagated_signal_tx = if self.block_on_read_snapshot.is_some() || !should_block_snapshot {
                     None
                 } else {
@@ -768,7 +768,7 @@ impl CacheManager {
                 }).await;
                 // let current_vc = current_vc_rx.await.unwrap();
 
-                trace!("Read key: {}, value_hash: {}", String::from_utf8(key.clone()).unwrap_or(hex::encode(key)), hex::encode(cached_value_to_val_hash(res.cloned())));
+                // trace!("Read key: {}, value_hash: {}", String::from_utf8(key.clone()).unwrap_or(hex::encode(key)), hex::encode(cached_value_to_val_hash(res.cloned())));
 
 
             }
