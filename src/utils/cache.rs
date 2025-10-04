@@ -82,6 +82,11 @@ impl Cache {
                 acc
             }
         });
+
+        let rocksdb_stats = self.db.property_value("rocksdb.stats").unwrap_or_default().unwrap_or_default();
+        let rocksdb_stat_lines = rocksdb_stats.split('\n').collect::<Vec<&str>>();
+        let _n = rocksdb_stat_lines.len();
+        let rocksdb_stats = rocksdb_stat_lines[_n-10..].join("\n");
         vec![
             format!("Read Cache size: {}, Max seq num: {} with Key: {}, Second max seq num: {} with Key: {}",
                 self.read_cache.len(),
@@ -89,7 +94,7 @@ impl Cache {
                 max2_seq_num, String::from_utf8(max2_key.clone()).unwrap_or(hex::encode(max2_key))
             ),
 
-            format!("RocksDB stats: {:?}", self.db.property_value("rocksdb.stats").unwrap().unwrap()),
+            format!("RocksDB stats: {}", rocksdb_stats),
         ]
     }
 }

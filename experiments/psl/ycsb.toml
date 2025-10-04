@@ -36,6 +36,11 @@ write_buffer_size = 2147483648
 max_write_buffer_number = 1
 max_write_buffers_to_merge = 1
 
+[node_config.worker_config.state_storage_config.RocksDB]
+write_buffer_size = 2147483648
+max_write_buffer_number = 1
+max_write_buffers_to_merge = 1
+
 [node_config.worker_config]
 all_writes_max_batch_size = 1000
 self_writes_max_batch_size = 1000
@@ -47,6 +52,7 @@ signature_max_delay_blocks = 50
 num_crypto_workers = 5
 num_worker_threads_per_worker = 8
 num_replier_threads_per_worker = 8
+read_cache_size = 30_000
 
 
 [node_config.app_config]

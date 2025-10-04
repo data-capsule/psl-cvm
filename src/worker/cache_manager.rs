@@ -196,12 +196,11 @@ impl CacheManager {
         #[cfg(feature = "evil")]
         let __evil_dist = WeightedIndex::new(__evil_weights.iter().map(|(_, weight)| weight)).unwrap();
 
-        let rocksdb_config = RocksDBConfig {
-            db_path: "./node_db".to_string(),
-            write_buffer_size: 512 * 1024 * 1024,
-            max_write_buffer_number: 8,
-            max_write_buffers_to_merge: 4,
+        let rocksdb_config = match &config.get().worker_config.state_storage_config {
+            StorageConfig::RocksDB(config) => config.clone(),
+            _ => panic!("State storage config must be RocksDB"),
         };
+        let read_cache_size = config.get().worker_config.read_cache_size;
         Self {
             config,
             command_rx,
@@ -210,7 +209,7 @@ impl CacheManager {
             block_rx,
             block_sequencer_tx,
             fork_receiver_cmd_tx,
-            cache: Cache::new(30_000, rocksdb_config),
+            cache: Cache::new(read_cache_size, rocksdb_config),
             
             last_committed_seq_num: 0,
             batch_timer,
@@ -373,27 +372,6 @@ impl CacheManager {
     }
 
     async fn log_stats(&mut self) {
-        // let (max_seq_num, max2_seq_num, max_key, max2_key) = self.cache.iter()
-        // .filter(|(_, val)| val.is_dww())
-        // .fold((0u64, 0u64, CacheKey::new(), CacheKey::new()), |acc, (key, val)| {
-        //     let val = val.get_dww().unwrap();
-        //     if val.seq_num > acc.0 {
-        //         (val.seq_num, acc.0, key.clone(), acc.2)
-        //     } else if val.seq_num > acc.1 {
-        //         (acc.0, val.seq_num, acc.2, key.clone())
-        //     } else {
-        //         acc
-        //     }
-        // });
-
-        // info!("Cache size: {}, Max seq num: {} with Key: {}, Second max seq num: {} with Key: {}",
-        //     self.cache.len(),
-        //     max_seq_num, String::from_utf8(max_key.clone()).unwrap_or(hex::encode(max_key)),
-        //     max2_seq_num, String::from_utf8(max2_key.clone()).unwrap_or(hex::encode(max2_key))
-        // );
-
-        // info!("Read Cache size: {}", self.cache.len());
-
         let stat_lines = self.cache.stats();
         for line in stat_lines {
             info!("{}", line);

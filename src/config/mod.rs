@@ -121,12 +121,18 @@ pub struct WorkerConfig {
     pub nimble_endpoint_url: Option<String>,
 
     pub state_storage_config: StorageConfig,
+
+    #[serde(default = "default_read_cache_size")]
+    pub read_cache_size: usize,
 }
 
 const fn default_heartbeat_max_delay_ms() -> u64 {
     200
 }
 
+const fn default_read_cache_size() -> usize {
+    30_000
+}
 
 
 impl ConsensusConfig {
