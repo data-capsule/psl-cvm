@@ -1,5 +1,6 @@
 use std::{collections::{HashMap, HashSet, VecDeque}, pin::Pin, sync::Arc, time::{Duration, Instant}};
 
+use itertools::Itertools;
 use log::{error, info, trace, warn};
 use tokio::sync::{mpsc::{UnboundedReceiver, UnboundedSender}, Mutex};
 
@@ -204,8 +205,8 @@ impl PerWorkerAuditor {
             let read_vc = &block_ref.block.vector_clock;
             let read_vc = VectorClock::from(read_vc.clone());
 
-            let mut all_read_vcs = HashSet::new();
-            all_read_vcs.insert(read_vc.clone());
+            let mut all_read_vcs = Vec::new();
+            all_read_vcs.push(read_vc.clone());
 
             if let Some(read_set) = &block_ref.block.read_set {
                 for entry in &read_set.entries {
@@ -220,8 +221,12 @@ impl PerWorkerAuditor {
                     for ProtoVectorClockEntry { sender, seq_num } in vc_delta.entries.iter() {
                         _vc.advance(SenderType::Auth(sender.clone(), 0), *seq_num);
                     }
-                    all_read_vcs.insert(_vc);
 
+
+                    // Invariant expected: vc_deltas are in "increasing" order.
+                    if all_read_vcs.last().unwrap() != &_vc {
+                        all_read_vcs.push(_vc);
+                    }
                 }
             }
 
@@ -233,7 +238,7 @@ impl PerWorkerAuditor {
 
             if can_audit {
                 let block = self.unaudited_buffer.pop_front().unwrap();
-                self.do_audit_block(block, read_vc).await;
+                self.do_audit_block(block, all_read_vcs).await;
                 audit_successful = true;
             } else {
                 break;
@@ -243,48 +248,47 @@ impl PerWorkerAuditor {
         audit_successful
     }
 
-    async fn do_audit_block(&mut self, block: CachedBlock, read_vc: VectorClock) {
+    async fn do_audit_block(&mut self, block: CachedBlock, all_read_vcs: Vec<VectorClock>) {
         let start_time = Instant::now();
-        
-        let updates = self.generate_updates(read_vc.clone()).await;
-        // let updates = vec![];
-        // self.snapshot_store.install_snapshot(read_vc.clone(), self.worker_name.clone(), updates.clone()).await;
-        self.snapshot_update_buffer.insert(read_vc.clone(), updates.clone());
-        for (key, value) in updates {
-            self.put(key, value, read_vc.clone());
+        for read_vc in all_read_vcs {
+            let start_time = Instant::now();
+            let updates = self.generate_updates(read_vc.clone()).await;
+            self.snapshot_update_buffer.insert(read_vc.clone(), updates.clone());
+            for (key, value) in updates {
+                self.put(key, value, read_vc.clone());
+            }
+            self.__snapshot_generated_counter += 1;
+            self.__gen_snapshot_time_sum += Instant::now() - start_time;
+            
+            let _verify_reads_start_time = Instant::now();
+            
+            let write_ops = self.filter_write_ops_into_vec(&block.block);
+            
+            trace!("Write ops time: {:?} len: {}", Instant::now() - _verify_reads_start_time, write_ops.len());
+            
+            match &block.block.read_set {
+                Some(read_set) => {
+                    self.verify_reads(read_set, &read_vc, &write_ops).await;
+                    trace!("Verify reads time: {:?} len: {}", Instant::now() - _verify_reads_start_time, read_set.entries.len());
+                    
+                },
+                None => {
+                    // No reads to verify.
+                },
+            }
+            self.__verify_reads_time_sum += Instant::now() - _verify_reads_start_time;
+            // This is unbounded so as to not cause deadlock.
+    
+            if self.last_read_vc != VectorClock::new() {
+                let updates = self.snapshot_update_buffer.remove(&self.last_read_vc).unwrap();
+                self.gc_tx.send((self.worker_name.clone(), self.last_read_vc.clone(), updates)).unwrap();
+            }
+            self.last_read_vc = read_vc.clone();
         }
-        self.__snapshot_generated_counter += 1;
-        self.__gen_snapshot_time_sum += Instant::now() - start_time;
-
-        let _verify_reads_start_time = Instant::now();
-
-        let write_ops = self.filter_write_ops_into_vec(&block.block);
-
-        trace!("Write ops time: {:?} len: {}", Instant::now() - _verify_reads_start_time, write_ops.len());
-
-        match &block.block.read_set {
-            Some(read_set) => {
-                self.verify_reads(read_set, &read_vc, &write_ops).await;
-                trace!("Verify reads time: {:?} len: {}", Instant::now() - _verify_reads_start_time, read_set.entries.len());
-
-            },
-            None => {
-                // No reads to verify.
-            },
-        }
-
-
-        self.__verify_reads_time_sum += Instant::now() - _verify_reads_start_time;
 
 
 
-        // This is unbounded so as to not cause deadlock.
 
-        if self.last_read_vc != VectorClock::new() {
-            let updates = self.snapshot_update_buffer.remove(&self.last_read_vc).unwrap();
-            self.gc_tx.send((self.worker_name.clone(), self.last_read_vc.clone(), updates)).unwrap();
-        }
-        self.last_read_vc = read_vc.clone();
 
         let end_time = Instant::now();
         self.__audit_block_time_sum += end_time - start_time;
@@ -462,17 +466,24 @@ impl PerWorkerAuditor {
     async fn verify_reads(&mut self, read_set: &ProtoReadSet, read_vc: &VectorClock, write_ops: &Vec<(CacheKey, CachedValue)>) {
         let mut local_cache = HashMap::new();
         let mut cached_upto = 0;
-        // TODO: Do something with vc_delta before this!!!!
-        // Otherwise this is wrong!
+
         for ProtoReadSetEntry { key, value_hash, after_write_op_index, vc_delta } in &read_set.entries {
+            let mut _read_vc = read_vc.clone();
+            if vc_delta.is_some() {
+                let vc_delta = vc_delta.as_ref().unwrap();
+                for ProtoVectorClockEntry { sender, seq_num } in vc_delta.entries.iter() {
+                    _read_vc.advance(SenderType::Auth(sender.clone(), 0), *seq_num);
+                }
+            }
+
+            if _read_vc != *read_vc {
+                continue;
+            }
+            
             while cached_upto < *after_write_op_index {
                 assert!(cached_upto < write_ops.len() as u64);
                 let (key, value) = write_ops[cached_upto as usize].clone();
-                // let _snapshot_value = self.snapshot_store.get(&key, read_vc).await;
-                // let _snapshot_value: Option<CachedValue>  = None;
                 let _snapshot_value = self.get(&key);
-                // assert!(_snapshot_value == snapshot_value, "key: {} read_vc: {} _snapshot_value: {:?} snapshot_value: {:?}",
-                //     String::from_utf8(key.clone()).unwrap(), read_vc, _snapshot_value, snapshot_value);
                 if _snapshot_value.is_some() {
                     local_cache.insert(key.clone(), _snapshot_value.unwrap());
                     let entry= local_cache.get_mut(&key).unwrap(); // .merge_cached(value);
@@ -492,11 +503,7 @@ impl PerWorkerAuditor {
             let correct_value = if local_cache.contains_key(key) {
                 local_cache.get(key).cloned()
             } else {
-                // let __correct_value = self.snapshot_store.get(key, read_vc).await;
-                // let __correct_value = None;
                 let __correct_value = self.get(key);
-                // assert!(__correct_value == val, "key: {} read_vc: {} correct_value: {:?} val: {:?}",
-                //     String::from_utf8(key.clone()).unwrap(), read_vc, __correct_value, val);
 
                 __correct_value
             };
@@ -522,7 +529,7 @@ impl PerWorkerAuditor {
                 let correct_value_hex_str = &hex::encode(correct_value_hash);
                 let value_hex_str = &hex::encode(value_hash);
 
-                trace!("❌ Read verification failed in {} for key: {} correct_value_hash: {} value_hash: {} read_vc: {}",
+                warn!("❌ Read verification failed in {} for key: {} correct_value_hash: {} value_hash: {} read_vc: {}",
                     self.worker_name, key_str, correct_value_hex_str, value_hex_str, read_vc);
 
 
