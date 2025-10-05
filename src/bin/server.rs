@@ -188,7 +188,7 @@ fn main() {
             let _cids = core_ids.clone();
             let lcores = _cids.lock().unwrap();
             let id = (start_idx + i.fetch_add(1, std::sync::atomic::Ordering::SeqCst)) % lcores.len();
-            let res = core_affinity::set_for_current(lcores[id]);
+            // let res = core_affinity::set_for_current(lcores[id]);
     
             // if res {
             //     debug!("Thread pinned to core {:?}", id);
