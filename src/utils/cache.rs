@@ -9,29 +9,30 @@ use rocksdb::{DBCompactionStyle, Options, WriteBatchWithTransaction, WriteOption
 
 pub struct Cache {
     read_cache: LruCache<CacheKey, CachedValue>,
+    db_path: String,
     db: DB,
 }
 
 impl Cache {
     pub fn new(cache_size: usize, config: RocksDBConfig) -> Self {
         let mut opts = Options::default();
-            opts.create_if_missing(true);
-            opts.set_write_buffer_size(config.write_buffer_size);
-            opts.set_max_write_buffer_number(config.max_write_buffer_number);
-            opts.set_min_write_buffer_number_to_merge(config.max_write_buffers_to_merge);
-            opts.set_target_file_size_base(config.write_buffer_size as u64);
+        opts.create_if_missing(true);
+        opts.set_write_buffer_size(config.write_buffer_size);
+        opts.set_max_write_buffer_number(config.max_write_buffer_number);
+        opts.set_min_write_buffer_number_to_merge(config.max_write_buffers_to_merge);
+        opts.set_target_file_size_base(config.write_buffer_size as u64);
 
-            opts.set_manual_wal_flush(true);
-            opts.set_compaction_style(DBCompactionStyle::Universal);
-            opts.set_allow_mmap_reads(true);
-            opts.set_allow_mmap_writes(true);
+        opts.set_manual_wal_flush(true);
+        opts.set_compaction_style(DBCompactionStyle::Universal);
+        opts.set_allow_mmap_reads(true);
+        opts.set_allow_mmap_writes(true);
 
-            // opts.increase_parallelism(3);
+        // opts.increase_parallelism(3);
 
-            let path = config.db_path.clone();
-            let db = DB::open(&opts, path).unwrap();
+        let path = config.db_path.clone();
+        let db = DB::open(&opts, path).unwrap();
 
-        Self { read_cache: LruCache::new(std::num::NonZero::new(cache_size).unwrap()), db }
+        Self { read_cache: LruCache::new(std::num::NonZero::new(cache_size).unwrap()), db, db_path: config.db_path }
     }
 
     pub fn get(&mut self, key: &CacheKey) -> (Option<CachedValue>, bool /* read from cache */) {
@@ -112,7 +113,7 @@ impl Drop for Cache {
         let _ = self.db.flush();
         let opts = Options::default();
 
-        let _ = DB::destroy(&opts, "./node_db");
+        let _ = DB::destroy(&opts, &self.db_path);
     }
 }
 

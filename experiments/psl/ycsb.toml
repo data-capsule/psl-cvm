@@ -32,13 +32,13 @@ max_audit_buffer_size = 1000
 max_audit_delay_ms = 1000
 
 [node_config.consensus_config.log_storage_config.RocksDB]
-write_buffer_size = 2147483648
+write_buffer_size = 2_147_483_648 # 2GB
 max_write_buffer_number = 1
 max_write_buffers_to_merge = 1
 
 [node_config.worker_config.state_storage_config.RocksDB]
-write_buffer_size = 67_108_864 # 64MB
-max_write_buffer_number = 8
+write_buffer_size = 2_147_483_648 # 2GB
+max_write_buffer_number = 4
 max_write_buffers_to_merge = 1
 
 [node_config.worker_config]
