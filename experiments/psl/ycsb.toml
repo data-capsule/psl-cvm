@@ -37,7 +37,7 @@ max_write_buffer_number = 1
 max_write_buffers_to_merge = 1
 
 [node_config.worker_config.state_storage_config.RocksDB]
-write_buffer_size = 2_147_483_648 # 2GB
+write_buffer_size = 67_108_864 # 64MB
 max_write_buffer_number = 4
 max_write_buffers_to_merge = 1
 
@@ -80,7 +80,7 @@ ramp_down_ms = 10_000
 [client_config.workload_config.request_config.KVReadWriteYCSB]
 num_keys = 300_000
 num_fields = 1
-val_size = 1024
+val_size = 100
 linearizable_reads = false
 byz_commit_ratio = 0.0
 load_phase = true
@@ -100,12 +100,12 @@ node_distribution = "tag:worker"
 storage_distribution = "uniform"
 sequencer_distribution = "tag:sequencer"
 build_command = "make"
-duration = 45
+duration = 300
 data_dir = "/data/"
 
 [experiments.sweeping_parameters]
 # num_clients = [1, 16, 64, 160, 240, 320, 480, 640, 960, 1280]
-num_clients = [320]
+num_clients = [1024]
 
 
 # [[experiments]]
