@@ -74,7 +74,7 @@ impl Cache {
             return false;
         }
 
-        self.db.get(key).is_ok()
+        self.db.get_pinned(key).unwrap().is_some()
     }
 
     pub fn stats(&self) -> Vec<String> {
