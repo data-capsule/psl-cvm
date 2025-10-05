@@ -27,7 +27,7 @@ signature_max_delay_ms = 10000
 num_crypto_workers = 5
 view_timeout_ms = 4000
 batch_max_delay_ms = 50
-max_audit_snapshots = 100
+max_audit_snapshots = 100_000 # Essentially disable audit blocking.
 max_audit_buffer_size = 1000
 max_audit_delay_ms = 1000
 
@@ -80,7 +80,7 @@ ramp_down_ms = 10_000
 [client_config.workload_config.request_config.KVReadWriteYCSB]
 num_keys = 300_000
 num_fields = 1
-val_size = 100
+val_size = 1024
 linearizable_reads = false
 byz_commit_ratio = 0.0
 load_phase = true
