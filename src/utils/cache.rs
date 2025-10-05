@@ -10,6 +10,7 @@ use rocksdb::{DBCompactionStyle, Options, WriteBatchWithTransaction, WriteOption
 pub struct Cache {
     read_cache: LruCache<CacheKey, CachedValue>,
     db: DB,
+    db_path: String,
 }
 
 impl Cache {
@@ -31,7 +32,7 @@ impl Cache {
             let path = config.db_path.clone();
             let db = DB::open(&opts, path).unwrap();
 
-        Self { read_cache: LruCache::new(std::num::NonZero::new(cache_size).unwrap()), db }
+        Self { read_cache: LruCache::new(std::num::NonZero::new(cache_size).unwrap()), db, db_path: config.db_path }
     }
 
     pub fn get(&mut self, key: &CacheKey) -> (Option<CachedValue>, bool /* read from cache */) {
@@ -40,7 +41,7 @@ impl Cache {
             return (val.cloned(), true);
         }
 
-        let val = self.db.get(key.clone()).unwrap();
+        let val = self.db.get_pinned(key.clone()).unwrap();
 
         if val.is_none() {
             return (None, false);
@@ -65,8 +66,15 @@ impl Cache {
     }
 
     pub fn contains_key(&self, key: &CacheKey) -> bool {
-        self.read_cache.contains(key)
-        || self.db.key_may_exist(key)
+        if self.read_cache.contains(key) {
+            return true;
+        }
+
+        if !self.db.key_may_exist(key) {
+            return false;
+        }
+
+        self.db.get_pinned(key).unwrap().is_some()
     }
 
     pub fn stats(&self) -> Vec<String> {
@@ -103,7 +111,6 @@ impl Drop for Cache {
     fn drop(&mut self) {
         let _ = self.db.flush();
         let opts = Options::default();
-
-        let _ = DB::destroy(&opts, "./node_db");
+        let _ = DB::destroy(&opts, &self.db_path);
     }
 }
