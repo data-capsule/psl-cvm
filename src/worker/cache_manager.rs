@@ -415,7 +415,7 @@ impl CacheManager {
     async fn _handle_command_single(&mut self, command: CacheCommand) {
         match command {
             CacheCommand::Get(key, should_block_snapshot, seq_num_query, response_tx) => {
-                let (res, read_from_cache) = self.cache.get(&key);
+                let (res, read_from_cache) = self.cache.get(&key).await;
 
                 #[cfg(feature = "evil")]
                 let (res, did_rollback) = self.maybe_respond_with_rolledback_state(res, &key);
@@ -482,12 +482,12 @@ impl CacheManager {
                 assert!(value.is_dww());
 
                 let value = value.get_dww().unwrap();
-                if self.cache.contains_key(&key) {
-                    let (Some(mut res), _) = self.cache.get(&key) else {
+                if self.cache.contains_key(&key).await {
+                    let (Some(mut res), _) = self.cache.get(&key).await else {
                         unreachable!();
                     };
                     let seq_num = res.get_dww_mut().unwrap().blind_update(value.value.clone(), value.val_hash.clone());
-                    self.cache.put(key.clone(), res);
+                    self.cache.put(key.clone(), res).await;
                     response_tx.send(Ok(seq_num)).unwrap();
                     // let (current_vc_tx, current_vc_rx) = oneshot::channel();
                     let _ = self.block_sequencer_tx.send(SequencerCommand::SelfWriteOp { key: key.clone(), value: CachedValue::new_dww_with_seq_num(value.value.clone(), seq_num, value.val_hash.clone()), seq_num_query, /* current_vc: current_vc_tx */ }).await;
@@ -497,7 +497,7 @@ impl CacheManager {
                 }
 
                 let cached_value = CachedValue::new_dww(value.value.clone(), value.val_hash.clone());
-                self.cache.put(key.clone(), cached_value);
+                self.cache.put(key.clone(), cached_value).await;
                 response_tx.send(Ok(1)).unwrap();
                 // let (current_vc_tx, current_vc_rx) = oneshot::channel();
                 let _ = self.block_sequencer_tx.send(SequencerCommand::SelfWriteOp { key: key.clone(), value: CachedValue::new_dww(value.value.clone(), value.val_hash.clone()), seq_num_query, /* current_vc: current_vc_tx */ }).await;
@@ -512,14 +512,14 @@ impl CacheManager {
                 // let value = value.get_dww().unwrap();
                 assert!(value >= 0.0);
                 let my_name = self.config.get().net_config.name.clone();
-                if self.cache.contains_key(&key) {
-                    let (Some(mut res), _) = self.cache.get(&key) else {
+                if self.cache.contains_key(&key).await {
+                    let (Some(mut res), _) = self.cache.get(&key).await else {
                         unreachable!();
                     };
                     let final_value = res.get_pn_counter_mut().unwrap()
                         .blind_increment(my_name, value);
                     let _value = res.get_pn_counter().unwrap().clone();
-                    self.cache.put(key.clone(), res);
+                    self.cache.put(key.clone(), res).await;
                     response_tx.send(Ok(final_value as u64 /* It doesn't matter what the seq_num is here. */)).unwrap();
                     // let (current_vc_tx, current_vc_rx) = oneshot::channel();
                     let _ = self.block_sequencer_tx.send(SequencerCommand::SelfWriteOp { key: key.clone(), value: CachedValue::from_pn_counter(_value), seq_num_query, /* current_vc: current_vc_tx */ }).await;
@@ -531,7 +531,7 @@ impl CacheManager {
                 let mut cached_value = CachedValue::new_pn_counter();
                 cached_value.get_pn_counter_mut().unwrap().blind_increment(my_name, value);
 
-                self.cache.put(key.clone(), cached_value.clone());
+                self.cache.put(key.clone(), cached_value.clone()).await;
                 response_tx.send(Ok(cached_value.get_pn_counter().unwrap().get_value() as u64 /* It doesn't matter what the seq_num is here. */)).unwrap();
                 // let (current_vc_tx, current_vc_rx) = oneshot::channel();
                 let _ = self.block_sequencer_tx.send(SequencerCommand::SelfWriteOp { key: key.clone(), value: cached_value, seq_num_query, /* current_vc: current_vc_tx */ }).await;
@@ -541,14 +541,14 @@ impl CacheManager {
             CacheCommand::Decrement(key, value, seq_num_query, response_tx) => {
                 assert!(value >= 0.0);
                 let my_name = self.config.get().net_config.name.clone();
-                if self.cache.contains_key(&key) {
-                    let (Some(mut res), _) = self.cache.get(&key) else {
+                if self.cache.contains_key(&key).await {
+                    let (Some(mut res), _) = self.cache.get(&key).await else {
                         unreachable!();
                     };
                     let final_value = res.get_pn_counter_mut().unwrap()
                         .blind_decrement(my_name, value);
                     let _value = res.get_pn_counter().unwrap().clone();
-                    self.cache.put(key.clone(), res);
+                    self.cache.put(key.clone(), res).await;
                     response_tx.send(Ok(final_value as u64 /* It doesn't matter what the seq_num is here. */)).unwrap();
                     // let (current_vc_tx, current_vc_rx) = oneshot::channel();
                     let _ = self.block_sequencer_tx.send(SequencerCommand::SelfWriteOp { key: key.clone(), value: CachedValue::from_pn_counter(_value), seq_num_query, /* current_vc: current_vc_tx */ }).await;
@@ -560,7 +560,7 @@ impl CacheManager {
                 let mut cached_value = CachedValue::new_pn_counter();
                 cached_value.get_pn_counter_mut().unwrap().blind_decrement(my_name, value);
 
-                self.cache.put(key.clone(), cached_value.clone());
+                self.cache.put(key.clone(), cached_value.clone()).await;
                 response_tx.send(Ok(cached_value.get_pn_counter().unwrap().get_value() as u64 /* It doesn't matter what the seq_num is here. */)).unwrap();
                 // let (current_vc_tx, current_vc_rx) = oneshot::channel();
                 let _ = self.block_sequencer_tx.send(SequencerCommand::SelfWriteOp { key: key.clone(), value: cached_value, seq_num_query, /* current_vc: current_vc_tx */ }).await;
@@ -648,8 +648,8 @@ impl CacheManager {
                 // If this put request leads to an update,
                 // It should be propagated downstream in the gossip/multicast tree,
                 // As they may or may not receive the update directly.
-                let (should_propagate, seq_num) = if self.cache.contains_key(&key) {
-                    let (Some(mut val), _) = self.cache.get(&key) else {
+                let (should_propagate, seq_num) = if self.cache.contains_key(&key).await {
+                    let (Some(mut val), _) = self.cache.get(&key).await else {
                         unreachable!();
                     };
                     let res = match &mut val {
@@ -663,7 +663,7 @@ impl CacheManager {
                             // PN Counters must always be propagated.
                         }
                     };
-                    self.cache.put(key.clone(), val);
+                    self.cache.put(key.clone(), val).await;
                     match res {
                         Ok(_seq_num) => {
                             (true, _seq_num)
@@ -671,7 +671,7 @@ impl CacheManager {
                         Err(_old_seq_num) => (false, _old_seq_num)
                     }
                 } else {
-                    self.cache.put(key.clone(), cached_value.clone());
+                    self.cache.put(key.clone(), cached_value.clone()).await;
                     (true, 0)
                 };
 

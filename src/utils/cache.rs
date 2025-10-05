@@ -2,17 +2,27 @@ use std::collections::HashMap;
 
 use lru::LruCache;
 use serde::Serialize;
+use tokio::sync::oneshot;
 
-use crate::{config::RocksDBConfig, utils::types::{CacheKey, CachedValue}};
+use crate::{config::RocksDBConfig, utils::{channel::make_channel, types::{CacheKey, CachedValue}}};
 // use rocksdb::{DBCompactionStyle, Options, WriteBatchWithTransaction, WriteOptions, DB};
 use fjall::{Keyspace, PartitionCreateOptions, PartitionHandle};
 
 
+enum PersistentCommand {
+    Put(CacheKey, CachedValue, oneshot::Sender<()>),
+    Get(CacheKey, oneshot::Sender<Option<CachedValue>>),
+    ContainsKey(CacheKey, oneshot::Sender<bool>),
+    Stats(oneshot::Sender<Vec<String>>),
+    Drop(oneshot::Sender<()>),
+}
+
 pub struct Cache {
     read_cache: LruCache<CacheKey, CachedValue>,
-    db_path: String,
-    db: PartitionHandle,
-    keyspace: Keyspace,
+    persistent_tx: tokio::sync::mpsc::Sender<PersistentCommand>,
+    // db_path: String,
+    // db: PartitionHandle,
+    // keyspace: Keyspace,
 }
 
 impl Cache {
@@ -31,43 +41,101 @@ impl Cache {
 
         // opts.increase_parallelism(3);
 
-        // let path = config.db_path.clone();
-        let fjall_config = fjall::Config::new(config.db_path.clone())
-            .cache_size(config.write_buffer_size as u64)
-            .compaction_workers(1)
-            .flush_workers(1);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1000);
 
-        let keyspace = fjall_config.open().unwrap();
-        let db = keyspace.open_partition("default", PartitionCreateOptions::default()).unwrap();
+        std::thread::spawn(move || {
+            let fjall_config = fjall::Config::new(config.db_path.clone())
+                .cache_size(config.write_buffer_size as u64)
+                .compaction_workers(1)
+                .flush_workers(1);
+    
+            let keyspace = fjall_config.open().unwrap();
+            let db = keyspace.open_partition("default", PartitionCreateOptions::default()).unwrap();
+        
+            while let Some(cmd) = rx.blocking_recv() {
+                match cmd {
+                    PersistentCommand::Put(key, value, resp_tx) => {
+                        let ser = bincode::serialize(&value).unwrap();
+                        db.insert(key.clone(), ser).unwrap();
+                        resp_tx.send(()).unwrap();
+                    }
+                    PersistentCommand::Get(key, resp_tx) => {
+                        let val = db.get(key.clone()).unwrap();
+                        match val {
+                            Some(val) => {
+                                let val = bincode::deserialize(&val).unwrap();
+                                resp_tx.send(val).unwrap();
+                            }
+                            None => {
+                                resp_tx.send(None).unwrap();
+                            }
+                        }
+                    }
+                    PersistentCommand::ContainsKey(key, resp_tx) => {
+                        let val = db.contains_key(key.clone()).unwrap();
+                        resp_tx.send(val).unwrap();
+                    }
+                    PersistentCommand::Stats(resp_tx) => {
+                        let stats = vec![];
+                        resp_tx.send(stats).unwrap();
+                    }
+                    PersistentCommand::Drop(resp_tx) => {
+                        resp_tx.send(());
+                        return;
+                    }
+                }
+            }
+        
+        });
+
+        // let path = config.db_path.clone();
 
         // let db = DB::open(&opts, path).unwrap();
 
-        Self { read_cache: LruCache::new(std::num::NonZero::new(cache_size).unwrap()), db_path: config.db_path, keyspace, db }
+        Self { read_cache: LruCache::new(std::num::NonZero::new(cache_size).unwrap()), persistent_tx: tx }
     }
 
-    pub fn get(&mut self, key: &CacheKey) -> (Option<CachedValue>, bool /* read from cache */) {
+    async fn db_get(&mut self, key: &CacheKey) -> Option<CachedValue> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.persistent_tx.send(PersistentCommand::Get(key.clone(), tx)).await.unwrap();
+        rx.await.unwrap()
+    }
+
+    async fn db_put(&mut self, key: CacheKey, value: CachedValue) {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.persistent_tx.send(PersistentCommand::Put(key.clone(), value.clone(), tx)).await.unwrap();
+        rx.await.unwrap()
+    }
+
+    async fn db_contains_key(&self, key: &CacheKey) -> bool {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.persistent_tx.send(PersistentCommand::ContainsKey(key.clone(), tx)).await.unwrap();
+        rx.await.unwrap()
+    }
+
+    pub async fn get(&mut self, key: &CacheKey) -> (Option<CachedValue>, bool /* read from cache */) {
         let val = self.read_cache.get(key);
         if val.is_some() {
             return (val.cloned(), true);
         }
 
-        let val = self.db.get(key.clone()).unwrap();
+        let val = self.db_get(key).await;
 
         if val.is_none() {
             return (None, false);
         }
 
-        let val: CachedValue = bincode::deserialize(&val.unwrap()).unwrap();
-        self.read_cache.put(key.clone(), val.clone());
-        (Some(val), false)
+        // let val: CachedValue = bincode::deserialize(&val.unwrap()).unwrap();
+        self.read_cache.put(key.clone(), val.clone().unwrap());
+        (val, false)
     }
 
-    pub fn put(&mut self, key: CacheKey, value: CachedValue) {
+    pub async fn put(&mut self, key: CacheKey, value: CachedValue) {
         // let mut wopts = WriteOptions::default();
         // wopts.disable_wal(false);
 
-        let ser = bincode::serialize(&value).unwrap();
-        self.db.insert(key.clone(), ser).unwrap();
+        // let ser = bincode::serialize(&value).unwrap();
+        self.db_put(key.clone(), value.clone()).await;
         self.read_cache.put(key, value);
     }
 
@@ -76,7 +144,7 @@ impl Cache {
     }
 
     /// Has to be 100% accurate.
-    pub fn contains_key(&self, key: &CacheKey) -> bool {
+    pub async fn contains_key(&self, key: &CacheKey) -> bool {
         if self.read_cache.contains(key) {
             return true;
         }
@@ -85,7 +153,7 @@ impl Cache {
         //     return false;
         // }
 
-        self.db.contains_key(key).unwrap()
+        self.db_contains_key(key).await
 
         // self.db.get_pinned(key).unwrap().is_some()
     }
