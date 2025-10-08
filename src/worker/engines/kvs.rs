@@ -171,12 +171,14 @@ impl KVSTask {
         for op in ops {
             let op_type = op.op_type();
             match op_type {
+                // KVSTask doesn't lock anything.
+
                 // ProtoTransactionOpType::Read => {
                 //     self.locked_keys.push((op.operands[0].clone(), false));
                 // }
-                ProtoTransactionOpType::Write => {
-                    self.locked_keys.push((format!("write_{}", String::from_utf8(op.operands[0].clone()).unwrap_or(hex::encode(op.operands[0].clone()))).as_bytes().to_vec(), false));
-                }
+                // ProtoTransactionOpType::Write => {
+                //     self.locked_keys.push((format!("write_{}", String::from_utf8(op.operands[0].clone()).unwrap_or(hex::encode(op.operands[0].clone()))).as_bytes().to_vec(), false));
+                // }
                 _ => {}
             }
         }

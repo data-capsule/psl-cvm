@@ -1,5 +1,6 @@
-mod kvs;
 mod slide;
 
-pub use kvs::*;
 pub use slide::*;
+
+mod abortable_kvs;
+pub use abortable_kvs::*;

@@ -49,7 +49,7 @@ SCP_CMD="scp -o StrictHostKeyChecking=no -i {self.dev_ssh_key}"
                         binary_name = "controller"
 
                     _script += f"""
-$SSH_CMD {self.dev_ssh_user}@{vm.public_ip} 'RUST_BACKTRACE=full {self.remote_workdir}/build/{binary_name} {self.remote_workdir}/configs/{bin}_config.json > {self.remote_workdir}/logs/{repeat_num}/{bin}.log 2> {self.remote_workdir}/logs/{repeat_num}/{bin}.err' &
+$SSH_CMD {self.dev_ssh_user}@{vm.public_ip} '{self.remote_workdir}/build/{binary_name} {self.remote_workdir}/configs/{bin}_config.json > {self.remote_workdir}/logs/{repeat_num}/{bin}.log 2> {self.remote_workdir}/logs/{repeat_num}/{bin}.err' &
 PID="$PID $!"
 """
                     
@@ -71,6 +71,10 @@ sleep 10
                 for bin in bin_list:
                     if "node" in bin:
                         binary_name = "server"
+                    elif "storage" in bin:
+                        binary_name = "server"
+                    elif "sequencer" in bin:
+                        binary_name = "server"
                     elif "client" in bin:
                         binary_name = "client"
                     elif "controller" in bin:
@@ -87,7 +91,7 @@ $SCP_CMD {self.dev_ssh_user}@{vm.public_ip}:{self.remote_workdir}/logs/{repeat_n
 """
                     
             _script += f"""
-sleep 60
+sleep 10
 """
                     
             # pkill -9 -c server also kills tmux-server. So we can't run a server on the dev VM.
@@ -164,6 +168,26 @@ sleep 60
             i += 1
 
         return ret
+        # return {k: [] for k in worker_names}
+
+    def generate_watchlists(self, sequencer_names: List[str], worker_names: List[str]) -> Dict[str, List[str]]:
+        """
+        Generate a watchlist for each sequencer.
+        If there is only one sequencer, it gets the first 4 workers.
+        Otherwise, worker_names split evenly between the sequencers.
+        """
+        ret = defaultdict(list)
+        if len(sequencer_names) == 1:
+            ret[sequencer_names[0]] = worker_names[:4]
+            return dict(ret)
+
+        curr_sequencer_idx = 0
+        for worker_name in worker_names:
+            ret[sequencer_names[curr_sequencer_idx]].append(worker_name)
+            curr_sequencer_idx = (curr_sequencer_idx + 1) % len(sequencer_names)
+        return dict(ret)
+
+
 
 
     def generate_configs(self, deployment: Deployment, config_dir, log_dir):
@@ -223,6 +247,7 @@ sleep 60
             config["net_config"]["addr"] = listen_addr
             data_dir = os.path.join(self.data_dir, f"{name}-db")
             config["consensus_config"]["log_storage_config"]["RocksDB"]["db_path"] = str(data_dir)
+            config["worker_config"]["state_storage_config"]["RocksDB"]["db_path"] = str(data_dir)
 
             node_configs[name] = config
 
@@ -302,6 +327,7 @@ sleep 60
         print("Sequencer names", sequencer_names)
 
         gossip_downstream_worker_list = self.generate_multicast_tree(worker_names, 2)
+        sequencer_watchlist_map = self.generate_watchlists(sequencer_names, worker_names)
 
         print("Gossip downstream worker list", gossip_downstream_worker_list)
 
@@ -321,7 +347,12 @@ sleep 60
             else:
                 v["worker_config"]["gossip_downstream_worker_list"] = []
 
+            # if True or k == storage_names[0]:
             v["consensus_config"]["learner_list"] = sequencer_names[:]
+
+            if k in sequencer_names:
+                v["consensus_config"]["watchlist"] = sequencer_watchlist_map.get(k, [])
+
             v["net_config"]["tls_cert_path"] = tls_cert_path
             v["net_config"]["tls_key_path"] = tls_key_path
             v["net_config"]["tls_root_ca_cert_path"] = tls_root_ca_cert_path
@@ -342,6 +373,7 @@ sleep 60
         num_clients_per_vm = [self.num_clients // len(client_vms) for _ in range(len(client_vms))]
         num_clients_per_vm[-1] += (self.num_clients - sum(num_clients_per_vm))
 
+        client_start_index = 0
         for client_num in range(len(client_vms)):
             config = deepcopy(self.base_client_config)
             client = "client" + str(client_num + 1)
@@ -359,6 +391,8 @@ sleep 60
 
             config["workload_config"]["num_clients"] = num_clients_per_vm[client_num]
             config["workload_config"]["duration"] = self.duration
+            config["workload_config"]["start_index"] = client_start_index
+            client_start_index += num_clients_per_vm[client_num]
 
             self.binary_mapping[client_vms[client_num]].append(client)
 

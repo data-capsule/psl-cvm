@@ -4,7 +4,8 @@ use log::{debug, info, trace, warn};
 use tokio::sync::Mutex;
 use prost::Message as _;
 
-use crate::{config::AtomicConfig, consensus::batch_proposal::MsgAckChanWithTag, proto::{client::{ProtoClientReply, ProtoClientRequest, ProtoTransactionReceipt}, execution::{ProtoTransaction, ProtoTransactionOp, ProtoTransactionOpResult, ProtoTransactionOpType, ProtoTransactionPhase, ProtoTransactionResult}, rpc::ProtoPayload}, rpc::{client::PinnedClient, server::{LatencyProfile, MsgAckChan}, PinnedMessage, SenderType}, utils::channel::Receiver, worker::{block_sequencer::VectorClock, cache_manager::CacheKey}};
+use crate::{config::AtomicConfig, consensus::batch_proposal::MsgAckChanWithTag, proto::{client::{ProtoClientReply, ProtoClientRequest, ProtoTransactionReceipt}, execution::{ProtoTransaction, ProtoTransactionOp, ProtoTransactionOpResult, ProtoTransactionOpType, ProtoTransactionPhase, ProtoTransactionResult}, rpc::ProtoPayload}, rpc::{client::PinnedClient, server::{LatencyProfile, MsgAckChan}, PinnedMessage, SenderType}, utils::channel::Receiver, worker::{block_sequencer::VectorClock}};
+use crate::utils::types::CacheKey;
 
 pub enum ControllerCommand {
     BlockAllWorkers,

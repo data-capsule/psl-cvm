@@ -76,8 +76,10 @@ pub async fn handshake_server<S>(
 where
     S: ServerContextType + Send + Sync + 'static,
 {
-    let mut rng = rand::rngs::OsRng;
-    let nonce: u32 = rng.gen();
+    let nonce = {
+        let mut rng = rand::rng();
+        rng.random()
+    };
     stream.write_u32(nonce).await?;
 
     // Following usual message structure: Size(u32) | Body

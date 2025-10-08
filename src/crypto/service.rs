@@ -1,10 +1,10 @@
 use std::{io::{Error, ErrorKind}, ops::Deref, pin::Pin, sync::{atomic::fence, Arc}};
-
+use rand::prelude::*;
 use bytes::{BufMut, BytesMut};
 use ed25519_dalek::{verify_batch, Signature, SIGNATURE_LENGTH};
 use log::{trace, warn};
 use prost::Message;
-use rand::{thread_rng, Rng};
+use rand::Rng;
 use sha2::{Digest, Sha512};
 use tokio::{sync::{mpsc::{channel, Receiver, Sender}, oneshot}, task::JoinSet};
 
@@ -150,9 +150,9 @@ pub struct CryptoServiceConnector {
 impl Clone for CryptoServiceConnector {
     fn clone(&self) -> Self {
         let cmd_txs = self.cmd_txs.iter().map(|tx| tx.clone()).collect();
-        let round_robin = thread_rng().gen();
+        let round_robin: u64 = rand::rng().random();
         let num_tasks = self.num_tasks;
-        Self { cmd_txs, round_robin, num_tasks }
+        Self { cmd_txs, round_robin: round_robin as usize, num_tasks }
     }
 }
 
@@ -542,9 +542,10 @@ impl CryptoService {
     }
 
     pub fn get_connector(&self) -> CryptoServiceConnector {
+        let round_robin: u64 = rand::rng().random();
         CryptoServiceConnector {
             cmd_txs: self.cmd_txs.iter().map(|e| e.clone()).collect(),
-            round_robin: thread_rng().gen(),
+            round_robin: round_robin as usize,
             num_tasks: self.num_tasks
         }
     }

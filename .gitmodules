@@ -2,3 +2,6 @@
 	path = autobahn
 	url = https://github.com/grapheo12/autobahn-artifact.git
 	branch = autobahn-pirateship-baseline-2
+[submodule "Nimble"]
+	path = Nimble
+	url = https://github.com/data-capsule/Nimble.git

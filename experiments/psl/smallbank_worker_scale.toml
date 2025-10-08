@@ -52,7 +52,7 @@ signature_max_delay_blocks = 50
 num_crypto_workers = 5
 num_worker_threads_per_worker = 8
 num_replier_threads_per_worker = 8
-read_cache_size = 30_000
+read_cache_size = 100_000
 
 
 [node_config.app_config]
@@ -77,84 +77,103 @@ max_concurrent_requests = 10
 ramp_up_ms = 10_000
 ramp_down_ms = 10_000
 
-[client_config.workload_config.request_config.KVReadWriteYCSB]
-num_keys = 300_000
-num_fields = 1
-val_size = 1024
-linearizable_reads = false
-byz_commit_ratio = 0.0
+[client_config.workload_config.request_config.Smallbank]
+frequency_amalgamate = 15
+frequency_write_check = 15
+frequency_deposit_checking = 15
+frequency_transact_savings = 15
+frequency_send_payment = 25
+frequency_balance = 15
+# frequency_amalgamate = 0
+# frequency_write_check = 0
+# frequency_deposit_checking = 0
+# frequency_transact_savings = 0
+# frequency_send_payment = 0
+# frequency_balance = 100
+num_accounts = 1_000_000
+min_balance = 10000.0
+max_balance = 50000.0
 load_phase = true
-zipf_exponent = 0.99
-read_ratio = 0.5
 
 [[experiments]]
-name = "ycsb_r50_w16_psl"
+name = "smallbank_psl"
 type = "psl_storage"
 # git_hash = "209b1804ff2c2259aced1f0960f48167b1966b94"
 repeats = 1
-# num_clients = 500
-num_nodes = 15
+num_clients = 256
+# num_nodes = 15
 num_storage_nodes = 3
 num_sequencer_nodes = 1
 node_distribution = "tag:worker"
 storage_distribution = "uniform"
 sequencer_distribution = "tag:sequencer"
 build_command = "make"
-duration = 90
+duration = 60
 data_dir = "/data/"
 
 [experiments.sweeping_parameters]
-num_clients = [1, 4, 8, 16, 32, 48, 96, 128, 256]
+num_nodes = [1, 2, 4, 8, 16]
 
 
 [[experiments]]
-name = "ycsb_r50_w16_nimble"
+name = "smallbank_nimble"
 type = "nimble"
 # git_hash = "209b1804ff2c2259aced1f0960f48167b1966b94"
 repeats = 1
-# num_clients = 500
-num_nodes = 15
+num_clients = 256
+# num_nodes = 15
 num_storage_nodes = 3
 num_sequencer_nodes = 4 # 1 coordinator + 3 endorsers
 node_distribution = "tag:worker"
 storage_distribution = "uniform"
 sequencer_distribution = "uniform"
 build_command = "make nimble"
-duration = 90
+duration = 60
 data_dir = "/data/"
 
 [experiments.sweeping_parameters]
-num_clients = [1, 4, 8, 16, 32, 48, 96, 128, 256]
+# num_nodes = [1, 15, 31, 63]
+num_nodes = [1, 2, 4, 8, 16]
+
+
 
 [[experiments]]
-name = "ycsb_r50_w16_unprotected"
+name = "ycsb_unprotected_r50"
 type = "psl_storage"
 # git_hash = "209b1804ff2c2259aced1f0960f48167b1966b94"
 repeats = 1
-# num_clients = 500
-num_nodes = 15
+num_clients = 256
+# num_nodes = 15
 num_storage_nodes = 0
 num_sequencer_nodes = 1
 node_distribution = "tag:worker"
 storage_distribution = "uniform"
 sequencer_distribution = "uniform"
 build_command = "make"
-duration = 90
+duration = 60
 data_dir = "/data/"
 
 [experiments.sweeping_parameters]
-num_clients = [1, 4, 8, 16, 32, 48, 96, 128, 256, 512]
+num_nodes = [1, 2, 4, 8, 16]
+# num_nodes = [30, 40, 50, 60]
+
 
 
 [[results]]
-name = "throughput_latency_client_sweep"
-plotter = "tput_latency_sweep_psl"
+name = "stacked_bar_graph"
+plotter = "stacked_bar_graph_psl"
 ramp_up = 10
 ramp_down = 10
-output = "storage.pdf"
+output = "worker_scale.pdf"
 force_parse = true
+# xlabels = ["1", "15", "31", "63"]
+xlabels = ["1", "2", "4", "8", "16"]
+xtitle = "Number of Nodes"
+
 
 [results.legends]
-ycsb_r50_w16_psl = "psl"
-ycsb_r50_w16_nimble = "nimble"
-ycsb_r50_w16_unprotected = "unprotected"
+smallbank_psl = "psl"
+smallbank_nimble = "nimble"
+# ycsb_unprotected_r0 = "0R-100W"
+ycsb_unprotected_r50 = "unprotected"
+# ycsb_unprotected_r100 = "100R-0W"

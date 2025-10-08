@@ -137,8 +137,8 @@ message ProtoReadSet {
 message ProtoReadSetEntry {
     bytes key = 1;
     bytes value_hash = 2;
-    string origin = 3;
     uint64 after_write_op_index = 4;
+    ProtoVectorClock vc_delta = 5;
 }
 
 message ProtoHeartbeat {

@@ -1,16 +1,13 @@
 use std::{collections::HashMap, future::Future, marker::PhantomData, pin::Pin, sync::Arc, time::Duration};
 
 use anyhow::Ok;
-use futures::{stream::FuturesUnordered, StreamExt};
-use hashbrown::HashSet;
-use itertools::Itertools;
+
 use log::{error, info, trace, warn};
-use nix::libc::sa_family_t;
 use num_bigint::{BigInt, Sign};
 use prost::Message as _;
 use tokio::{sync::{mpsc::{UnboundedReceiver, UnboundedSender}, oneshot, Mutex}, task::JoinSet, time::Instant};
 
-use crate::{config::{AtomicConfig, AtomicPSLWorkerConfig}, consensus::batch_proposal::{MsgAckChanWithTag, TxWithAckChanTag}, crypto::{default_hash, hash, AtomicKeyStore}, proto::{client::{ProtoClientReply, ProtoClientRequest, ProtoTransactionReceipt}, consensus::ProtoVectorClock, execution::{ProtoTransaction, ProtoTransactionOp, ProtoTransactionOpResult, ProtoTransactionOpType, ProtoTransactionPhase, ProtoTransactionResult}, rpc::ProtoPayload}, rpc::{client::{Client, PinnedClient}, server::LatencyProfile, PinnedMessage, SenderType}, utils::{channel::{make_channel, Receiver, Sender}, timer::ResettableTimer}, worker::{block_sequencer::{BlockSeqNumQuery, VectorClock}, cache_manager::CacheKey}};
+use crate::{config::{AtomicConfig, AtomicPSLWorkerConfig}, consensus::batch_proposal::{MsgAckChanWithTag, TxWithAckChanTag}, crypto::{default_hash, hash, AtomicKeyStore}, proto::{client::{ProtoClientReply, ProtoClientRequest, ProtoTransactionReceipt}, consensus::ProtoVectorClock, execution::{ProtoTransaction, ProtoTransactionOp, ProtoTransactionOpResult, ProtoTransactionOpType, ProtoTransactionPhase, ProtoTransactionResult}, rpc::ProtoPayload}, rpc::{client::{Client, PinnedClient}, server::LatencyProfile, PinnedMessage, SenderType}, utils::{channel::{make_channel, Receiver, Sender}, timer::ResettableTimer}, worker::{block_sequencer::{BlockSeqNumQuery, VectorClock}}, utils::types::{CacheKey, CachedValue}};
 
 use super::cache_manager::{CacheCommand, CacheError};
 
@@ -56,14 +53,68 @@ impl CacheConnector {
     pub async fn dispatch_read_request(
         &self,
         key: Vec<u8>,
-    ) -> anyhow::Result<(Vec<u8>, u64), CacheError> {
+    ) -> (anyhow::Result<(Vec<u8>, u64), CacheError>, Option<tokio::sync::oneshot::Receiver<u64 /* block seq num */>>) {
         let (tx, rx) = tokio::sync::oneshot::channel();
-        let command = CacheCommand::Get(key.clone(), tx);
+        let (seq_num_tx, seq_num_rx) = tokio::sync::oneshot::channel();
+        let seq_num_query = BlockSeqNumQuery::WaitForSeqNum(seq_num_tx);
+        // let command = CacheCommand::Get(key.clone(), true, tx);
+        let command = CacheCommand::Get(key.clone(), false, seq_num_query, tx);
 
         self.cache_tx.send(command).await.unwrap();
         let result = rx.await.unwrap();
 
-        result
+        // if let std::result::Result::Ok(CachedValue::PNCounter(_)) = &result {
+        //     return Err(CacheError::TypeMismatch);
+        // }
+
+        (result.map(|v| {
+            match v {
+                CachedValue::DWW(v) => (v.value, v.seq_num),
+                CachedValue::PNCounter(v) => (v.get_value().to_be_bytes().to_vec(), 0),
+            }
+        }), Some(seq_num_rx))
+
+        // match result {
+        //     std::result::Result::Ok(v) => {
+        //         match v {
+        //             CachedValue::DWW(v) => {
+        //                 Ok((v.value, v.seq_num, Some(seq_num_rx)))
+        //             }
+        //             CachedValue::PNCounter(v) => {
+        //                 Ok((v.get_value().to_be_bytes().to_vec(), 0, Some(seq_num_rx)))
+        //             }
+        //         }
+        //     }
+        //     std::result::Result::Err(e) => {
+        //         Err((e, Some(seq_num_rx)))
+        //     }
+        // }
+    }
+
+    pub async fn dispatch_counter_read_request(
+        &self,
+        key: Vec<u8>,
+        should_block_snapshot: bool,
+    ) -> (anyhow::Result<f64, CacheError>, Option<tokio::sync::oneshot::Receiver<u64 /* block seq num */>>) {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let (seq_num_tx, seq_num_rx) = tokio::sync::oneshot::channel();
+        let seq_num_query = BlockSeqNumQuery::WaitForSeqNum(seq_num_tx);
+        let command = CacheCommand::Get(key.clone(), should_block_snapshot, seq_num_query, tx);
+
+        self.cache_tx.send(command).await.unwrap();
+        let result = rx.await.unwrap();
+
+        if let std::result::Result::Ok(CachedValue::DWW(_)) = &result {
+            return (Err(CacheError::TypeMismatch), Some(seq_num_rx));
+        }
+
+        (result.map(|v| {
+            if let CachedValue::PNCounter(v) = v {
+                v.get_value()
+            } else {
+                unreachable!()
+            }
+        }), Some(seq_num_rx))
     }
 
     pub async fn dispatch_write_request(
@@ -71,23 +122,62 @@ impl CacheConnector {
         key: Vec<u8>,
         value: Vec<u8>,
     ) -> anyhow::Result<(u64 /* lamport ts */, Option<tokio::sync::oneshot::Receiver<u64 /* block seq num */>>), CacheError> {
-        // let (tx, rx) = tokio::sync::oneshot::channel();
+        let (tx, rx) = tokio::sync::oneshot::channel();
         let (response_tx, response_rx) = tokio::sync::oneshot::channel();
         let val_hash = BigInt::from_bytes_be(Sign::Plus, &hash(&value));
-        let command = CacheCommand::Put(key.clone(), value, val_hash, BlockSeqNumQuery::DontBother, response_tx);
+        let value = CachedValue::new_dww(value, val_hash);
+        let command = CacheCommand::Put(key.clone(), value, BlockSeqNumQuery::WaitForSeqNum(tx), response_tx);
 
 
         self.cache_tx.send(command).await.unwrap();
 
         let result = response_rx.await.unwrap()?;
-        std::result::Result::Ok((result, None))
+        std::result::Result::Ok((result, Some(rx)))
+    }
+
+    pub async fn dispatch_increment_request(
+        &self,
+        key: Vec<u8>,
+        value: f64,
+    ) -> anyhow::Result<(f64, Option<tokio::sync::oneshot::Receiver<u64 /* block seq num */>>), CacheError> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let (response_tx, response_rx) = oneshot::channel();
+        let command = CacheCommand::Increment(key, value, BlockSeqNumQuery::WaitForSeqNum(tx), response_tx);
+        self.cache_tx.send(command).await.unwrap();
+        let result = response_rx.await.unwrap()?;
+        std::result::Result::Ok((result as f64, Some(rx)))
+    }
+
+    pub async fn dispatch_blind_increment_request(
+        &self,
+        key: Vec<u8>,
+        value: f64,
+    ) -> anyhow::Result<f64, CacheError> {
+        let (response_tx, response_rx) = oneshot::channel();
+        let command = CacheCommand::Increment(key, value, BlockSeqNumQuery::DontBother, response_tx);
+        self.cache_tx.send(command).await.unwrap();
+        let result = response_rx.await.unwrap()?;
+        std::result::Result::Ok(result as f64)
+    }
+
+    pub async fn dispatch_decrement_request(
+        &self,
+        key: Vec<u8>,
+        value: f64,
+    ) -> anyhow::Result<(f64, Option<tokio::sync::oneshot::Receiver<u64 /* block seq num */>>), CacheError> {
+        let (tx, rx) = oneshot::channel();
+        let (response_tx, response_rx) = oneshot::channel();
+        let command = CacheCommand::Decrement(key, value, BlockSeqNumQuery::WaitForSeqNum(tx), response_tx);
+        self.cache_tx.send(command).await.unwrap();
+        let result = response_rx.await.unwrap()?;
+        std::result::Result::Ok((result as f64, Some(rx)))
     }
 
     pub async fn dispatch_commit_request(&self, _force_prepare: bool) -> VectorClock {
         let (tx, rx) = oneshot::channel();
         let command = CacheCommand::Commit(tx, false /* force_prepare */);
         
-        self.cache_tx.send(command).await;
+        self.cache_tx.send(command).await.unwrap();
         let vc = rx.await.unwrap();
         vc
     }
@@ -187,18 +277,18 @@ impl CacheConnector {
             
             let start_time = Instant::now();
             
-            loop {
+            // loop {
                 let (tx, rx) = oneshot::channel();
-                let _ = self.cache_tx.send(CacheCommand::QueryVC(tx)).await.unwrap();
-                let curr_vc = rx.await.unwrap();
-                if curr_vc >= vc {
-                    break;
-                }
+                let _ = self.cache_tx.send(CacheCommand::TransparentWaitForVC(vc.clone(), tx)).await.unwrap();
+                let _ = rx.await.unwrap();
+                // if curr_vc >= vc {
+                //     break;
+                // }
 
-                trace!("VC wait time: {:?} curr_vc: {} need vc: {}", start_time.elapsed(), curr_vc, vc);
+                trace!("VC wait time: {:?} need vc: {}", start_time.elapsed(), vc);
 
-                tokio::time::sleep(Duration::from_millis(1)).await;
-            }
+                // tokio::time::sleep(Duration::from_millis(1)).await;
+            // }
 
             // error!("VC wait time: {:?}", start_time.elapsed());
 
@@ -377,6 +467,8 @@ impl<T: ClientHandlerTask + Send + Sync + 'static> PSLAppEngine<T> {
                             pending_results.push((result, ack_chan, seq_num));
                         }
                     }
+
+                    let mut total_replies = 0;
                     for (result, ack_chan, seq_num) in &pending_results {
                         if *seq_num > commit_seq_num {
                             continue;
@@ -403,9 +495,13 @@ impl<T: ClientHandlerTask + Send + Sync + 'static> PSLAppEngine<T> {
                         let msg = PinnedMessage::from(buf, len, SenderType::Anon);
                         ack_chan.0.send((msg, LatencyProfile::new())).await;
 
+                        total_replies += 1;
+
                     }
 
                     pending_results.retain(|(_, _, seq_num)| *seq_num > commit_seq_num);
+
+                    trace!("Sent {} replies", total_replies);
                 }  
             });
         }

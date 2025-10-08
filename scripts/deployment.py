@@ -230,10 +230,17 @@ class Deployment:
                 f"mkdir -p {self.workdir}",
             ], self.ssh_user, self.ssh_key, node)
 
-        res = run_local([
+        run_local([
+            f"rsync -avz -e 'ssh -o StrictHostKeyChecking=no -i {self.ssh_key}' {self.workdir}/* {self.ssh_user}@{self.dev_vm.public_ip}:~/{self.workdir}/"
+        ], hide=False, asynchronous=False)
+
+        ssh_cmds = [
             f"rsync -avz -e 'ssh -o StrictHostKeyChecking=no -i {self.ssh_key}' {self.workdir}/* {self.ssh_user}@{node.public_ip}:~/{self.workdir}/"
             for node in nodelist
-        ], hide=True, asynchronous=True)
+        ]
+
+        print(ssh_cmds)
+        res = run_remote_public_ip(ssh_cmds, self.ssh_user, self.ssh_key, self.dev_vm)
 
         for (i, node) in enumerate(nodelist):
             print("Copied to", node.name, "Output (truncated):\n", "\n".join(res[i].split("\n")[-2:]))
@@ -393,9 +400,9 @@ class Deployment:
         return s
     
     def get_all_node_vms(self):
-        return [
+        return list(sorted([
             vm for vm in self.nodelist if "node" in vm.name
-        ]
+        ], key=lambda vm: vm.name))
     
     def get_all_client_vms(self):
         return [
@@ -545,10 +552,13 @@ class AWSDeployment(Deployment):
 
         machine_list = json.loads(machine_list)
 
-        # The format is: [[name, private_ip, public_ip]]
+        print("Machine list:")
+        pprint(machine_list)
+
+        # The format is: [[name, private_ip, public_ip, job]]
 
         node_list = {}
-        for name, private_ip, public_ip in machine_list:
+        for name, private_ip, public_ip, job in machine_list:
             
             if "tdx" in name:
                 tee_type = "tdx"
@@ -567,7 +577,8 @@ class AWSDeployment(Deployment):
                 "private_ip": private_ip,
                 "public_ip": public_ip,
                 "tee_type": tee_type,
-                "region_id": region_id
+                "region_id": region_id,
+                "tag": job
             }
 
         self.raw_config["node_list"] = node_list
@@ -647,7 +658,10 @@ class AWSDeployment(Deployment):
     def get_all_node_vms(self):
         # Node VMs are named sevpool, tdxpool etc.
         # Logic: Find nodes that are not client or storage
-        return list(set(self.nodelist) - set(self.get_all_client_vms()) - set(self.get_all_storage_vms()))
+        return list(sorted(
+            list(set(self.nodelist) - set(self.get_all_client_vms()) - set(self.get_all_storage_vms())),
+            key=lambda x: x.name
+        ))
     
     def get_all_client_vms(self):
         return [

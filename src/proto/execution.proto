@@ -15,23 +15,26 @@ enum ProtoTransactionOpType {
     INCREMENT = 3;
     CAS = 4;
     // DECREMENT = 4; <-- For decrement send, INCREMENT with negative value
+    CHECKED_DECREMENT = 5;
 
     // For reconfiguration
-    ADD_LEARNER = 5;
-    UPGRADE_FULL_NODE = 6;
-    DEL_LEARNER = 7;
-    DOWNGRADE_FULL_NODE = 8;
+    ADD_LEARNER = 6;
+    UPGRADE_FULL_NODE = 7;
+    DEL_LEARNER = 8;
+    DOWNGRADE_FULL_NODE = 9;
 
     // For SQL and other operations
-    CUSTOM = 9;
+    CUSTOM = 10;
+    STORED_PROCEDURE1 = 11;
+    STORED_PROCEDURE2 = 12;
 
     // To check for byz commit
-    PROBE = 10;
+    PROBE = 13;
 
     // To Block on VectorClock
-    BLOCK_ON_VC = 11;
-    BLOCK_INDEFINITELY = 12;
-    UNBLOCK = 13;
+    BLOCK_ON_VC = 14;
+    BLOCK_INDEFINITELY = 15;
+    UNBLOCK = 16;
 
 }
 

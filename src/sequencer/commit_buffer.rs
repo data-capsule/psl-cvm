@@ -14,7 +14,7 @@ pub struct CommitBuffer {
     uncommitted_buffer: HashMap<(String /* origin */, u64 /* seq_num */), (BlockStats, HashType, CachedBlock, usize /* votes */)>,
     commit_indices: HashMap<String /* origin */, u64 /* seq_num */>,
 
-    auditor_tx: Sender<CachedBlock>,
+    auditor_tx: tokio::sync::mpsc::UnboundedSender<CachedBlock>,
 }
 
 #[derive(Clone)]
@@ -26,7 +26,7 @@ pub struct BlockStats {
 }
 
 impl CommitBuffer {
-    pub fn new(config: AtomicConfig, block_rx: Receiver<(SenderType, CachedBlock)>, auditor_tx: Sender<CachedBlock>) -> Self {
+    pub fn new(config: AtomicConfig, block_rx: Receiver<(SenderType, CachedBlock)>, auditor_tx: tokio::sync::mpsc::UnboundedSender<CachedBlock>) -> Self {
         let log_timer = ResettableTimer::new(Duration::from_millis(config.get().app_config.logger_stats_report_ms));
         Self {
             config, block_rx, log_timer,
@@ -98,7 +98,7 @@ impl CommitBuffer {
         if entry.3 >= commit_threshold {
             self.commit_indices.insert(origin.clone(), seq_num);
             let val = self.uncommitted_buffer.remove(&(origin.clone(), seq_num)).unwrap();
-            self.auditor_tx.send(val.2).await.unwrap();
+            self.auditor_tx.send(val.2).unwrap();
         }
 
     }

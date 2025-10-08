@@ -1,9 +1,11 @@
-use std::{collections::{HashMap, VecDeque}, pin::Pin, sync::Arc, time::{Duration, Instant}};
+use std::{collections::{HashMap, HashSet, VecDeque}, pin::Pin, sync::Arc, time::{Duration, Instant}};
 
+use itertools::Itertools;
 use log::{error, info, trace, warn};
 use tokio::sync::{mpsc::{UnboundedReceiver, UnboundedSender}, Mutex};
 
-use crate::{config::AtomicConfig, crypto::CachedBlock, proto::consensus::{ProtoBlock, ProtoReadSet, ProtoReadSetEntry}, rpc::SenderType, sequencer::auditor::SnapshotStore, utils::{channel::Receiver, timer::ResettableTimer}, worker::{block_sequencer::{cached_value_to_val_hash, VectorClock}, cache_manager::{process_tx_op, CacheKey, CachedValue}}};
+use crate::{config::AtomicConfig, crypto::CachedBlock, proto::consensus::{ProtoBlock, ProtoReadSet, ProtoReadSetEntry, ProtoVectorClockEntry}, rpc::SenderType, sequencer::auditor::SnapshotStore, utils::{channel::Receiver, timer::ResettableTimer}, worker::{block_sequencer::{cached_value_to_val_hash, VectorClock}, cache_manager::process_tx_op}};
+use crate::utils::types::{CacheKey, CachedValue};
 
 
 #[allow(dead_code)]
@@ -198,13 +200,45 @@ impl PerWorkerAuditor {
             // Let's yield to tokio here.
             tokio::task::yield_now().await;
 
-            let read_vc = &self.unaudited_buffer.front().unwrap().clone()
-                .block.vector_clock;
+            let block_ref = self.unaudited_buffer.front().unwrap();
+
+            let read_vc = &block_ref.block.vector_clock;
             let read_vc = VectorClock::from(read_vc.clone());
 
-            if read_vc <= self.available_vc {
+            let mut all_read_vcs = Vec::new();
+            all_read_vcs.push(read_vc.clone());
+
+            if let Some(read_set) = &block_ref.block.read_set {
+                for entry in &read_set.entries {
+                    let vc_delta = &entry.vc_delta;
+                    if vc_delta.is_none() {
+                        continue;
+                    }
+
+                    let mut _vc = read_vc.clone();
+
+                    let vc_delta = vc_delta.as_ref().unwrap();
+                    for ProtoVectorClockEntry { sender, seq_num } in vc_delta.entries.iter() {
+                        _vc.advance(SenderType::Auth(sender.clone(), 0), *seq_num);
+                    }
+
+
+                    // Invariant expected: vc_deltas are in "increasing" order.
+                    if all_read_vcs.last().unwrap() != &_vc {
+                        all_read_vcs.push(_vc);
+                    }
+                }
+            }
+
+            if all_read_vcs.len() > 1 {
+                trace!("All read vcs: {:?}", all_read_vcs.len());
+            }
+
+            let can_audit = all_read_vcs.iter().all(|read_vc| read_vc <= &self.available_vc);
+
+            if can_audit {
                 let block = self.unaudited_buffer.pop_front().unwrap();
-                self.do_audit_block(block, read_vc).await;
+                self.do_audit_block(block, all_read_vcs).await;
                 audit_successful = true;
             } else {
                 break;
@@ -214,48 +248,47 @@ impl PerWorkerAuditor {
         audit_successful
     }
 
-    async fn do_audit_block(&mut self, block: CachedBlock, read_vc: VectorClock) {
+    async fn do_audit_block(&mut self, block: CachedBlock, all_read_vcs: Vec<VectorClock>) {
         let start_time = Instant::now();
-        
-        let updates = self.generate_updates(read_vc.clone()).await;
-        // let updates = vec![];
-        // self.snapshot_store.install_snapshot(read_vc.clone(), self.worker_name.clone(), updates.clone()).await;
-        self.snapshot_update_buffer.insert(read_vc.clone(), updates.clone());
-        for (key, value) in updates {
-            self.put(key, value, read_vc.clone());
+        for read_vc in all_read_vcs {
+            let start_time = Instant::now();
+            let updates = self.generate_updates(read_vc.clone()).await;
+            self.snapshot_update_buffer.insert(read_vc.clone(), updates.clone());
+            for (key, value) in updates {
+                self.put(key, value, read_vc.clone());
+            }
+            self.__snapshot_generated_counter += 1;
+            self.__gen_snapshot_time_sum += Instant::now() - start_time;
+            
+            let _verify_reads_start_time = Instant::now();
+            
+            let write_ops = self.filter_write_ops_into_vec(&block.block);
+            
+            trace!("Write ops time: {:?} len: {}", Instant::now() - _verify_reads_start_time, write_ops.len());
+            
+            match &block.block.read_set {
+                Some(read_set) => {
+                    self.verify_reads(read_set, &read_vc, &write_ops).await;
+                    trace!("Verify reads time: {:?} len: {}", Instant::now() - _verify_reads_start_time, read_set.entries.len());
+                    
+                },
+                None => {
+                    // No reads to verify.
+                },
+            }
+            self.__verify_reads_time_sum += Instant::now() - _verify_reads_start_time;
+            // This is unbounded so as to not cause deadlock.
+    
+            if self.last_read_vc != VectorClock::new() {
+                let updates = self.snapshot_update_buffer.remove(&self.last_read_vc).unwrap();
+                self.gc_tx.send((self.worker_name.clone(), self.last_read_vc.clone(), updates)).unwrap();
+            }
+            self.last_read_vc = read_vc.clone();
         }
-        self.__snapshot_generated_counter += 1;
-        self.__gen_snapshot_time_sum += Instant::now() - start_time;
-
-        let _verify_reads_start_time = Instant::now();
-
-        let write_ops = self.filter_write_ops_into_vec(&block.block);
-
-        trace!("Write ops time: {:?} len: {}", Instant::now() - _verify_reads_start_time, write_ops.len());
-
-        match &block.block.read_set {
-            Some(read_set) => {
-                self.verify_reads(read_set, &read_vc, &write_ops).await;
-                trace!("Verify reads time: {:?} len: {}", Instant::now() - _verify_reads_start_time, read_set.entries.len());
-
-            },
-            None => {
-                // No reads to verify.
-            },
-        }
-
-
-        self.__verify_reads_time_sum += Instant::now() - _verify_reads_start_time;
 
 
 
-        // This is unbounded so as to not cause deadlock.
 
-        if self.last_read_vc != VectorClock::new() {
-            let updates = self.snapshot_update_buffer.remove(&self.last_read_vc).unwrap();
-            self.gc_tx.send((self.worker_name.clone(), self.last_read_vc.clone(), updates)).unwrap();
-        }
-        self.last_read_vc = read_vc.clone();
 
         let end_time = Instant::now();
         self.__audit_block_time_sum += end_time - start_time;
@@ -276,8 +309,17 @@ impl PerWorkerAuditor {
         let mut updates = HashMap::new();
         for map in update_map {
             for (key, value) in map {
-                let _ = updates.entry(key).or_insert(value.clone())
-                    .merge_cached(value);
+                let entry = updates.entry(key).or_insert(value.clone());
+                    // .merge_cached(value);
+
+                match entry {
+                    CachedValue::DWW(dww_val) => {
+                        dww_val.merge_cached(value.get_dww().unwrap().clone());
+                    },
+                    CachedValue::PNCounter(pn_counter_val) => {
+                        pn_counter_val.merge(value.get_pn_counter().unwrap().clone());
+                    }
+                }
             }
         }
 
@@ -288,11 +330,19 @@ impl PerWorkerAuditor {
                 if base_value.is_none() {
                     continue;
                 }
-                let _ = value.merge_cached(base_value.unwrap());
+                // let _ = value.merge_cached(base_value.unwrap());
+                match value {
+                    CachedValue::DWW(dww_val) => {
+                        dww_val.merge_cached(base_value.unwrap().get_dww().unwrap().clone());
+                    },
+                    CachedValue::PNCounter(pn_counter_val) => {
+                        pn_counter_val.merge(base_value.unwrap().get_pn_counter().unwrap().clone());
+                    }
+                }
             }
         }
 
-        trace!("Updates: {:#?}", updates.iter().map(|(key, value)| (String::from_utf8(key.clone()).unwrap(), hex::encode(value.val_hash.to_bytes_be().1), read_vc.clone())).collect::<Vec<_>>());
+        // trace!("Updates: {:#?}", updates.iter().map(|(key, value)| (String::from_utf8(key.clone()).unwrap(), hex::encode(value.val_hash.to_bytes_be().1), read_vc.clone())).collect::<Vec<_>>());
 
 
         updates.into_iter().collect()
@@ -379,8 +429,16 @@ impl PerWorkerAuditor {
             let ops = tx.on_crash_commit.as_ref().unwrap();
             for op in &ops.ops {
                 let Some((key, cached_value)) = process_tx_op(op) else { continue };
-                let _ = updates.entry(key).or_insert(cached_value.clone())
-                    .merge_cached(cached_value);
+                let entry = updates.entry(key).or_insert(cached_value.clone());
+                    // .merge_cached(cached_value);
+                match entry {
+                    CachedValue::DWW(dww_val) => {
+                        dww_val.merge_cached(cached_value.get_dww().unwrap().clone());
+                    },
+                    CachedValue::PNCounter(pn_counter_val) => {
+                        pn_counter_val.merge(cached_value.get_pn_counter().unwrap().clone());
+                    }
+                }
             }
         }
         updates
@@ -408,18 +466,35 @@ impl PerWorkerAuditor {
     async fn verify_reads(&mut self, read_set: &ProtoReadSet, read_vc: &VectorClock, write_ops: &Vec<(CacheKey, CachedValue)>) {
         let mut local_cache = HashMap::new();
         let mut cached_upto = 0;
-        for ProtoReadSetEntry { key, value_hash, origin, after_write_op_index } in &read_set.entries {
+
+        for ProtoReadSetEntry { key, value_hash, after_write_op_index, vc_delta } in &read_set.entries {
+            let mut _read_vc = read_vc.clone();
+            if vc_delta.is_some() {
+                let vc_delta = vc_delta.as_ref().unwrap();
+                for ProtoVectorClockEntry { sender, seq_num } in vc_delta.entries.iter() {
+                    _read_vc.advance(SenderType::Auth(sender.clone(), 0), *seq_num);
+                }
+            }
+
+            if _read_vc != *read_vc {
+                continue;
+            }
+            
             while cached_upto < *after_write_op_index {
                 assert!(cached_upto < write_ops.len() as u64);
                 let (key, value) = write_ops[cached_upto as usize].clone();
-                // let _snapshot_value = self.snapshot_store.get(&key, read_vc).await;
-                // let _snapshot_value: Option<CachedValue>  = None;
                 let _snapshot_value = self.get(&key);
-                // assert!(_snapshot_value == snapshot_value, "key: {} read_vc: {} _snapshot_value: {:?} snapshot_value: {:?}",
-                //     String::from_utf8(key.clone()).unwrap(), read_vc, _snapshot_value, snapshot_value);
                 if _snapshot_value.is_some() {
                     local_cache.insert(key.clone(), _snapshot_value.unwrap());
-                    let _ = local_cache.get_mut(&key).unwrap().merge_cached(value);
+                    let entry= local_cache.get_mut(&key).unwrap(); // .merge_cached(value);
+                    match entry {
+                        CachedValue::DWW(dww_val) => {
+                            let _ = dww_val.merge_cached(value.get_dww().unwrap().clone());
+                        },
+                        CachedValue::PNCounter(pn_counter_val) => {
+                            pn_counter_val.merge(value.get_pn_counter().unwrap().clone());
+                        }
+                    }
                 } else {
                     local_cache.insert(key, value);
                 }
@@ -428,22 +503,34 @@ impl PerWorkerAuditor {
             let correct_value = if local_cache.contains_key(key) {
                 local_cache.get(key).cloned()
             } else {
-                // let __correct_value = self.snapshot_store.get(key, read_vc).await;
-                // let __correct_value = None;
                 let __correct_value = self.get(key);
-                // assert!(__correct_value == val, "key: {} read_vc: {} correct_value: {:?} val: {:?}",
-                //     String::from_utf8(key.clone()).unwrap(), read_vc, __correct_value, val);
 
                 __correct_value
             };
-            let correct_value_hash = cached_value_to_val_hash(correct_value);
-            if *value_hash != correct_value_hash {
+            let correct_value_hash = cached_value_to_val_hash(correct_value.clone());
+
+            let read_match = match correct_value {
+                Some(CachedValue::PNCounter(_)) => {
+                    let buf1 = value_hash.as_slice().try_into();
+                    let buf2 = correct_value_hash.as_slice().try_into();
+
+                    if buf1.is_err() || buf2.is_err() {
+                        false
+                    } else {
+                        (f64::from_be_bytes(buf1.unwrap()) - f64::from_be_bytes(buf2.unwrap())).abs() < 1e-6
+                    }
+                },
+                _ => {
+                    *value_hash == correct_value_hash
+                }
+            };
+            if !read_match {
                 let key_str = String::from_utf8(key.clone()).unwrap_or(hex::encode(key));
                 let correct_value_hex_str = &hex::encode(correct_value_hash);
                 let value_hex_str = &hex::encode(value_hash);
 
-                trace!("❌ Read verification failed in {} for key: {} correct_value_hash: {} value_hash: {} read_vc: {} Value origin: {}",
-                    self.worker_name, key_str, correct_value_hex_str, value_hex_str, read_vc, origin);
+                warn!("❌ Read verification failed in {} for key: {} correct_value_hash: {} value_hash: {} read_vc: {}",
+                    self.worker_name, key_str, correct_value_hex_str, value_hex_str, read_vc);
 
 
                 self.num_incorrect_reads += 1;

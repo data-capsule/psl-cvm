@@ -192,6 +192,7 @@ class Experiment:
         num_clients_per_vm = [self.num_clients // len(client_vms) for _ in range(len(client_vms))]
         num_clients_per_vm[-1] += (self.num_clients - sum(num_clients_per_vm))
 
+        client_start_index = 0
         for client_num in range(len(client_vms)):
             config = deepcopy(self.base_client_config)
             client = "client" + str(client_num + 1)
@@ -206,6 +207,8 @@ class Experiment:
 
             config["workload_config"]["num_clients"] = num_clients_per_vm[client_num]
             config["workload_config"]["duration"] = self.duration
+            config["workload_config"]["start_index"] = client_start_index
+            client_start_index += num_clients_per_vm[client_num]
 
             self.binary_mapping[client_vms[client_num]].append(client)
 

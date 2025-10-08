@@ -1,0 +1,120 @@
+workdir = "deployment_artifacts"
+project_home = "https://github.com/data-capsule/psl-cvm"
+
+[deployment_config]
+provider = "aws"
+mode = "modest"
+ssh_key = "cluster_key.pem"
+ssh_user = "psladmin"
+node_port_base = 3000
+
+[node_config]
+
+[node_config.net_config]
+client_max_retry = 10
+
+[node_config.rpc_config]
+recv_buffer_size = 32768
+channel_depth = 1000
+
+[node_config.consensus_config]
+commit_index_gap_soft = 250
+commit_index_gap_hard = 5000
+liveness_u = 0
+max_backlog_batch_size = 1000
+signature_max_delay_blocks = 10
+signature_max_delay_ms = 10000
+num_crypto_workers = 5
+view_timeout_ms = 4000
+batch_max_delay_ms = 2
+max_audit_snapshots = 8
+max_audit_buffer_size = 1000
+max_audit_delay_ms = 1000
+
+[node_config.consensus_config.log_storage_config.RocksDB]
+write_buffer_size = 2147483648
+max_write_buffer_number = 1
+max_write_buffers_to_merge = 1
+
+[node_config.worker_config]
+all_writes_max_batch_size = 1000
+self_writes_max_batch_size = 1000
+self_reads_max_batch_size = 1000
+batch_max_delay_ms = 2
+signature_max_delay_ms = 20000
+signature_max_delay_blocks = 50
+num_crypto_workers = 5
+num_worker_threads_per_worker = 4
+num_replier_threads_per_worker = 4
+
+
+[node_config.app_config]
+logger_stats_report_ms = 1000
+checkpoint_interval_ms = 1000
+
+[node_config.evil_config]
+simulate_byzantine_behavior = false
+byzantine_start_block = 0
+
+
+[client_config]
+full_duplex = true
+client_sub_id = 0       # This is filled up later by the caller code.
+
+
+[client_config.net_config]
+client_max_retry = 10
+
+[client_config.workload_config]
+max_concurrent_requests = 5
+
+[client_config.workload_config.request_config.Smallbank]
+# frequency_amalgamate = 15
+# frequency_write_check = 15
+# frequency_deposit_checking = 15
+# frequency_transact_savings = 15
+# frequency_send_payment = 25
+# frequency_balance = 15
+frequency_amalgamate = 0
+frequency_write_check = 0
+frequency_deposit_checking = 0
+frequency_transact_savings = 0
+frequency_send_payment = 0
+frequency_balance = 100
+num_accounts = 1000000
+min_balance = 10000.0
+max_balance = 50000.0
+load_phase = true
+
+[[experiments]]
+name = "ycsb"
+type = "psl_storage"
+# git_hash = "209b1804ff2c2259aced1f0960f48167b1966b94"
+repeats = 1
+num_clients = 100
+num_storage_nodes = 3
+num_sequencer_nodes = 1
+node_distribution = "uniform"
+storage_distribution = "uniform"
+sequencer_distribution = "tag:sequencer"
+build_command = "make"
+duration = 180
+data_dir = "/data/"
+
+[experiments.sweeping_parameters]
+# num_nodes = [1, 2, 4, 8]
+num_nodes = [3]
+
+[[results]]
+name = "throughput_client_sweep"
+plotter = "throughput_client_sweep"
+ramp_up = 0
+ramp_down = 0
+output = "storage.pdf"
+force_parse = true
+
+# input_rate_slope = 100.0 # 100 rps x 1 MiB = 100 MiB/s
+
+
+[results.legends]
+storage_sig_1 = "sig\\_interval=1"

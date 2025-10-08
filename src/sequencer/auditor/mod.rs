@@ -4,7 +4,8 @@ use dashmap::DashMap;
 use log::{info, warn};
 use tokio::{sync::{mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender}, Mutex}, task::JoinSet};
 
-use crate::{config::AtomicConfig, crypto::CachedBlock, rpc::SenderType, sequencer::auditor::{per_worker_auditor::PerWorkerAuditor}, utils::{channel::{make_channel, Receiver, Sender}, timer::ResettableTimer}, worker::{block_sequencer::VectorClock, cache_manager::{CacheKey, CachedValue}}};
+use crate::{config::AtomicConfig, crypto::CachedBlock, rpc::SenderType, sequencer::auditor::{per_worker_auditor::PerWorkerAuditor}, utils::{channel::{make_channel, Receiver, Sender}, timer::ResettableTimer}, worker::{block_sequencer::VectorClock}};
+use crate::utils::types::{CacheKey, CachedValue};
 
 mod per_worker_auditor;
 
@@ -23,8 +24,17 @@ impl SnapshotStore {
     }
 
     pub fn insert(&self, key: CacheKey, value: CachedValue) {
-        let _ = self.0.entry(key).or_insert(value.clone())
-            .merge_cached(value);
+        let mut entry = self.0.entry(key).or_insert(value.clone());
+        let val = entry.value_mut();
+
+        match val {
+            CachedValue::DWW(dww_val) => {
+                dww_val.merge_cached(value.get_dww().unwrap().clone());
+            },
+            CachedValue::PNCounter(pn_counter_val) => {
+                pn_counter_val.merge(value.get_pn_counter().unwrap().clone());
+            }
+        }
     }
 
     pub fn size(&self) -> usize {
@@ -37,7 +47,7 @@ pub struct Auditor {
     gc_vcs: HashMap<String, VectorClock>,
     snapshot_store: SnapshotStore,
 
-    block_rx: Receiver<CachedBlock>,
+    block_rx: tokio::sync::mpsc::UnboundedReceiver<CachedBlock>,
     gc_rx: UnboundedReceiver<(String, VectorClock, Vec<(CacheKey, CachedValue)>)>,
     per_worker_min_gc_txs: Vec<UnboundedSender<VectorClock>>,
     gc_counter: usize,
@@ -52,21 +62,23 @@ pub struct Auditor {
 }
 
 impl Auditor {
-    pub fn new(config: AtomicConfig, block_rx: Receiver<CachedBlock>) -> Self {
+    pub fn new(config: AtomicConfig, block_rx: tokio::sync::mpsc::UnboundedReceiver<CachedBlock>) -> Self {
         let _config = config.get();
         let _chan_depth = _config.rpc_config.channel_depth as usize;
 
-        let all_worker_names = _config.net_config.nodes.keys()
-            .filter(|name| name.starts_with("node"));
+        // let all_worker_names = _config.net_config.nodes.keys()
+        //     .filter(|name| name.starts_with("node"));
 
-        let gc_vcs = all_worker_names.clone().map(|name| (name.clone(), VectorClock::new())).collect();
+        let all_worker_names = _config.consensus_config.watchlist.clone();
+
+        let gc_vcs = all_worker_names.iter().map(|name| (name.clone(), VectorClock::new())).collect();
         let (gc_tx, gc_rx) = unbounded_channel();
 
         let mut per_worker_auditor_txs = Vec::new();
         let mut per_worker_min_gc_txs = Vec::new();
 
         let snapshot_store = SnapshotStore::new();
-        let per_worker_auditors = all_worker_names.clone().map(|name| {
+        let per_worker_auditors = all_worker_names.iter().map(|name| {
             let (tx, rx) = make_channel(_chan_depth);
             let (min_gc_tx, min_gc_rx) = unbounded_channel();
             per_worker_min_gc_txs.push(min_gc_tx);
@@ -78,7 +90,6 @@ impl Auditor {
                     gc_tx.clone(), min_gc_rx, snapshot_store.clone()
                 )
             ))
-                
         }).collect();
 
         let log_timer = ResettableTimer::new(Duration::from_millis(_config.app_config.logger_stats_report_ms));

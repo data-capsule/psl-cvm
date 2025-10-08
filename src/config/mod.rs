@@ -89,6 +89,13 @@ pub struct ConsensusConfig {
     pub max_gc_counter: usize, // Only used by the sequencer.
     #[serde(default = "default_max_gc_interval_ms")]
     pub max_gc_interval_ms: u64, // Only used by the sequencer.
+
+    #[serde(default = "default_watchlist")]
+    pub watchlist: Vec<String>,
+}
+
+const fn default_watchlist() -> Vec<String> {
+    vec![]
 }
 
 const fn default_max_gc_counter() -> usize {
@@ -116,12 +123,23 @@ pub struct WorkerConfig {
     pub num_crypto_workers: usize,
     pub num_worker_threads_per_worker: usize,
     pub num_replier_threads_per_worker: usize,
+
+    #[serde(default = "default_nimble_endpoint_url")]
+    pub nimble_endpoint_url: Option<String>,
+
+    pub state_storage_config: StorageConfig,
+
+    #[serde(default = "default_read_cache_size")]
+    pub read_cache_size: usize,
 }
 
 const fn default_heartbeat_max_delay_ms() -> u64 {
     200
 }
 
+const fn default_read_cache_size() -> usize {
+    30_000
+}
 
 
 impl ConsensusConfig {
@@ -186,10 +204,17 @@ pub struct EvilConfig {
 
     #[serde(default = "default_rollbacked_response_ratio")]
     pub rollbacked_response_ratio: f64, // Used for PSL workers.
+
+    #[serde(default = "default_rolledback_response_count")]
+    pub rolledback_response_count: usize,
 }
 
 const fn default_rollbacked_response_ratio() -> f64 {
     0.0
+}
+
+const fn default_rolledback_response_count() -> usize {
+    0
 }
 
 
@@ -213,6 +238,18 @@ pub struct PSLWorkerConfig {
 
     #[cfg(feature = "evil")]
     pub evil_config: EvilConfig,
+
+}
+
+const fn default_nimble_endpoint_url() -> Option<String> {
+    None
+}
+
+impl PSLWorkerConfig {
+    /// If you don't set the nimble_endpoint_url, then it will panic.
+    pub fn get_nimble_endpoint_url(&self) -> String {
+        self.worker_config.nimble_endpoint_url.clone().unwrap()
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -236,13 +273,36 @@ const fn default_rate() -> f64 {
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct WorkloadConfig {
     pub num_clients: usize,
+
+    #[serde(default = "default_start_index")]
+    pub start_index: usize,
+
     pub duration: u64,
+
+    #[serde(default = "default_ramp_up_ms")]
+    pub ramp_up_ms: u64,
+
+    #[serde(default = "default_ramp_down_ms")]
+    pub ramp_down_ms: u64,
+
     pub max_concurrent_requests: usize,
 
     #[serde(default = "default_rate")]
     pub rate: f64, // in requests per second
 
     pub request_config: RequestConfig
+}
+
+const fn default_start_index() -> usize {
+    0
+}
+
+const fn default_ramp_up_ms() -> u64 {
+    0
+}
+
+const fn default_ramp_down_ms() -> u64 {
+    0
 }
 
 impl WorkerConfig {
@@ -267,6 +327,7 @@ impl WorkerConfig {
             max_audit_delay_ms: 10000000,
             max_gc_counter: 0,
             max_gc_interval_ms: 0,
+            watchlist: vec![],
         }
     }
 }
@@ -351,6 +412,7 @@ impl ClientConfig {
                 log_storage_config: StorageConfig::RocksDB(RocksDBConfig::default()),
                 max_gc_counter: 0,
                 max_gc_interval_ms: 0,
+                watchlist: vec![],
             },
             app_config: AppConfig {
                 logger_stats_report_ms: 100,
@@ -365,6 +427,7 @@ impl ClientConfig {
                 simulate_byzantine_behavior: false,
                 byzantine_start_block: 0,
                 rollbacked_response_ratio: 0.0,
+                rolledback_response_count: 0,
             }
         }
     }

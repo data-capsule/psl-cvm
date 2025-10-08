@@ -79,10 +79,9 @@ enum NodeType {
 
     #[cfg(feature = "app_ml")]
     Worker(worker::PSLWorker<worker::engines::SLIDETask>),
-    #[cfg(feature = "app_kvs")]
-    Worker(worker::PSLWorker<worker::engines::KVSTask>),
-    #[cfg(feature = "app_logger")]
-    Worker(worker::PSLWorker<worker::engines::KVSTask>),
+
+    #[cfg(not(feature = "app_ml"))]
+    Worker(worker::PSLWorker<worker::engines::AbortableKVSTask>),
 
     Storage(storage_server::StorageNode),
 
@@ -95,15 +94,7 @@ async fn run_sequencer(cfg: Config) -> NodeType {
 
 
 async fn run_worker(cfg: PSLWorkerConfig) -> NodeType {
-    #[cfg(feature = "app_ml")]
-    let node = worker::PSLWorker::<worker::engines::SLIDETask>::new(cfg);
-
-    #[cfg(feature = "app_kvs")]
-    let node = worker::PSLWorker::<worker::engines::KVSTask>::new(cfg);
-
-    #[cfg(feature = "app_logger")]
-    let node = worker::PSLWorker::<worker::engines::KVSTask>::new(cfg);
-
+    let node = worker::PSLWorker::<worker::engines::AbortableKVSTask>::new(cfg);
 
     NodeType::Worker(node)
 }
@@ -202,7 +193,7 @@ fn main() {
             let _cids = core_ids.clone();
             let lcores = _cids.lock().unwrap();
             let id = (start_idx + i.fetch_add(1, std::sync::atomic::Ordering::SeqCst)) % lcores.len();
-            let res = core_affinity::set_for_current(lcores[id]);
+            // let res = core_affinity::set_for_current(lcores[id]);
     
             // if res {
             //     debug!("Thread pinned to core {:?}", id);

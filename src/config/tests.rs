@@ -71,6 +71,8 @@ fn test_nodeconfig_serialize() {
         max_gc_counter: 0,
         max_gc_interval_ms: 0,
 
+        watchlist: vec![],
+
     };
 
     let app_config = AppConfig {
@@ -85,6 +87,7 @@ fn test_nodeconfig_serialize() {
         simulate_byzantine_behavior: true,
         byzantine_start_block: 20000,
         rollbacked_response_ratio: 0.0,
+        rolledback_response_count: 0,
     };
 
     let config = Config {
@@ -144,7 +147,10 @@ fn test_clientconfig_serialize() {
         rpc_config,
         workload_config: WorkloadConfig {
             num_clients: 100,
+            start_index: 0,
             duration: 60,
+            ramp_up_ms: 0,
+            ramp_down_ms: 0,
             max_concurrent_requests: 10,
             rate: 100_000.0,
             request_config: crate::config::RequestConfig::KVReadWriteUniform(KVReadWriteUniform {
@@ -238,6 +244,7 @@ async fn test_atomic_config_access() {
     
         max_gc_counter: 0,
         max_gc_interval_ms: 0,
+        watchlist: vec![],
 
     };
 
@@ -253,6 +260,7 @@ async fn test_atomic_config_access() {
         simulate_byzantine_behavior: true,
         byzantine_start_block: 20000,
         rollbacked_response_ratio: 0.0,
+        rolledback_response_count: 0,
     };
 
     let config = Config {

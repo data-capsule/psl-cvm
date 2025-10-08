@@ -54,3 +54,5 @@ pub use mocksql::*;
 
 mod ml_training;
 pub use ml_training::*;
+mod smallbank;
+pub use smallbank::*;

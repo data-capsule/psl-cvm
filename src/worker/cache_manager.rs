@@ -1,13 +1,13 @@
-use std::{collections::HashSet, pin::Pin, sync::Arc, time::{Duration, Instant}};
-
+use std::{collections::HashSet, fs::File, io::{BufWriter, Write}, ops::{Deref, DerefMut}, pin::Pin, sync::Arc, time::{Duration, Instant}};
 use hashbrown::HashMap;
 use log::{error, info, trace, warn};
 use num_bigint::{BigInt, Sign};
 #[cfg(feature = "evil")]
-use rand::distributions::{Distribution, WeightedIndex};
+use rand::distr::{Distribution, weighted::WeightedIndex};
+use rand::Rng as _;
 use thiserror::Error;
 use tokio::sync::{mpsc::{UnboundedReceiver, UnboundedSender}, oneshot::{self, error::RecvError}, Mutex};
-use crate::{config::AtomicPSLWorkerConfig, crypto::{hash, CachedBlock}, proto::execution::{ProtoTransaction, ProtoTransactionOp, ProtoTransactionOpType}, rpc::SenderType, storage_server::fork_receiver::ForkReceiverCommand, utils::{channel::{Receiver, Sender}, timer::ResettableTimer}, worker::{block_sequencer::{cached_value_to_val_hash, BlockSeqNumQuery, VectorClock}, TxWithAckChanTag}};
+use crate::{config::{AtomicPSLWorkerConfig, RocksDBConfig, StorageConfig}, crypto::{hash, CachedBlock}, proto::execution::{ProtoTransaction, ProtoTransactionOp, ProtoTransactionOpType}, rpc::SenderType, storage_server::fork_receiver::ForkReceiverCommand, utils::{cache::Cache, channel::{Receiver, Sender}, timer::ResettableTimer, types::{CacheKey, CachedValue}}, worker::{block_sequencer::{cached_value_to_val_hash, AdvanceVCCommand, BlockSeqNumQuery, VectorClock}, TxWithAckChanTag}};
 use crate::worker::block_sequencer::SequencerCommand;
 
 #[derive(Error, Debug)]
@@ -20,26 +20,41 @@ pub enum CacheError {
 
     #[error("Lock not acquirable")]
     LockNotAcquirable,
+
+    #[error("Type mismatch")]
+    TypeMismatch,
 }
 
 #[derive(Debug)]
 pub enum CacheCommand {
-    Get(CacheKey /* Key */, oneshot::Sender<Result<(Vec<u8>, u64) /* Value, seq_num */, CacheError>>),
+    Get(CacheKey /* Key */, bool /* block snapshot */, BlockSeqNumQuery, oneshot::Sender<Result<CachedValue, CacheError>>,),
     Put(
         CacheKey /* Key */,
-        Vec<u8> /* Value */,
-        BigInt /* Val Hash */,
+        CachedValue /* Value */,
+        BlockSeqNumQuery,
+        oneshot::Sender<Result<u64 /* seq_num */, CacheError>>,
+    ),
+    Increment(
+        CacheKey /* Key */,
+        f64 /* Value */,
+        BlockSeqNumQuery,
+        oneshot::Sender<Result<u64 /* seq_num */, CacheError>>,
+    ),
+    Decrement(
+        CacheKey /* Key */,
+        f64 /* Value */,
         BlockSeqNumQuery,
         oneshot::Sender<Result<u64 /* seq_num */, CacheError>>,
     ),
     Cas(
         CacheKey /* Key */,
-        Vec<u8> /* Value */,
+        CachedValue /* Value */,
         u64 /* Expected SeqNum */,
         oneshot::Sender<Result<u64 /* seq_num */, CacheError>>,
     ),
     Commit(oneshot::Sender<VectorClock>, bool /* force prepare */),
     WaitForVC(VectorClock, oneshot::Sender<()>),
+    TransparentWaitForVC(VectorClock, oneshot::Sender<()>),
     ClearVC(VectorClock),
     QueryVC(oneshot::Sender<VectorClock>),
     
@@ -81,121 +96,56 @@ impl CacheConnector {
     pub async fn get(
         &self,
         key: Vec<u8>,
-    ) -> anyhow::Result<(Vec<u8>, u64)> {
-        let res = dispatch!(self, CacheCommand::Get, key);
+        seq_num_query: BlockSeqNumQuery,
+    ) -> anyhow::Result<CachedValue> {
+        let res = dispatch!(self, CacheCommand::Get, key, true, seq_num_query);
+        Ok(res)
+    }
+
+    pub async fn get_nonblocking(
+        &self,
+        key: Vec<u8>,
+        seq_num_query: BlockSeqNumQuery,
+    ) -> anyhow::Result<CachedValue> {
+        let res = dispatch!(self, CacheCommand::Get, key, false, seq_num_query);
         Ok(res)
     }
 
     pub async fn put(
         &self,
         key: Vec<u8>,
-        value: Vec<u8>,
-        val_hash: BigInt,
+        value: CachedValue,
         seq_num_query: BlockSeqNumQuery,
     ) -> anyhow::Result<()> {
-        dispatch!(self, CacheCommand::Put, key, value, val_hash, seq_num_query);
+        dispatch!(self, CacheCommand::Put, key, value, seq_num_query);
         Ok(())
     }
 
 
 }
 
-#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Eq, PartialEq)]
-pub struct CachedValue {
-    pub(crate) value: Vec<u8>,
-    pub(crate) seq_num: u64,
-    pub(crate) val_hash: BigInt,
-}
 
-impl CachedValue {
+// pub struct Cache(HashMap<CacheKey, CachedValue>);
 
-    pub fn get_value(&self) -> Vec<u8> {
-        self.value.clone()
-    }
+// impl Cache {
+//     pub fn new() -> Self {
+//         Self(HashMap::new())
+//     }
+// }
 
-    /// Size estimate in bytes.
-    pub fn size(&self) -> usize {
-        self.value.len() + std::mem::size_of::<u64>() + self.val_hash.to_bytes_be().1.len()
-    }
+// impl Deref for Cache {
+//     type Target = HashMap<CacheKey, CachedValue>;
+//     fn deref(&self) -> &Self::Target {
+//         &self.0
+//     }
+// }
 
-    /// Completely new value, with seq_num = 1
-    pub fn new(value: Vec<u8>, val_hash: BigInt) -> Self {
-        Self::new_with_seq_num(value, 1, val_hash)
-    }
+// impl DerefMut for Cache {
+//     fn deref_mut(&mut self) -> &mut Self::Target {
+//         &mut self.0
+//     }
+// }
 
-    pub fn new_with_seq_num(value: Vec<u8>, seq_num: u64, val_hash: BigInt) -> Self {
-        Self {
-            value,
-            seq_num,
-            val_hash,
-        }
-    }
-
-    /// Blindly update value, incrementing seq_num
-    pub fn blind_update(&mut self, new_value: Vec<u8>, new_val_hash: BigInt) -> u64 {
-        self.value = new_value;
-        self.seq_num += 1;
-        self.val_hash = new_val_hash;
-
-        self.seq_num
-    }
-
-
-    /// Merge with new value with new seq_num.
-    /// Merge logic is: Higher seq_num or same seq_num with higher hash.
-    /// Hash is calculated only when necessary. So this is not constant time.
-    /// Returns Ok(new_seq_num) | Err(old_seq_num)
-    pub fn merge(&mut self, new_value: Vec<u8>, new_seq_num: u64) -> Result<u64, u64> {
-        if new_seq_num > self.seq_num {
-            self.value = new_value;
-            self.seq_num = new_seq_num;
-            self.val_hash = BigInt::from_bytes_be(Sign::Plus, &hash(&self.value));
-            return Ok(new_seq_num);
-        } else if new_seq_num == self.seq_num {
-            let new_hash = hash(&new_value);
-            let new_hash_num = BigInt::from_bytes_be(Sign::Plus, &new_hash);
-            if new_hash_num > self.val_hash {
-                self.value = new_value;
-                self.val_hash = new_hash_num;
-                self.seq_num = new_seq_num;
-                return Ok(new_seq_num);
-            }
-        }
-
-        Err(self.seq_num)
-    }
-
-
-    /// This is the same as merge, but with CachedValue as input.
-    pub fn merge_cached(
-        &mut self,
-        new_value: CachedValue,
-    ) -> Result<u64, u64> {
-        if new_value.seq_num > self.seq_num {
-            self.value = new_value.value;
-            self.seq_num = new_value.seq_num;
-            self.val_hash = new_value.val_hash;
-            return Ok(self.seq_num);
-        } else if new_value.seq_num == self.seq_num {
-            if new_value.val_hash > self.val_hash {
-                self.value = new_value.value;
-                self.val_hash = new_value.val_hash;
-                self.seq_num = new_value.seq_num;
-                return Ok(self.seq_num);
-            }
-        }
-
-        Err(self.seq_num)
-    }
-
-    pub fn merge_immutable(&self, new_value: &CachedValue) -> CachedValue {
-        let mut val = self.clone();
-        let _ = val.merge_cached(new_value.clone());
-        val
-    }
-}
-
-pub type CacheKey = Vec<u8>;
 
 pub struct CacheManager {
     config: AtomicPSLWorkerConfig,
@@ -206,8 +156,7 @@ pub struct CacheManager {
     
     block_sequencer_tx: Sender<SequencerCommand>,
     fork_receiver_cmd_tx: UnboundedSender<ForkReceiverCommand>,
-    cache: HashMap<CacheKey, CachedValue>,
-    value_origin: HashMap<CacheKey, SenderType>,
+    cache: Cache,
 
     last_committed_seq_num: u64,
     batch_timer: Arc<Pin<Box<ResettableTimer>>>,
@@ -247,6 +196,11 @@ impl CacheManager {
         #[cfg(feature = "evil")]
         let __evil_dist = WeightedIndex::new(__evil_weights.iter().map(|(_, weight)| weight)).unwrap();
 
+        let rocksdb_config = match &config.get().worker_config.state_storage_config {
+            StorageConfig::RocksDB(config) => config.clone(),
+            _ => panic!("State storage config must be RocksDB"),
+        };
+        let read_cache_size = config.get().worker_config.read_cache_size;
         Self {
             config,
             command_rx,
@@ -255,9 +209,8 @@ impl CacheManager {
             block_rx,
             block_sequencer_tx,
             fork_receiver_cmd_tx,
-            cache: HashMap::new(),
-            value_origin: HashMap::new(),
-
+            cache: Cache::new(read_cache_size, rocksdb_config),
+            
             last_committed_seq_num: 0,
             batch_timer,
             last_batch_time: Instant::now(),
@@ -281,7 +234,8 @@ impl CacheManager {
 
         cache_manager.batch_timer.run().await;
         cache_manager.log_timer.run().await;
-        
+
+        // File to log cache_manager stats
         while let Ok(_) = cache_manager.worker().await {
             // Handle errors if needed
         }
@@ -357,7 +311,7 @@ impl CacheManager {
         */
 
         tokio::select! {
-            biased;
+            // biased;
             commands = Self::check_command_rx(&mut self.command_rx, block_on_vc_wait_is_some) => {
                 if block_on_vc_wait_is_some {
                     error!("Command received while blocked on VC wait!!");
@@ -418,22 +372,10 @@ impl CacheManager {
     }
 
     async fn log_stats(&mut self) {
-        let (max_seq_num, max2_seq_num, max_key, max2_key) = self.cache.iter()
-        .fold((0u64, 0u64, CacheKey::new(), CacheKey::new()), |acc, (key, val)| {
-            if val.seq_num > acc.0 {
-                (val.seq_num, acc.0, key.clone(), acc.2)
-            } else if val.seq_num > acc.1 {
-                (acc.0, val.seq_num, acc.2, key.clone())
-            } else {
-                acc
-            }
-        });
-
-        info!("Cache size: {}, Max seq num: {} with Key: {}, Second max seq num: {} with Key: {}",
-            self.cache.len(),
-            max_seq_num, String::from_utf8(max_key.clone()).unwrap_or(hex::encode(max_key)),
-            max2_seq_num, String::from_utf8(max2_key.clone()).unwrap_or(hex::encode(max2_key))
-        );
+        let stat_lines = self.cache.stats();
+        for line in stat_lines {
+            info!("{}", line);
+        }
 
         #[cfg(feature = "evil")]
         {
@@ -443,23 +385,26 @@ impl CacheManager {
 
     }
 
-    fn maybe_respond_with_rolledback_state<'a>(&self, res: Option<&'a CachedValue>, key: &CacheKey) -> (Option<&'a CachedValue>, bool) {
+    fn maybe_respond_with_rolledback_state(&self, res: Option<CachedValue>, key: &CacheKey) -> (Option<CachedValue>, bool) {
         #[cfg(not(feature = "evil"))]
         return res;
 
         #[cfg(feature = "evil")]
         {
-            use rand::thread_rng;
+            use rand::rng;
 
             let config = &self.config.get().evil_config;
 
-            let should_respond_with_rolledback_state = if config.simulate_byzantine_behavior && config.rollbacked_response_ratio > 0.000000001 /* Avoid floating point errors */ {
-                self.__evil_weights[self.__evil_dist.sample(&mut thread_rng())].0
+            let should_respond_with_rolledback_state = if config.simulate_byzantine_behavior
+            && config.rollbacked_response_ratio > 0.000000001 /* Avoid floating point errors */ 
+            && self.__evil_count < config.rolledback_response_count
+            {
+                self.__evil_weights[self.__evil_dist.sample(&mut rng())].0
             } else {
                 false
             };
             if should_respond_with_rolledback_state {
-                trace!("😈 Responding with rolledback state for key: {}", String::from_utf8(key.clone()).unwrap_or(hex::encode(key)));
+                warn!("😈 Responding with rolledback state for key: {}", String::from_utf8(key.clone()).unwrap_or(hex::encode(key)));
                 return (None, true);
             }
             (res, false)
@@ -469,8 +414,8 @@ impl CacheManager {
 
     async fn _handle_command_single(&mut self, command: CacheCommand) {
         match command {
-            CacheCommand::Get(key, response_tx) => {
-                let res = self.cache.get(&key);
+            CacheCommand::Get(key, should_block_snapshot, seq_num_query, response_tx) => {
+                let (res, read_from_cache) = self.cache.get(&key);
 
                 #[cfg(feature = "evil")]
                 let (res, did_rollback) = self.maybe_respond_with_rolledback_state(res, &key);
@@ -487,56 +432,141 @@ impl CacheManager {
                 if res.is_none() {
                     trace!("Key not found: {:?}", key);
                 }
-                let origin = self.value_origin.get(&key).cloned().unwrap_or(SenderType::Auth("devil".to_string(), 0));
-                let _ = response_tx.send(res.map(|v| (v.value.clone(), v.seq_num)).ok_or(CacheError::KeyNotFound));
+                let _ = response_tx.send(res.clone().ok_or(CacheError::KeyNotFound));
+                // let _ = response_tx.send(Err(CacheError::KeyNotFound));
+                // let snapshot_propagated_signal_tx = if self.block_on_read_snapshot.is_some() || !should_block_snapshot {
+                //     None
+                // } else {
+                //     let (tx, rx) = oneshot::channel();
+                //     self.block_on_read_snapshot = Some(rx);
+                //     trace!("Snapshot set");
 
-                let snapshot_propagated_signal_tx = if self.block_on_read_snapshot.is_some() {
-                    None
+                //     Some(tx)
+                // };
+                let must_log_read = did_rollback || !read_from_cache;
+
+
+                if !must_log_read {
+                    match seq_num_query {
+                        BlockSeqNumQuery::WaitForSeqNum(tx) => {
+                            let _ = tx.send(0);
+                        }
+                        _ => {}
+                    }
                 } else {
-                    let (tx, rx) = oneshot::channel();
-                    self.block_on_read_snapshot = Some(rx);
-                    trace!("Snapshot set");
+                    let _ = self.block_sequencer_tx.send(SequencerCommand::SelfReadOp { 
+                        key: key.clone(),
+                        value: res.map(|v| v.clone()),
+                        snapshot_propagated_signal_tx: None,
+                        seq_num_query,
+                    }).await;
+                }
 
-                    Some(tx)
-                };
 
+
+                // if should_block_snapshot == true:
                 // On the first read op of the block, the snapshot is fixed.
                 // Henceforth, all reads are based on this snapshot.
                 // Until the block sequencer proposes the new block. After that, the snapshot can be updated.
-                let (current_vc_tx, current_vc_rx) = oneshot::channel();
-                let _ = self.block_sequencer_tx.send(SequencerCommand::SelfReadOp { 
-                    key: key.clone(),
-                    value: res.map(|v| v.clone()),
-                    snapshot_propagated_signal_tx,
-                    origin,
-                    current_vc: current_vc_tx,
-                }).await;
-                let current_vc = current_vc_rx.await.unwrap();
+                // let (current_vc_tx, current_vc_rx) = oneshot::channel();
+                
+                // let _ = self.block_sequencer_tx.send(SequencerCommand::SelfWriteOp { key: key.clone(), value: res.cloned().unwrap_or(CachedValue::new_dww(vec![], BigInt::from_bytes_be(Sign::Plus, &hash(&key)))), seq_num_query, /* current_vc: current_vc_tx */ }).await;
 
-                trace!("Read key: {}, value_hash: {}, current_vc: {}", String::from_utf8(key.clone()).unwrap_or(hex::encode(key)), hex::encode(cached_value_to_val_hash(res.cloned())), current_vc);
+                // let current_vc = current_vc_rx.await.unwrap();
+
+                // trace!("Read key: {}, value_hash: {}", String::from_utf8(key.clone()).unwrap_or(hex::encode(key)), hex::encode(cached_value_to_val_hash(res.cloned())));
 
 
             }
-            CacheCommand::Put(key, value, val_hash, seq_num_query, response_tx) => {
-                self.value_origin.insert(key.clone(), SenderType::Auth(self.config.get().net_config.name.clone(), 0));
+            CacheCommand::Put(key, value, seq_num_query, response_tx) => {
+                assert!(value.is_dww());
+
+                let value = value.get_dww().unwrap();
                 if self.cache.contains_key(&key) {
-                    let seq_num = self.cache.get_mut(&key).unwrap().blind_update(value.clone(), val_hash.clone());
+                    let (Some(mut res), _) = self.cache.get(&key) else {
+                        unreachable!();
+                    };
+                    let seq_num = res.get_dww_mut().unwrap().blind_update(value.value.clone(), value.val_hash.clone());
+                    self.cache.put(key.clone(), res);
                     response_tx.send(Ok(seq_num)).unwrap();
-                    let (current_vc_tx, current_vc_rx) = oneshot::channel();
-                    let _ = self.block_sequencer_tx.send(SequencerCommand::SelfWriteOp { key: key.clone(), value: CachedValue::new_with_seq_num(value, seq_num, val_hash.clone()), seq_num_query, current_vc: current_vc_tx }).await;
-                    let current_vc = current_vc_rx.await.unwrap();
-                    trace!("Write key: {}, value_hash: {}, current_vc: {}", String::from_utf8(key.clone()).unwrap_or(hex::encode(key)), hex::encode(val_hash.to_bytes_be().1), current_vc);
+                    // let (current_vc_tx, current_vc_rx) = oneshot::channel();
+                    let _ = self.block_sequencer_tx.send(SequencerCommand::SelfWriteOp { key: key.clone(), value: CachedValue::new_dww_with_seq_num(value.value.clone(), seq_num, value.val_hash.clone()), seq_num_query, /* current_vc: current_vc_tx */ }).await;
+                    // let current_vc = current_vc_rx.await.unwrap();
+                    trace!("Write key: {}, value_hash: {}", String::from_utf8(key.clone()).unwrap_or(hex::encode(key)), hex::encode(value.val_hash.to_bytes_be().1));
                     return;
                 }
 
-                let cached_value = CachedValue::new(value.clone(), val_hash.clone());
-                self.cache.insert(key.clone(), cached_value);
+                let cached_value = CachedValue::new_dww(value.value.clone(), value.val_hash.clone());
+                self.cache.put(key.clone(), cached_value);
                 response_tx.send(Ok(1)).unwrap();
-                let (current_vc_tx, current_vc_rx) = oneshot::channel();
-                let _ = self.block_sequencer_tx.send(SequencerCommand::SelfWriteOp { key: key.clone(), value: CachedValue::new(value, val_hash.clone()), seq_num_query, current_vc: current_vc_tx }).await;
-                let current_vc = current_vc_rx.await.unwrap();
-                trace!("Write key: {}, value_hash: {}, current_vc: {}", String::from_utf8(key.clone()).unwrap_or(hex::encode(key)), hex::encode(val_hash.to_bytes_be().1), current_vc);
-            }
+                // let (current_vc_tx, current_vc_rx) = oneshot::channel();
+                let _ = self.block_sequencer_tx.send(SequencerCommand::SelfWriteOp { key: key.clone(), value: CachedValue::new_dww(value.value.clone(), value.val_hash.clone()), seq_num_query, /* current_vc: current_vc_tx */ }).await;
+                // let current_vc = current_vc_rx.await.unwrap();
+                trace!("Write key: {}, value_hash: {}", String::from_utf8(key.clone()).unwrap_or(hex::encode(key)), hex::encode(value.val_hash.to_bytes_be().1));
+            },
+
+            CacheCommand::Increment(key, value, seq_num_query, response_tx) => {
+                // self.value_origin.insert(key.clone(), SenderType::Auth(self.config.get().net_config.name.clone(), 0));
+                // assert!(value.is_dww());
+
+                // let value = value.get_dww().unwrap();
+                assert!(value >= 0.0);
+                let my_name = self.config.get().net_config.name.clone();
+                if self.cache.contains_key(&key) {
+                    let (Some(mut res), _) = self.cache.get(&key) else {
+                        unreachable!();
+                    };
+                    let final_value = res.get_pn_counter_mut().unwrap()
+                        .blind_increment(my_name, value);
+                    let _value = res.get_pn_counter().unwrap().clone();
+                    self.cache.put(key.clone(), res);
+                    response_tx.send(Ok(final_value as u64 /* It doesn't matter what the seq_num is here. */)).unwrap();
+                    // let (current_vc_tx, current_vc_rx) = oneshot::channel();
+                    let _ = self.block_sequencer_tx.send(SequencerCommand::SelfWriteOp { key: key.clone(), value: CachedValue::from_pn_counter(_value), seq_num_query, /* current_vc: current_vc_tx */ }).await;
+                    // let current_vc = current_vc_rx.await.unwrap();
+                    trace!("Write key: {}, value_increment: {}", String::from_utf8(key.clone()).unwrap_or(hex::encode(key)), value);
+                    return;
+                }
+
+                let mut cached_value = CachedValue::new_pn_counter();
+                cached_value.get_pn_counter_mut().unwrap().blind_increment(my_name, value);
+
+                self.cache.put(key.clone(), cached_value.clone());
+                response_tx.send(Ok(cached_value.get_pn_counter().unwrap().get_value() as u64 /* It doesn't matter what the seq_num is here. */)).unwrap();
+                // let (current_vc_tx, current_vc_rx) = oneshot::channel();
+                let _ = self.block_sequencer_tx.send(SequencerCommand::SelfWriteOp { key: key.clone(), value: cached_value, seq_num_query, /* current_vc: current_vc_tx */ }).await;
+                // let current_vc = current_vc_rx.await.unwrap();
+                trace!("Write key: {}, value_increment: {}", String::from_utf8(key.clone()).unwrap_or(hex::encode(key)), value);
+            },
+            CacheCommand::Decrement(key, value, seq_num_query, response_tx) => {
+                assert!(value >= 0.0);
+                let my_name = self.config.get().net_config.name.clone();
+                if self.cache.contains_key(&key) {
+                    let (Some(mut res), _) = self.cache.get(&key) else {
+                        unreachable!();
+                    };
+                    let final_value = res.get_pn_counter_mut().unwrap()
+                        .blind_decrement(my_name, value);
+                    let _value = res.get_pn_counter().unwrap().clone();
+                    self.cache.put(key.clone(), res);
+                    response_tx.send(Ok(final_value as u64 /* It doesn't matter what the seq_num is here. */)).unwrap();
+                    // let (current_vc_tx, current_vc_rx) = oneshot::channel();
+                    let _ = self.block_sequencer_tx.send(SequencerCommand::SelfWriteOp { key: key.clone(), value: CachedValue::from_pn_counter(_value), seq_num_query, /* current_vc: current_vc_tx */ }).await;
+                    // let current_vc = current_vc_rx.await.unwrap();
+                    trace!("Write key: {}, value_decrement: {}", String::from_utf8(key.clone()).unwrap_or(hex::encode(key)), value);
+                    return;
+                }
+
+                let mut cached_value = CachedValue::new_pn_counter();
+                cached_value.get_pn_counter_mut().unwrap().blind_decrement(my_name, value);
+
+                self.cache.put(key.clone(), cached_value.clone());
+                response_tx.send(Ok(cached_value.get_pn_counter().unwrap().get_value() as u64 /* It doesn't matter what the seq_num is here. */)).unwrap();
+                // let (current_vc_tx, current_vc_rx) = oneshot::channel();
+                let _ = self.block_sequencer_tx.send(SequencerCommand::SelfWriteOp { key: key.clone(), value: cached_value, seq_num_query, /* current_vc: current_vc_tx */ }).await;
+                // let current_vc = current_vc_rx.await.unwrap();
+                trace!("Write key: {}, value_decrement: {}", String::from_utf8(key.clone()).unwrap_or(hex::encode(key)), value);
+            },
             CacheCommand::Cas(key, value, expected_seq_num, response_tx) => {
                 unimplemented!();
             }
@@ -552,6 +582,10 @@ impl CacheManager {
                 let (tx, rx) = oneshot::channel();
                 self.blocked_on_vc_wait = Some(rx);
                 let _ = self.block_sequencer_tx.send(SequencerCommand::WaitForVC(vc, tx, Some(tx2))).await;
+            }
+
+            CacheCommand::TransparentWaitForVC(vc, tx) => {
+                let _ = self.block_sequencer_tx.send(SequencerCommand::WaitForVC(vc, tx, None)).await;
             }
             CacheCommand::ClearVC(vc) => {
                 let _ = self.block_sequencer_tx.send(SequencerCommand::MakeNewBlockToPropagateVC(vc)).await;
@@ -615,19 +649,30 @@ impl CacheManager {
                 // It should be propagated downstream in the gossip/multicast tree,
                 // As they may or may not receive the update directly.
                 let (should_propagate, seq_num) = if self.cache.contains_key(&key) {
-                    let res = self.cache.get_mut(&key).unwrap().merge_cached(cached_value.clone());
+                    let (Some(mut val), _) = self.cache.get(&key) else {
+                        unreachable!();
+                    };
+                    let res = match &mut val {
+                        CachedValue::DWW(dww_val) => {
+                            dww_val.merge_cached(cached_value.get_dww().unwrap().clone())
+                        },
+                        CachedValue::PNCounter(pn_counter_val) => {
+                            pn_counter_val.merge(cached_value.get_pn_counter().unwrap().clone())
+                                .map(|_| 0u64).map_err(|_| 0u64)
+                            // Ok(0) // The number doesn't matter here
+                            // PN Counters must always be propagated.
+                        }
+                    };
+                    self.cache.put(key.clone(), val);
                     match res {
-                        Ok(seq_num) => {
-                            self.value_origin.insert(key.clone(), sender.clone());
-                            (true, seq_num)
+                        Ok(_seq_num) => {
+                            (true, _seq_num)
                         },
                         Err(_old_seq_num) => (false, _old_seq_num)
                     }
                 } else {
-                    let seq_num = cached_value.seq_num;
-                    self.cache.insert(key.clone(), cached_value.clone());
-                    self.value_origin.insert(key.clone(), sender.clone());
-                    (true, seq_num)
+                    self.cache.put(key.clone(), cached_value.clone());
+                    (true, 0)
                 };
 
                 // let should_propagate = true;
@@ -636,14 +681,14 @@ impl CacheManager {
                 let should_propagate = false;
 
                 if should_propagate {
-                    let (current_vc_tx, current_vc_rx) = oneshot::channel();
+                    // let (current_vc_tx, current_vc_rx) = oneshot::channel();
                     let _ = self.block_sequencer_tx.send(SequencerCommand::OtherWriteOp {
                         key: key.clone(),
                         value: cached_value.clone(),
-                        current_vc: current_vc_tx,
+                        // current_vc: current_vc_tx,
                     }).await;
-                    let current_vc = current_vc_rx.await.unwrap();
-                    trace!("Write key: {}, value_hash: {}, current_vc: {}", String::from_utf8(key.clone()).unwrap(), hex::encode(cached_value_to_val_hash(Some(cached_value))), current_vc);
+                    // let current_vc = current_vc_rx.await.unwrap();
+                    trace!("Write key: {}, value_hash: {}", String::from_utf8(key.clone()).unwrap(), hex::encode(cached_value_to_val_hash(Some(cached_value))));
                 } else {
                     trace!("Write rejected for key: {}, value_hash: {}, seq_num: {} origin: {}", String::from_utf8(key.clone()).unwrap(), hex::encode(cached_value_to_val_hash(Some(cached_value))), seq_num, sender.to_name_and_sub_id().0);
                 }
@@ -651,21 +696,25 @@ impl CacheManager {
         }
 
         // Advance the vector clock in the sequencer.
+        let mut advance_vc_commands = vec![];
         if block.block.vector_clock.is_some() {
             let vector_clock = block.block.vector_clock.as_ref().unwrap();
             for entry in vector_clock.entries.iter() {
                 let sender = SenderType::Auth(entry.sender.clone(), 0);
-                let _ = self.block_sequencer_tx.send(SequencerCommand::AdvanceVC { sender, block_seq_num: entry.seq_num }).await;
+                // let _ = self.block_sequencer_tx.send(SequencerCommand::AdvanceVC { sender, block_seq_num: entry.seq_num }).await;
+                advance_vc_commands.push(AdvanceVCCommand { sender, block_seq_num: entry.seq_num });
             }
         }
 
         
         if !name.contains("god") {
             let block_seq_num = block.block.n;
-            let _ = self.block_sequencer_tx.send(SequencerCommand::AdvanceVC {
-                sender: sender.clone(),
-                block_seq_num,
-            }).await;
+            // let _ = self.block_sequencer_tx.send(SequencerCommand::AdvanceVC {
+            //     sender: sender.clone(),
+            //     block_seq_num,
+            // }).await;
+            advance_vc_commands.push(AdvanceVCCommand { sender: sender.clone(), block_seq_num });
+            let _ = self.block_sequencer_tx.send(SequencerCommand::AdvanceVC(advance_vc_commands)).await;
         
             // A new block can be formed now.
             let (tx, rx) = oneshot::channel();
@@ -677,13 +726,17 @@ impl CacheManager {
             
             // Confirm the block to the fork receiver.
             let _ = self.fork_receiver_cmd_tx.send(ForkReceiverCommand::Confirm(sender, block_seq_num));
+        } else {
+            let _ = self.block_sequencer_tx.send(SequencerCommand::AdvanceVC(advance_vc_commands)).await;
         }
 
     }
 }
 
 pub fn process_tx_op(op: &ProtoTransactionOp) -> Option<(CacheKey, CachedValue)> {
-    if op.op_type != ProtoTransactionOpType::Write as i32 {
+    if op.op_type != ProtoTransactionOpType::Write as i32
+    && op.op_type != ProtoTransactionOpType::Increment as i32
+    {
         return None;
     }
 
@@ -705,13 +758,15 @@ pub fn process_tx_op(op: &ProtoTransactionOp) -> Option<(CacheKey, CachedValue)>
 }
 
 mod tests {
+    use crate::utils::types::{DWWValue, PNCounterValue};
+
     use super::*;
 
     #[test]
     fn test_commutativity() {
-        let val1 = CachedValue::new(b"not_important1".to_vec(),
+        let val1 = DWWValue::new(b"not_important1".to_vec(),
             BigInt::from_bytes_be(Sign::Plus, &hex::decode("3fb43b0c4f06f6d6d3860f57f1040ab2c70594f5be33b9b2e0f1d14850b4f93f6f84f8901579f0cef45d83d19c048455eafae5e945553ac9db0cecb20f17aa24").unwrap()));
-        let val2 = CachedValue::new(b"not_important2".to_vec(),
+        let val2 = DWWValue::new(b"not_important2".to_vec(),
             BigInt::from_bytes_be(Sign::Plus, &hex::decode("e36e2d6085a127a4989d428f38df7e3a632bd5cef4a5216c76196909786ffb1badb575a5757af1ca4f0c8d97d8c6334701d85c9238fa5de297aaa62580491855").unwrap()));
 
         let mut test1 = val1.clone();
@@ -726,5 +781,31 @@ mod tests {
 
         assert_eq!(test1.val_hash, val2.val_hash);
         assert_eq!(test2.val_hash, val2.val_hash);
+    }
+
+    #[test]
+    fn test_idempotence() {
+        let mut val1 = PNCounterValue::new();
+        val1.blind_decrement("foo".to_string(), 8.0);
+        val1.blind_increment("bar".to_string(), 10.0);
+
+        let _v1 = val1.get_value();
+
+        let mut val2 = PNCounterValue::new();
+        val2.blind_increment("foo".to_string(), 10.0);
+        val2.blind_decrement("bar".to_string(), 8.0);
+
+        let _v2 = val2.get_value();
+
+        val1.merge(val2.clone());
+        let _v3 = val1.get_value();
+        val1.merge(val2);
+        let _v4 = val1.get_value();
+
+
+        assert_eq!(_v3, _v4);
+        assert_eq!(_v1, 2.0);
+        assert_eq!(_v2, 2.0);
+        assert_eq!(_v3, 4.0);
     }
 }

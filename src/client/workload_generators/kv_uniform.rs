@@ -1,4 +1,4 @@
-use rand::distributions::{Uniform, WeightedIndex};
+use rand::distr::{weighted::WeightedIndex, Uniform};
 use rand_chacha::ChaCha20Rng;
 use rand::prelude::*;
 
@@ -38,7 +38,7 @@ impl KVReadWriteUniformGenerator {
 
         let weight_dist = WeightedIndex::new(sample_item.iter().map(|(_, weight)| weight)).unwrap();
 
-        let uniform_dist = Uniform::new(0, config.num_keys);
+        let uniform_dist = Uniform::new(0, config.num_keys).unwrap();
         KVReadWriteUniformGenerator {
             config: config.clone(),
             rng,

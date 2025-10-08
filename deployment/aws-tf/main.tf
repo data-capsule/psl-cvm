@@ -139,6 +139,7 @@ resource "aws_instance" "sevpool" {
     Name = "${local.sevpool_instance_name}-${count.index}"
     InstanceGroup = local.sevpool_instance_name
     Project = local.project_name
+    Job = count.index == 0 ? "sequencer" : "worker"
   }
 
   # cpu_options {
@@ -179,7 +180,7 @@ resource "aws_instance" "sevpool" {
             throughput = 1000 # MiB/s
             iops = 16000 # This is the max for gp3.
         }
-}
+  }
 
   user_data_base64 = filebase64("./init.sh")
 
@@ -206,6 +207,7 @@ resource "aws_instance" "storagepool" {
     Name = "${local.storagepool_instance_name}-${count.index}"
     InstanceGroup = local.storagepool_instance_name
     Project = local.project_name
+    Job = "storage"
   }
 
   dynamic "instance_market_options" {
@@ -266,6 +268,7 @@ resource "aws_instance" "clientpool" {
     Name = "${local.clientpool_instance_name}-${count.index}"
     InstanceGroup = local.clientpool_instance_name
     Project = local.project_name
+    Job = "client"
   }
 
   dynamic "instance_market_options" {

@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use psl::{client::{logger::ClientStatLogger, worker::ClientWorker, workload_generators::{BlankAEWorkloadGenerator, BlankWorkloadGenerator, KVReadWriteUniformGenerator, KVReadWriteYCSBGenerator, MLTrainingWorkloadGenerator, MockSQLGenerator}}, config::{default_log4rs_config, ClientConfig, RequestConfig}, crypto::KeyStore, rpc::client::Client, utils::channel::make_channel};
+use psl::{client::{logger::ClientStatLogger, worker::ClientWorker, workload_generators::{BlankAEWorkloadGenerator, BlankWorkloadGenerator, KVReadWriteUniformGenerator, KVReadWriteYCSBGenerator, MockSQLGenerator, SmallbankGenerator}}, config::{default_log4rs_config, ClientConfig, RequestConfig}, crypto::KeyStore, rpc::client::Client, utils::channel::make_channel};
 use tokio::task::JoinSet;
 
 #[global_allocator]
@@ -42,12 +42,20 @@ async fn main() -> std::io::Result<()> {
 
     let (stat_tx, stat_rx) = make_channel(1000);
 
-    let mut stat_worker = ClientStatLogger::new(stat_rx, Duration::from_millis(1000), Duration::from_secs(1), Duration::from_secs(config.workload_config.duration));
+    let mut stat_worker = ClientStatLogger::new(
+        stat_rx,
+        Duration::from_millis(1000),
+        Duration::from_secs(1),
+        Duration::from_secs(config.workload_config.duration),
+        Duration::from_millis(config.workload_config.ramp_up_ms),
+        Duration::from_millis(config.workload_config.ramp_down_ms)
+    );
     client_handles.spawn(async move {
         stat_worker.run().await;
     });
 
-    for id in 0..config.workload_config.num_clients {
+    for _id in 0..config.workload_config.num_clients {
+        let id = config.workload_config.start_index + _id;
         let config = config.clone();
         let keys = keys.clone();
         let _stat_tx = stat_tx.clone();
@@ -80,6 +88,11 @@ async fn main() -> std::io::Result<()> {
             },
             RequestConfig::MLTraining(ref file_path) => {
                 let generator = MLTrainingWorkloadGenerator::new(file_path.clone());
+                let worker = ClientWorker::new(config, client, generator, id, _stat_tx);
+                ClientWorker::launch(worker, &mut client_handles).await;
+            },
+            RequestConfig::Smallbank(ref smallbank) => {
+                let generator = SmallbankGenerator::new(smallbank, id, config.workload_config.num_clients);
                 let worker = ClientWorker::new(config, client, generator, id, _stat_tx);
                 ClientWorker::launch(worker, &mut client_handles).await;
             },

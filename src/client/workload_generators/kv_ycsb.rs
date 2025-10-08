@@ -1,9 +1,10 @@
 
 use log::info;
-use rand::distributions::{Uniform, WeightedIndex};
+use rand::{distr::{weighted::WeightedIndex, Uniform}, rng};
 use rand_chacha::ChaCha20Rng;
 use rand::prelude::*;
-use zipf::ZipfDistribution;
+use rand::distr::Distribution as _;
+use rand_distr::Zipf;
 
 use crate::{config::KVReadWriteYCSB, proto::execution::{ProtoTransaction, ProtoTransactionOp, ProtoTransactionOpType, ProtoTransactionPhase, ProtoTransactionResult}};
 
@@ -45,7 +46,7 @@ pub struct KVReadWriteYCSBGenerator {
     crash_byz_weights: [(TxPhaseType, i32); 2],
     crash_byz_dist: WeightedIndex<i32>,
 
-    key_selection_dist: ZipfDistribution,
+    key_selection_dist: Zipf<f64>,
 
     val_gen_dist: Uniform<u8>,
     
@@ -56,7 +57,8 @@ pub struct KVReadWriteYCSBGenerator {
 
 impl KVReadWriteYCSBGenerator {
     pub fn new(config: &KVReadWriteYCSB, client_idx: usize, total_clients: usize) -> KVReadWriteYCSBGenerator {
-        let rng = ChaCha20Rng::from_entropy();
+        let seed: [u8; 32] = rng().random();
+        let rng = ChaCha20Rng::from_seed(seed);
 
         let read_write_weights = [
             (TxOpType::Read, (config.read_ratio * 1000.0) as i32),
@@ -81,9 +83,9 @@ impl KVReadWriteYCSBGenerator {
         let read_write_dist = WeightedIndex::new(read_write_weights.iter().map(|(_, weight)| weight)).unwrap();
         let crash_byz_dist = WeightedIndex::new(crash_byz_weights.iter().map(|(_, weight)| weight)).unwrap();
         
-        let key_selection_dist = ZipfDistribution::new(config.num_keys, config.zipf_exponent).unwrap();
+        let key_selection_dist = Zipf::new(config.num_keys as f64, config.zipf_exponent).unwrap();
         
-        let val_gen_dist = Uniform::new('a' as u8, 'z' as u8);
+        let val_gen_dist = Uniform::new('a' as u8, 'z' as u8).unwrap();
         KVReadWriteYCSBGenerator {
             config: config.clone(),
             rng,
@@ -126,7 +128,7 @@ impl KVReadWriteYCSBGenerator {
     }
 
     fn get_next_key(&mut self) -> String {
-        let key_num = self.key_selection_dist.sample(&mut self.rng);
+        let key_num = self.key_selection_dist.sample(&mut self.rng) as usize;
         let key_num = self.transform_key_num(key_num);
 
         self.get_key_str_from_num(key_num)
