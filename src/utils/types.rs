@@ -1,5 +1,6 @@
 use std::{collections::{HashMap, HashSet}, pin::Pin};
 
+use itertools::Itertools;
 use num_bigint::{BigInt, Sign};
 
 use crate::crypto::hash;
@@ -65,6 +66,10 @@ impl DWWValue {
                 return Ok(new_seq_num);
             }
         }
+
+        let v = vec![2, 3];
+        v.iter().enumerate()
+        .sorted_by_key(|x| *x.1);
 
         Err(self.seq_num)
     }

@@ -769,7 +769,7 @@ class Result:
                 y_range_total = max([v[3] for v in bounding_boxes.values()]) - min([v[2] for v in bounding_boxes.values()])
                 # if y_range_total > 200:
                 # plt.yscale("log")
-                plt.ylim((0, 4))
+                # plt.ylim((0, 4))
                 # plt.xlim((50, 550))
                 plt.legend(loc='upper center', bbox_to_anchor=(0.5, 1.4), ncol=legends_ncols, fontsize=70)
                 plt.xticks(fontsize=70)
@@ -1070,15 +1070,16 @@ class Result:
 
         ax.set_xticks(label_pos, xlabels)
         plt.ylim(0, ylim+50)
+        # plt.yticks([0, 5, 10, 15, 20], fontsize=90)
+        plt.ylim((0, 20))
         plt.ylabel("Throughput (k req/s)", fontsize=90)
         if "xtitle" in self.kwargs:
             plt.xlabel(self.kwargs["xtitle"], fontsize=90)
         plt.xticks(fontsize=80)
-        plt.yticks([0, 500, 1000, 1500, 2000], fontsize=90)
         # plt.yticks(fontsize=90)
 
         if len(plot_dict_items) > 1:
-            plt.legend(loc="upper center", ncols=2, bbox_to_anchor=(0.5, 1.28), fontsize=60, columnspacing=0.3)
+            plt.legend(loc="upper center", ncols=3, bbox_to_anchor=(0.5, 1.28), fontsize=60, columnspacing=0.3)
         plt.grid(zorder=0)
 
         plt.gcf().set_size_inches(
@@ -1267,7 +1268,41 @@ class Result:
         self.crash_byz_tput_timeseries_plot(times, crash_commits, byz_commits, events)
 
 
-        
+    def stacked_bar_graph_psl(self):
+        # Parse args
+        ramp_up = self.kwargs.get('ramp_up', 0)
+        ramp_down = self.kwargs.get('ramp_down', 0)
+        legends = self.kwargs.get('legends', {})
+        force_parse = self.kwargs.get('force_parse', False)
+        xlabels = self.kwargs.get('xlabels', [])
+
+        # Number of xlabels must match number of subexperiments for each group.
+        for group_name, experiments in self.experiment_groups.items():
+            if len(xlabels) != len(experiments):
+                print("\x1b[31;1mNumber of xlabels must match number of subexperiments for each group.\x1b[0m")
+                raise Exception("Number of xlabels must match number of subexperiments for each group.")
+
+        # Try retreive plot dict from cache
+        try:
+            if force_parse:
+                raise Exception("Force parse")
+
+            with open(os.path.join(self.workdir, "plot_dict.pkl"), "rb") as f:
+                plot_dict = pickle.load(f)
+        except:
+            plot_dict = self.stacked_bar_graph_psl_parse(ramp_up, ramp_down, legends)
+
+        # Save plot dict
+        with open(os.path.join(self.workdir, "plot_dict.pkl"), "wb") as f:
+            pickle.dump(plot_dict, f)
+
+        output = self.kwargs.get('output', None)
+        self.stacked_bar_graph_plot(plot_dict, output, xlabels)
+
+
+    def stacked_bar_graph_psl_parse(self, ramp_up, ramp_down, legends):
+        return collections.OrderedDict(self.tput_latency_sweep_psl_parse(ramp_up, ramp_down, legends))
+
 
 
 
