@@ -22,7 +22,7 @@ impl Cache {
             opts.set_min_write_buffer_number_to_merge(config.max_write_buffers_to_merge);
             opts.set_target_file_size_base(config.write_buffer_size as u64);
 
-            // opts.set_manual_wal_flush(true);
+            opts.set_manual_wal_flush(true);
             opts.set_compaction_style(DBCompactionStyle::Universal);
             opts.set_allow_mmap_reads(true);
             opts.set_allow_mmap_writes(true);
@@ -54,7 +54,8 @@ impl Cache {
 
     pub fn put(&mut self, key: CacheKey, value: CachedValue) {
         let mut wopts = WriteOptions::default();
-        wopts.disable_wal(false);
+        wopts.disable_wal(true);
+        // wopts.set_sync(sync);
 
         let ser = bincode::serialize(&value).unwrap();
         self.db.put_opt(key.clone(), ser, &wopts).unwrap();
