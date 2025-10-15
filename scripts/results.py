@@ -951,7 +951,8 @@ class Result:
         tput = num_requests / (duration - ramp_up - ramp_down)
         return tput, mean_latency
 
-    
+    def flink_results_parse(self):
+        pass
 
     def tput_latency_sweep(self):
         '''

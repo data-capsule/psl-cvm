@@ -3,7 +3,7 @@ project_home = "https://github.com/data-capsule/psl-cvm"
 
 [deployment_config]
 provider = "aws"
-mode = "real-tiny"
+mode = "modest"
 ssh_key = "cluster_key.pem"
 ssh_user = "psladmin" # DO NOT CHANGE THIS for AWS.
 node_port_base = 3000
@@ -27,15 +27,15 @@ signature_max_delay_blocks = 50
 signature_max_delay_ms = 102 # roughly batch_max_delay_ms * signature_max_delay_blocks
 num_crypto_workers = 5
 view_timeout_ms = 4000
-batch_max_delay_ms = 2
+batch_max_delay_ms = 50
 max_audit_snapshots = 5
 max_audit_buffer_size = 10
 max_audit_delay_ms = 1000
 
 [node_config.worker_config]
 all_writes_max_batch_size = 1000
-self_writes_max_batch_size = 1000
-self_reads_max_batch_size = 1000
+self_writes_max_batch_size = 16
+self_reads_max_batch_size = 16
 batch_max_delay_ms = 2
 signature_max_delay_ms = 20000
 signature_max_delay_blocks = 50
@@ -77,26 +77,51 @@ max_concurrent_requests = 16
 [[experiments]]
 name = "flink"
 repeats = 1
-num_storage_nodes = 1
+num_storage_nodes = 3
 num_sequencer_nodes = 1
-node_distribution = "uniform"
-num_nodes = 1
+node_distribution = "tag:worker"
+storage_distribution = "uniform"
+sequencer_distribution = "uniform"
+num_clients = 1
 type = "flink"
 build_command = "make"
 duration = 60
 
+[experiments.client_config]
+psl_enabled = true
+
 [experiments.sweeping_parameters]
 # num_clients = [10, 20, 50, 100, 200, 250, 300, 350, 400]
 # num_clients = [100, 200, 400, 500, 700, 800]
-num_clients = [400]
+num_nodes = [1, 2, 4, 8, 16]
+
+[[experiments]]
+name = "flink_no_psl"
+repeats = 1
+num_storage_nodes = 3
+num_sequencer_nodes = 1
+node_distribution = "tag:worker"
+storage_distribution = "uniform"
+sequencer_distribution = "uniform"
+num_clients = 1
+type = "flink"
+build_command = "make"
+duration = 60
+
+[experiments.client_config]
+psl_enabled = false
+
+[experiments.sweeping_parameters]
+# num_clients = [10, 20, 50, 100, 200, 250, 300, 350, 400]
+# num_clients = [100, 200, 400, 500, 700, 800]
+num_nodes = [1, 2, 4, 8, 16]
+
 
 
 [[results]]
-name = "tput_latency_client_sweep"
-plotter = "tput_latency_sweep"
-ramp_up = 15
-ramp_down = 15
-output = "lan_experiment.pdf"
+name = "flink_results_parse"
+plotter = "flink_results_parse"
+output = "flink_experiment.pdf"
 force_parse = true
 # skip_indices = [0, 1, 2, 3]
 
