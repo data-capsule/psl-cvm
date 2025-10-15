@@ -32,26 +32,26 @@ max_audit_buffer_size = 1000
 max_audit_delay_ms = 1000
 
 [node_config.consensus_config.log_storage_config.RocksDB]
-write_buffer_size = 2_147_483_648 # 2GB
-max_write_buffer_number = 1
+write_buffer_size = 67_108_864 # 64MB
+max_write_buffer_number = 20
 max_write_buffers_to_merge = 1
 
 [node_config.worker_config.state_storage_config.RocksDB]
 write_buffer_size = 67_108_864 # 64MB
-max_write_buffer_number = 4
-max_write_buffers_to_merge = 1
+max_write_buffer_number = 20
+max_write_buffers_to_merge = 10
 
 [node_config.worker_config]
 all_writes_max_batch_size = 1000
-self_writes_max_batch_size = 1000
-self_reads_max_batch_size = 1000
+self_writes_max_batch_size = 16
+self_reads_max_batch_size = 16
 batch_max_delay_ms = 50
 heartbeat_max_delay_ms = 60_000 # Essentially disable heartbest. This causes throughput issues.
 signature_max_delay_ms = 20000
 signature_max_delay_blocks = 50
 num_crypto_workers = 5
-num_worker_threads_per_worker = 8
-num_replier_threads_per_worker = 8
+num_worker_threads_per_worker = 4
+num_replier_threads_per_worker = 4
 read_cache_size = 100_000
 
 
@@ -73,7 +73,7 @@ client_sub_id = 0       # This is filled up later by the caller code.
 client_max_retry = 10
 
 [client_config.workload_config]
-max_concurrent_requests = 10
+max_concurrent_requests = 1
 ramp_up_ms = 10_000
 ramp_down_ms = 10_000
 
@@ -108,7 +108,7 @@ node_distribution = "tag:worker"
 storage_distribution = "uniform"
 sequencer_distribution = "tag:sequencer"
 build_command = "make"
-duration = 60
+duration = 90
 data_dir = "/data/"
 
 [experiments.sweeping_parameters]
@@ -122,13 +122,13 @@ type = "nimble"
 repeats = 1
 num_clients = 256
 # num_nodes = 15
-num_storage_nodes = 3
+num_storage_nodes = 0
 num_sequencer_nodes = 4 # 1 coordinator + 3 endorsers
 node_distribution = "tag:worker"
 storage_distribution = "uniform"
 sequencer_distribution = "uniform"
 build_command = "make nimble"
-duration = 60
+duration = 90
 data_dir = "/data/"
 
 [experiments.sweeping_parameters]
@@ -138,7 +138,7 @@ num_nodes = [1, 2, 4, 8, 16]
 
 
 [[experiments]]
-name = "ycsb_unprotected_r50"
+name = "smallbank_unprotected"
 type = "psl_storage"
 # git_hash = "209b1804ff2c2259aced1f0960f48167b1966b94"
 repeats = 1
@@ -150,7 +150,7 @@ node_distribution = "tag:worker"
 storage_distribution = "uniform"
 sequencer_distribution = "uniform"
 build_command = "make"
-duration = 60
+duration = 90
 data_dir = "/data/"
 
 [experiments.sweeping_parameters]
@@ -169,11 +169,10 @@ force_parse = true
 # xlabels = ["1", "15", "31", "63"]
 xlabels = ["1", "2", "4", "8", "16"]
 xtitle = "Number of Nodes"
+legend_order = ["nimble", "psl", "unprotected"]
 
 
 [results.legends]
 smallbank_psl = "psl"
 smallbank_nimble = "nimble"
-# ycsb_unprotected_r0 = "0R-100W"
-ycsb_unprotected_r50 = "unprotected"
-# ycsb_unprotected_r100 = "100R-0W"
+smallbank_unprotected = "unprotected"

@@ -419,10 +419,14 @@ class Deployment:
             vm for vm in self.get_all_node_vms() if tee in vm.tee_type
         ]
     
-    def get_nodes_with_tag(self, tag):
-        return [
-            vm for vm in self.get_all_node_vms() if tag in vm.tag
-        ]
+    def get_nodes_with_tag(self, tags):
+        tags = tags.split(",")
+        vms = []
+        for tag in tags:
+            vms.extend([
+                vm for vm in self.nodelist if tag in vm.tag
+            ])
+        return vms
     
     def get_wan_setup(self, layout):
         layout = self.custom_layouts[layout]

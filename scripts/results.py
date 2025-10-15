@@ -7,7 +7,7 @@ import pickle
 from typing import Callable, Dict, List, OrderedDict, Tuple
 
 from experiments import Experiment
-from collections import defaultdict
+from collections import defaultdict, OrderedDict as ODict
 import re
 from dateutil.parser import isoparse
 import datetime
@@ -1059,9 +1059,9 @@ class Result:
                 plot_matrix[:, i], # Heights of the bars
                 width=bar_width, label=legend, zorder=3,
 
-                # Error bars
-                yerr=stdev_matrix[:, i], # Error bars
-                capsize=5, linewidth=5,   
+                # # Error bars
+                # yerr=stdev_matrix[:, i], # Error bars
+                # capsize=5, linewidth=5,   
             )
             # _latencies = list(latency_matrix[:, i])
             # _latencies = [str(int(x)) for x in _latencies]
@@ -1071,7 +1071,7 @@ class Result:
         ax.set_xticks(label_pos, xlabels)
         plt.ylim(0, ylim+50)
         # plt.yticks([0, 5, 10, 15, 20], fontsize=90)
-        plt.ylim((0, 20))
+        plt.ylim((0, 40))
         plt.ylabel("Throughput (k req/s)", fontsize=90)
         if "xtitle" in self.kwargs:
             plt.xlabel(self.kwargs["xtitle"], fontsize=90)
@@ -1273,8 +1273,17 @@ class Result:
         ramp_up = self.kwargs.get('ramp_up', 0)
         ramp_down = self.kwargs.get('ramp_down', 0)
         legends = self.kwargs.get('legends', {})
+        legend_order = self.kwargs.get("legend_order", None)
         force_parse = self.kwargs.get('force_parse', False)
         xlabels = self.kwargs.get('xlabels', [])
+
+        # if legend_order is not None:
+        #     _legends = ODict()
+        #     for legend in legend_order:
+        #         _legends[legend] = legends[legend]
+        #     legends = _legends
+
+
 
         # Number of xlabels must match number of subexperiments for each group.
         for group_name, experiments in self.experiment_groups.items():
@@ -1292,12 +1301,85 @@ class Result:
         except:
             plot_dict = self.stacked_bar_graph_psl_parse(ramp_up, ramp_down, legends)
 
+        if legend_order is not None:
+            _plot_dict = ODict()
+            for legend in legend_order:
+                _plot_dict[legend] = plot_dict[legend]
+            plot_dict = _plot_dict
+
         # Save plot dict
         with open(os.path.join(self.workdir, "plot_dict.pkl"), "wb") as f:
             pickle.dump(plot_dict, f)
 
         output = self.kwargs.get('output', None)
         self.stacked_bar_graph_plot(plot_dict, output, xlabels)
+
+
+    def tput_nodes_line_plot_psl(self):
+        # Parse args
+        ramp_up = self.kwargs.get('ramp_up', 0)
+        ramp_down = self.kwargs.get('ramp_down', 0)
+        legends = self.kwargs.get('legends', {})
+        force_parse = self.kwargs.get('force_parse', False)
+
+        # Try retreive plot dict from cache
+        try:
+            if force_parse:
+                raise Exception("Force parse")
+
+            with open(os.path.join(self.workdir, "plot_dict.pkl"), "rb") as f:
+                plot_dict = pickle.load(f)
+        except:
+            plot_dict = self.tput_nodes_line_plot_psl_parse(ramp_up, ramp_down, legends)
+
+
+        # Save plot dict
+        with open(os.path.join(self.workdir, "plot_dict.pkl"), "wb") as f:
+            pickle.dump(plot_dict, f)
+
+        output = self.kwargs.get('output', None)
+        self.tput_nodes_line_plot_plot(plot_dict, output)
+
+    def tput_nodes_line_plot_plot(self, plot_dict, output):
+        font = self.kwargs.get('font', {
+            'size'   : 90,
+            'family': 'serif',
+            'serif': ["Linux Libertine O"],
+        })
+        matplotlib.rc('font', **font)
+        matplotlib.rc("axes.formatter", limits=(-99, 99))
+        matplotlib.rcParams['ps.useafm'] = True
+        matplotlib.rcParams['pdf.use14corefonts'] = True
+        matplotlib.rcParams['text.usetex'] = True
+        # matplotlib.rcParams["text.latex.preview"] = True
+        matplotlib.rcParams['text.latex.preamble'] = r"""
+        \usepackage{libertine}
+        \usepackage[libertine]{newtxmath}
+        """
+
+        for legend, stats in plot_dict.items():
+            tputs = [stat.mean_tput for stat in stats]
+            nodes = [stat.num_nodes for stat in stats]
+            plt.plot(nodes, tputs, label=legend)
+        plt.legend(loc='upper center', bbox_to_anchor=(0.5, 1.4), ncol=3, fontsize=70)
+        plt.xlabel("Number of Nodes")
+        plt.ylabel("Throughput (k req/s)")
+        plt.grid()
+        
+        plt.gcf().set_size_inches(
+            self.kwargs.get("output_width", 30),
+            self.kwargs.get("output_height", 12)
+        )
+
+        if output is not None:
+            output = os.path.join(self.workdir, output)
+            plt.savefig(output, bbox_inches="tight")
+        else:
+            plt.show()
+
+
+    def tput_nodes_line_plot_psl_parse(self, ramp_up, ramp_down, legends):
+        return collections.OrderedDict(self.tput_latency_sweep_psl_parse(ramp_up, ramp_down, legends))
 
 
     def stacked_bar_graph_psl_parse(self, ramp_up, ramp_down, legends):
