@@ -44,8 +44,8 @@ max_write_buffers_to_merge = 10
 
 [node_config.worker_config]
 all_writes_max_batch_size = 1000
-self_writes_max_batch_size = 16
-self_reads_max_batch_size = 16
+self_writes_max_batch_size = 256
+self_reads_max_batch_size = 256
 batch_max_delay_ms = 50
 heartbeat_max_delay_ms = 60_000 # Essentially disable heartbest. This causes throughput issues.
 signature_max_delay_ms = 20000
