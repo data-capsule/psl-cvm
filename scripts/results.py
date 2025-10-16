@@ -1259,19 +1259,25 @@ class Result:
                                 evil_time = isoparse(captures[0])
                                 break
                     
-                    sequencer_detect_time = (evil_time - start_time).total_seconds()
+                    try:
+                        sequencer_detect_time = (evil_time - start_time).total_seconds()
+                    except:
+                        sequencer_detect_time = float('inf')
 
                 print(experiment.num_sequencer_nodes, sequencer_detect_time - node_rollback_time)
                 x.append(experiment.num_sequencer_nodes)
                 y.append(sequencer_detect_time - node_rollback_time)
             
-            # plt.xticks(range(1, len(x) + 1), [str(x) for x in x])
             all_points = list(zip(x, y))
             all_points.sort(key=lambda x: x[0])
             x, y = zip(*all_points)
-            plt.plot(x, y, marker='o', linewidth=5, markersize=10)
-            plt.xlabel("Number of Sequencer Nodes")
+            plt.plot(x, y, marker='o', linewidth=10, markersize=30)
+            plt.xlabel("Number of Auditor Nodes")
             plt.ylabel("Detection delay (s)")
+            plt.xscale('log')
+            # plt.yscale('log')
+            plt.xticks(x, [str(int(x)) for x in x])
+            plt.yticks([0, 5, 10, 15, 20, 25, 30, 35])
             plt.grid()
             output = self.kwargs.get('output', None)
             output = os.path.join(self.workdir, output)

@@ -25,7 +25,7 @@ liveness_u = 0
 max_backlog_batch_size = 1000
 signature_max_delay_blocks = 10
 signature_max_delay_ms = 10000
-num_crypto_workers = 5
+num_crypto_workers = 8
 view_timeout_ms = 4000
 batch_max_delay_ms = 50
 max_audit_snapshots = 100_000 # Essentially disable audit blocking.
@@ -62,6 +62,7 @@ checkpoint_interval_ms = 1000
 
 [node_config.evil_config]
 simulate_byzantine_behavior = true
+byzantine_start_time_ms = 5_000
 
 byzantine_start_block = 0
 
@@ -103,7 +104,7 @@ node_distribution = "tag:worker"
 storage_distribution = "uniform"
 sequencer_distribution = "tag:worker" # Uniformity: All sequencers punished equally. 
 build_command = "make"
-duration = 120
+duration = 90
 data_dir = "/data/"
 # seq_start = 11
 
