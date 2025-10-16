@@ -1071,7 +1071,7 @@ class Result:
         ax.set_xticks(label_pos, xlabels)
         plt.ylim(0, ylim+50)
         # plt.yticks([0, 5, 10, 15, 20], fontsize=90)
-        plt.ylim((0, 40))
+        plt.ylim((0, 500))
         plt.ylabel("Throughput (k req/s)", fontsize=90)
         if "xtitle" in self.kwargs:
             plt.xlabel(self.kwargs["xtitle"], fontsize=90)

@@ -89,47 +89,47 @@ load_phase = false
 zipf_exponent = 0.99
 read_ratio = 0.5
 
-[[experiments]]
-name = "kt_psl"
-type = "psl_storage"
-# git_hash = "209b1804ff2c2259aced1f0960f48167b1966b94"
-repeats = 1
-num_clients = 16
-num_nodes = 16
-num_storage_nodes = 3
-num_sequencer_nodes = 1
-node_distribution = "tag:worker"
-storage_distribution = "uniform"
-sequencer_distribution = "tag:sequencer"
-build_command = "make"
-duration = 30
-data_dir = "/data/"
-
-[experiments.sweeping_parameters]
-# num_nodes = [1, 2, 4, 8, 16]
-num_nodes = [16]
-# num_clients = [16, 32, 48]
-
-
 # [[experiments]]
-# name = "smallbank_nimble"
-# type = "nimble"
+# name = "kt_psl"
+# type = "psl_storage"
 # # git_hash = "209b1804ff2c2259aced1f0960f48167b1966b94"
 # repeats = 1
-# num_clients = 256
-# # num_nodes = 15
-# num_storage_nodes = 0
-# num_sequencer_nodes = 4 # 1 coordinator + 3 endorsers
+# num_clients = 16
+# num_nodes = 16
+# num_storage_nodes = 3
+# num_sequencer_nodes = 1
 # node_distribution = "tag:worker"
 # storage_distribution = "uniform"
-# sequencer_distribution = "uniform"
-# build_command = "make nimble"
-# duration = 90
+# sequencer_distribution = "tag:sequencer"
+# build_command = "make"
+# duration = 60
 # data_dir = "/data/"
 
 # [experiments.sweeping_parameters]
-# # num_nodes = [1, 15, 31, 63]
 # num_nodes = [1, 2, 4, 8, 16]
+# # num_nodes = [16]
+# # num_clients = [16, 32, 48]
+
+
+[[experiments]]
+name = "kt_nimble"
+type = "nimble"
+# git_hash = "209b1804ff2c2259aced1f0960f48167b1966b94"
+repeats = 1
+num_clients = 16
+# num_nodes = 15
+num_storage_nodes = 0
+num_sequencer_nodes = 4 # 1 coordinator + 3 endorsers
+node_distribution = "tag:worker"
+storage_distribution = "uniform"
+sequencer_distribution = "uniform"
+build_command = "make nimble"
+duration = 60
+data_dir = "/data/"
+
+[experiments.sweeping_parameters]
+# num_nodes = [1, 15, 31, 63]
+num_nodes = [1, 2, 4, 8, 16]
 
 
 
@@ -138,7 +138,7 @@ num_nodes = [16]
 # type = "psl_storage"
 # # git_hash = "209b1804ff2c2259aced1f0960f48167b1966b94"
 # repeats = 1
-# num_clients = 256
+# num_clients = 16
 # # num_nodes = 15
 # num_storage_nodes = 0
 # num_sequencer_nodes = 1
@@ -146,7 +146,7 @@ num_nodes = [16]
 # storage_distribution = "uniform"
 # sequencer_distribution = "uniform"
 # build_command = "make"
-# duration = 90
+# duration = 60
 # data_dir = "/data/"
 
 # [experiments.sweeping_parameters]
@@ -163,17 +163,17 @@ ramp_down = 10
 output = "kt_worker_scale.pdf"
 force_parse = true
 # xlabels = ["1", "15", "31", "63"]
-# xlabels = ["1", "2", "4", "8", "16"]
-xlabels = ["16"]
+xlabels = ["1", "2", "4", "8", "16"]
+# xlabels = ["16"]
 xtitle = "Number of Nodes"
 # legend_order = ["Nimble", "HarborMaster", "Unprotected"]
-legend_order = ["HarborMaster"]
+legend_order = ["Nimble"]
 
 
 [results.legends]
 kt_psl = "HarborMaster"
 kt_nimble = "Nimble"
-kt_unprotected = "Unprotected"
+smallbank_unprotected = "Unprotected"
 
 # [[results]]
 # name = "throughput_latency_client_sweep"
