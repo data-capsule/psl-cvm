@@ -1311,6 +1311,17 @@ class Result:
         with open(os.path.join(self.workdir, "plot_dict.pkl"), "wb") as f:
             pickle.dump(plot_dict, f)
 
+        with open(os.path.join(self.workdir, "summary.txt"), "w") as f:
+            for legend, stats in plot_dict.items():
+                f.write(f"{legend}\n")
+                for stat in stats:
+                    f.write(f"=============Num Nodes: {stat.num_nodes}, Num Clients: {stat.num_clients}================\n")
+                    f.write(f"Mean Tput: {stat.mean_tput} ktx/s, Mean Latency: {stat.mean_latency} ms\n")
+                    f.write(f"Median Latency: {stat.median_latency} ms, 99th Percentile Latency: {stat.p99_latency} ms\n")
+                    f.write(f"Max Latency: {stat.max_latency} ms, Min Latency: {stat.min_latency} ms\n")
+                    f.write(f"Stdev Tput: {stat.stdev_tput} ktx/s, Stdev Latency: {stat.stdev_latency} ms\n")
+                    f.write("==================================\n")
+
         output = self.kwargs.get('output', None)
         self.stacked_bar_graph_plot(plot_dict, output, xlabels)
 

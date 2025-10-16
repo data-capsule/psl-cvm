@@ -82,7 +82,7 @@ ramp_down_ms = 10_000
 [client_config.workload_config.request_config.KVReadWriteYCSB]
 num_keys = 300_000
 num_fields = 1
-val_size = 1
+val_size = 100
 linearizable_reads = false
 byz_commit_ratio = 0.0
 load_phase = false
@@ -106,7 +106,8 @@ duration = 30
 data_dir = "/data/"
 
 [experiments.sweeping_parameters]
-num_nodes = [1, 2, 4, 8, 16]
+# num_nodes = [1, 2, 4, 8, 16]
+num_nodes = [16]
 # num_clients = [16, 32, 48]
 
 
@@ -162,7 +163,8 @@ ramp_down = 10
 output = "kt_worker_scale.pdf"
 force_parse = true
 # xlabels = ["1", "15", "31", "63"]
-xlabels = ["1", "2", "4", "8", "16"]
+# xlabels = ["1", "2", "4", "8", "16"]
+xlabels = ["16"]
 xtitle = "Number of Nodes"
 # legend_order = ["Nimble", "HarborMaster", "Unprotected"]
 legend_order = ["HarborMaster"]

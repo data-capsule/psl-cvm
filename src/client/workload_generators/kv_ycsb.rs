@@ -190,6 +190,8 @@ impl KVReadWriteYCSBGenerator {
         let mut ops = Vec::new();
         for i in 0..self.config.num_fields {
             let key = key.clone() + &self.get_field_str_from_num(i);
+
+            #[cfg(not(feature = "app_key_transparency"))]
             let val = self.get_next_val();
 
             #[cfg(not(feature = "app_key_transparency"))]
@@ -197,9 +199,16 @@ impl KVReadWriteYCSBGenerator {
             #[cfg(feature = "app_key_transparency")]
             let op_type = ProtoTransactionOpType::StoredProcedure1;
 
+            #[cfg(not(feature = "app_key_transparency"))]
             ops.push(ProtoTransactionOp {
                 op_type: op_type.into(),
                 operands: vec![key.into_bytes(), val]
+            });
+
+            #[cfg(feature = "app_key_transparency")]
+            ops.push(ProtoTransactionOp {
+                op_type: op_type.into(),
+                operands: vec![key.into_bytes()]
             });
             
         }

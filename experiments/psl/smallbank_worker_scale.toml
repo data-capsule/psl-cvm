@@ -164,15 +164,15 @@ name = "stacked_bar_graph"
 plotter = "stacked_bar_graph_psl"
 ramp_up = 10
 ramp_down = 10
-output = "worker_scale.pdf"
+output = "smallbank_worker_scale.pdf"
 force_parse = true
 # xlabels = ["1", "15", "31", "63"]
 xlabels = ["1", "2", "4", "8", "16"]
 xtitle = "Number of Nodes"
-legend_order = ["nimble", "psl", "unprotected"]
+legend_order = ["Nimble", "HarborMaster", "Unprotected"]
 
 
 [results.legends]
-smallbank_psl = "psl"
-smallbank_nimble = "nimble"
-smallbank_unprotected = "unprotected"
+smallbank_psl = "HarborMaster"
+smallbank_nimble = "Nimble"
+smallbank_unprotected = "Unprotected"
