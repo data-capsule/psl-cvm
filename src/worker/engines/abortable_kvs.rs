@@ -641,17 +641,17 @@ impl AbortableKVSTask {
         });
 
         // Now send an ACK_BARRIER with key = "barrier:{public_key}"
-        let barrier_key = format!("barrier:{}", hex::encode(public_key.to_bytes()));
-        let barrier_key = barrier_key.as_bytes().to_vec();
-        let total_workers = self.cache_connector.blocking_client.0 // Very roundabout way to get to the config.
-            .config.get().net_config.nodes.keys()
-            .filter(|name| name.starts_with("node"))
-            .count();
-        let (res, waiter_rx) = self.cache_connector.dispatch_ack_barrier_request(barrier_key.clone(), total_workers as f64).await;
-        // block_seq_num_rx_vec.push(waiter_rx);
-        if let std::result::Result::Err(_e) = res {
-            *is_aborted = true;
-            return;
-        }
+        // let barrier_key = format!("barrier:{}", hex::encode(public_key.to_bytes()));
+        // let barrier_key = barrier_key.as_bytes().to_vec();
+        // let total_workers = self.cache_connector.blocking_client.0 // Very roundabout way to get to the config.
+        //     .config.get().net_config.nodes.keys()
+        //     .filter(|name| name.starts_with("node"))
+        //     .count();
+        // let (res, waiter_rx) = self.cache_connector.dispatch_ack_barrier_request(barrier_key.clone(), total_workers as f64).await;
+        // // block_seq_num_rx_vec.push(waiter_rx);
+        // if let std::result::Result::Err(_e) = res {
+        //     *is_aborted = true;
+        //     return;
+        // }
     }
 }
