@@ -1194,6 +1194,89 @@ class Result:
                             return ((isoparse(captures[0]) - start_time).total_seconds(), description)
 
 
+    def evil_audit(self):
+        time_rgx = re.compile(r"\[INFO\]\[.*\]\[(.*)\]")
+        node_evil_rgx = re.compile(r"\[WARN\]\[.*\]\[(.*)\].*Responding with rolledback state for key.*")
+        sequencer_evil_rgx = re.compile(r"\[WARN\]\[.*\]\[(.*)\].*Read verification failed in.*")
+
+        font = self.kwargs.get('font', {
+            'size'   : 90,
+            'family': 'serif',
+            'serif': ["Linux Libertine O"],
+        })
+        matplotlib.rc('font', **font)
+        matplotlib.rc("axes.formatter", limits=(-99, 99))
+        matplotlib.rcParams['ps.useafm'] = True
+        matplotlib.rcParams['pdf.use14corefonts'] = True
+        matplotlib.rcParams['text.usetex'] = True
+        # matplotlib.rcParams["text.latex.preview"] = True
+        matplotlib.rcParams['text.latex.preamble'] = r"""
+        \usepackage{libertine}
+        \usepackage[libertine]{newtxmath}
+        """
+
+        plt.gcf().set_size_inches(
+            self.kwargs.get("output_width", 30),
+            self.kwargs.get("output_height", 12)
+        )
+
+        assert len(self.experiment_groups) == 1, "Only one group is allowed for this plotter"
+
+        for group_name, experiments in self.experiment_groups.items():
+            x = []
+            y = []
+            for experiment in experiments:
+                log_dir = f"{experiment.local_workdir}/logs/0"
+                node_rollback_time = 0
+                sequencer_detect_time = 0
+                with open(os.path.join(log_dir, "node1.log"), "r") as f:
+                    start_time = None
+                    evil_time = None
+                    for line in f.readlines():
+                        if start_time is None:
+                            captures = time_rgx.findall(line)
+                            if len(captures) == 1:
+                                start_time = isoparse(captures[0])
+                        else:
+                            captures = node_evil_rgx.findall(line)
+                            if len(captures) == 1:
+                                evil_time = isoparse(captures[0])
+                                break
+                    
+                    node_rollback_time = (evil_time - start_time).total_seconds()
+
+                with open(os.path.join(log_dir, "sequencer1.log"), "r") as f:
+                    start_time = None
+                    evil_time = None
+                    for line in f.readlines():
+                        if start_time is None:
+                            captures = time_rgx.findall(line)
+                            if len(captures) == 1:
+                                start_time = isoparse(captures[0])
+                        else:
+                            captures = sequencer_evil_rgx.findall(line)
+                            if len(captures) == 1:
+                                evil_time = isoparse(captures[0])
+                                break
+                    
+                    sequencer_detect_time = (evil_time - start_time).total_seconds()
+
+                print(node_rollback_time, sequencer_detect_time)
+                x.append(experiment.num_sequencer_nodes)
+                y.append(sequencer_detect_time - node_rollback_time)
+            
+            # plt.xticks(range(1, len(x) + 1), [str(x) for x in x])
+            plt.plot(x, y, marker='o', linewidth=5, markersize=10)
+            plt.xlabel("Number of Sequencer Nodes")
+            plt.ylabel("Detection delay (s)")
+            plt.grid()
+            output = self.kwargs.get('output', None)
+            output = os.path.join(self.workdir, output)
+            if output is not None:
+                plt.savefig(output, bbox_inches="tight")
+            else:
+                plt.show()
+
     def crash_byz_tput_timeseries(self):
         # Parse args
         ramp_up = self.kwargs.get('ramp_up', 0)

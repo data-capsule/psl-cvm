@@ -176,6 +176,8 @@ pub struct CacheManager {
     __evil_count: usize,
     #[cfg(feature = "evil")]
     __good_count: usize,
+    #[cfg(feature = "evil")]
+    __cache_start_time: Instant,
 }
 
 impl CacheManager {
@@ -226,6 +228,9 @@ impl CacheManager {
             __evil_count: 0,
             #[cfg(feature = "evil")]
             __good_count: 0,
+
+            #[cfg(feature = "evil")]
+            __cache_start_time: Instant::now(),
         }
     }
 
@@ -398,6 +403,7 @@ impl CacheManager {
             let should_respond_with_rolledback_state = if config.simulate_byzantine_behavior
             && config.rollbacked_response_ratio > 0.000000001 /* Avoid floating point errors */ 
             && self.__evil_count < config.rolledback_response_count
+            && self.__cache_start_time.elapsed() > Duration::from_millis(config.byzantine_start_time_ms)
             {
                 self.__evil_weights[self.__evil_dist.sample(&mut rng())].0
             } else {

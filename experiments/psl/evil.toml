@@ -3,7 +3,7 @@ project_home = "https://github.com/data-capsule/psl-cvm"
 
 [deployment_config]
 provider = "aws"
-# mode = "modest"
+mode = "modest"
 # mode = "tiny"
 ssh_key = "cluster_key.pem"
 ssh_user = "psladmin"
@@ -90,7 +90,7 @@ zipf_exponent = 0.99
 read_ratio = 1.0
 
 [[experiments]]
-name = "ycsb_r50_w16_psl"
+name = "ycsb_r100_w16_psl"
 type = "psl_storage"
 # git_hash = "209b1804ff2c2259aced1f0960f48167b1966b94"
 repeats = 1
@@ -101,7 +101,7 @@ num_storage_nodes = 3
 # num_sequencer_nodes = 1
 node_distribution = "tag:worker"
 storage_distribution = "uniform"
-sequencer_distribution = "uniform"
+sequencer_distribution = "tag:worker" # Uniformity: All sequencers punished equally. 
 build_command = "make"
 duration = 120
 data_dir = "/data/"
@@ -109,19 +109,16 @@ data_dir = "/data/"
 
 [experiments.sweeping_parameters]
 # num_clients = [16, 32, 48, 64, 96, 128, 160, 192, 256, 512, 1024, 1120, 1200, 1280]
-num_sequencer_nodes = [1, 2]
+num_sequencer_nodes = [1, 2, 4, 8, 16]
 
 
 
 [[results]]
-name = "throughput_latency_client_sweep"
-plotter = "tput_latency_sweep_psl"
-ramp_up = 10
-ramp_down = 10
-output = "storage.pdf"
+name = "evil_audit"
+plotter = "evil_audit"
+output = "evil_audit.pdf"
 force_parse = true
 
-[results.legends]
-ycsb_r50_w16_psl = "psl"
-ycsb_r50_w16_nimble = "nimble"
-ycsb_r50_w16_unprotected = "unprotected"
+output_width = 30
+output_height = 12
+
