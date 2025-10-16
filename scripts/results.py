@@ -1261,11 +1261,14 @@ class Result:
                     
                     sequencer_detect_time = (evil_time - start_time).total_seconds()
 
-                print(node_rollback_time, sequencer_detect_time)
+                print(experiment.num_sequencer_nodes, sequencer_detect_time - node_rollback_time)
                 x.append(experiment.num_sequencer_nodes)
                 y.append(sequencer_detect_time - node_rollback_time)
             
             # plt.xticks(range(1, len(x) + 1), [str(x) for x in x])
+            all_points = list(zip(x, y))
+            all_points.sort(key=lambda x: x[0])
+            x, y = zip(*all_points)
             plt.plot(x, y, marker='o', linewidth=5, markersize=10)
             plt.xlabel("Number of Sequencer Nodes")
             plt.ylabel("Detection delay (s)")
