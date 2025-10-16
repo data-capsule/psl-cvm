@@ -151,24 +151,31 @@ sleep 10
         """
 
         ret = {}
-        i = 0
-
-        # Assume that the list is the flattened complete tree.
-        # The children of index i are i * fanout + 1, i * fanout + 2, ..., i * fanout + fanout.
-        # The parent of index i is (i - 1) // fanout.
-        # Each worker sends to its children and its parent.
-
-        while i < len(worker_names):
-            curr = worker_names[i]
-            children = [worker_names[i * fanout + j] for j in range(1, fanout + 1) if i * fanout + j < len(worker_names)]
-            parent = (i - 1) // fanout
-            ret[curr] = children[:]
-            if parent >= 0:
-                ret[curr].append(worker_names[parent])
-            i += 1
-
+        for worker_name in worker_names:
+            downstream_workers = set(deepcopy(worker_names))
+            downstream_workers.remove(worker_name)
+            ret[worker_name] = list(downstream_workers)
         return ret
-        # return {k: [] for k in worker_names}
+
+        # ret = {}
+        # i = 0
+
+        # # Assume that the list is the flattened complete tree.
+        # # The children of index i are i * fanout + 1, i * fanout + 2, ..., i * fanout + fanout.
+        # # The parent of index i is (i - 1) // fanout.
+        # # Each worker sends to its children and its parent.
+
+        # while i < len(worker_names):
+        #     curr = worker_names[i]
+        #     children = [worker_names[i * fanout + j] for j in range(1, fanout + 1) if i * fanout + j < len(worker_names)]
+        #     parent = (i - 1) // fanout
+        #     ret[curr] = children[:]
+        #     if parent >= 0:
+        #         ret[curr].append(worker_names[parent])
+        #     i += 1
+
+        # return ret
+        # # return {k: [] for k in worker_names}
 
     def generate_watchlists(self, sequencer_names: List[str], worker_names: List[str]) -> Dict[str, List[str]]:
         """

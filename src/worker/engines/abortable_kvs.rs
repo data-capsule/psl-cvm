@@ -648,11 +648,14 @@ impl AbortableKVSTask {
             .filter(|name| name.starts_with("node"))
             .count();
         let (res, waiter_rx) = self.cache_connector.dispatch_ack_barrier_request(barrier_key.clone(), total_workers as f64).await;
-        block_seq_num_rx_vec.push(waiter_rx);
+        // block_seq_num_rx_vec.push(waiter_rx);
         if let std::result::Result::Err(_e) = res {
             *is_aborted = true;
             return;
         }
+        tokio::spawn(async move {
+            let _ = waiter_rx.await;
+        });
 
     }
 }
