@@ -119,7 +119,7 @@ class FlinkExperiment(Experiment):
 
         self.copy_back_build_files()
 
-    def generate_flink_conf(self, config_dir, psl_node, psl_enabled):
+    def generate_flink_conf(self, config_dir, psl_node, psl_port, psl_enabled):
         flink_leader_host = self.extract_flink_leader_private_ip()
         flink_conf = f"""\
         jobmanager.rpc.address: {flink_leader_host}
@@ -146,7 +146,7 @@ class FlinkExperiment(Experiment):
         psl.ssl.cert: /home/psladmin/{config_dir}/Pft_root_cert.pem
         psl.ed25519.private-key: /home/psladmin/{config_dir}/client1_signing_privkey.pem
         psl.node.host: {psl_node if psl_enabled else ""}
-        psl.node.port: {3001 if psl_enabled else 0}
+        psl.node.port: {psl_port if psl_enabled else 0}
         psl.lookup.rate: 0.10
         psl.enabled: {"true" if psl_enabled else "false"}
             """
@@ -305,13 +305,13 @@ class FlinkExperiment(Experiment):
             with open(os.path.join(config_dir, f"flink-conf_{node_num}.yaml"), "w") as f:
                 connect_addr = nodes[name]["addr"]
                 name_host = connect_addr.split(":")[0]
-                flink_conf = self.generate_flink_conf(config_dir, name_host, True)
+                flink_conf = self.generate_flink_conf(config_dir, name_host, port, True)
                 f.write(flink_conf)
             
             with open(os.path.join(config_dir, f"flink-conf_{node_num}_psl_disabled.yaml"), "w") as f:
                 connect_addr = nodes[name]["addr"]
                 name_host = connect_addr.split(":")[0]
-                flink_conf = self.generate_flink_conf(config_dir, name_host, False)
+                flink_conf = self.generate_flink_conf(config_dir, name_host, port, False)
                 f.write(flink_conf)
 
         
@@ -495,14 +495,14 @@ class FlinkExperiment(Experiment):
             self.binary_mapping[client_vms[0]].append(name)
 
 
-    def generate_kill_block(self, bin, vm, binary_name):
+    def generate_kill_block(self, bin, vm, repeat_num, binary_name):
         return [
             f"$SSH_CMD {self.dev_ssh_user}@{vm.public_ip} 'sudo pkill -2 -c {binary_name}' || true",
             f"$SSH_CMD {self.dev_ssh_user}@{vm.public_ip} 'sudo pkill -15 -c {binary_name}' || true",
             f"$SSH_CMD {self.dev_ssh_user}@{vm.public_ip} 'sudo pkill -9 -c {binary_name}' || true",
             f"$SSH_CMD {self.dev_ssh_user}@{vm.public_ip} 'sudo rm -rf /data/*' || true",
-            f"$SCP_CMD {self.dev_ssh_user}@{vm.public_ip}:{self.remote_workdir}/logs/{bin}.log {self.remote_workdir}/logs/{bin}.log || true",
-            f"$SCP_CMD {self.dev_ssh_user}@{vm.public_ip}:{self.remote_workdir}/logs/{bin}.err {self.remote_workdir}/logs/{bin}.err || true",
+            f"$SCP_CMD {self.dev_ssh_user}@{vm.public_ip}:{self.remote_workdir}/logs/{repeat_num}/{bin}.log {self.remote_workdir}/logs/{repeat_num}/{bin}.log || true",
+            f"$SCP_CMD {self.dev_ssh_user}@{vm.public_ip}:{self.remote_workdir}/logs/{repeat_num}/{bin}.err {self.remote_workdir}/logs/{repeat_num}/{bin}.err || true",
         ]
 
     def generate_arbiter_script(self):
@@ -632,11 +632,12 @@ class FlinkExperiment(Experiment):
                 f"  -m {flink_leader_host}:8081 \\",
                 f"  -p {self.num_nodes} \\",
                 f"  -c com.example.dedup.DedupRefCountBenchmark \\",
-                f"  /home/psladmin/flink-psl/build-target/lib/flink-dedup-bench-1.16.3.jar",
+                f"  /home/psladmin/flink-psl/build-target/lib/flink-dedup-bench-1.16.3.jar > {self.remote_workdir}/logs/{repeat_num}/flink.log 2> {self.remote_workdir}/logs/{repeat_num}/flink.err",
             ])
             
             script_lines.extend([
                 f"hdfs dfs -get -f /results {self.remote_workdir}/results_{repeat_num}.txt",
+                f"hdfs dfs -rm -f /results || true",
             ])
 
             
@@ -646,34 +647,34 @@ class FlinkExperiment(Experiment):
                     if "flink_leader" in bin:
                         cmd_block = [
                             ssh_command_prefix,
-                            f"/home/psladmin/flink-psl/build-target/bin/jobmanager.sh stop \\",
+                            f"/home/psladmin/flink-psl/build-target/bin/jobmanager.sh stop'",
                             "sleep 1",
                         ]
                     elif "flink_worker" in bin:
                         # flink-conf_{node_num}.yaml => node_num
                         cmd_block = [
                             ssh_command_prefix,
-                            f"/home/psladmin/flink-psl/build-target/bin/taskmanager.sh stop \\",
+                            f"/home/psladmin/flink-psl/build-target/bin/taskmanager.sh stop'",
                             "sleep 1",
                         ]
                     elif "hdfs" in bin:
                         cmd_block = [
                             ssh_command_prefix,
-                            f"/usr/local/hadoop/sbin/stop-dfs.sh \\",
+                            f"/usr/local/hadoop/sbin/stop-dfs.sh'",
                             "sleep 5",
                         ]
                     elif "node" in bin:
                         binary_name = "server"
-                        cmd_block = self.generate_kill_block(bin, vm, binary_name)
+                        cmd_block = self.generate_kill_block(bin, vm, repeat_num, binary_name)
                     elif "storage" in bin:
                         binary_name = "server"
-                        cmd_block = self.generate_kill_block(bin, vm, binary_name)
+                        cmd_block = self.generate_kill_block(bin, vm, repeat_num, binary_name)
                     elif "sequencer" in bin:
                         binary_name = "server"
-                        cmd_block = self.generate_kill_block(bin, vm, binary_name)
+                        cmd_block = self.generate_kill_block(bin, vm, repeat_num, binary_name)
                     elif "client" in bin:
                         binary_name = "client"
-                        cmd_block = self.generate_kill_block(bin, vm, binary_name)
+                        cmd_block = self.generate_kill_block(bin, vm, repeat_num, binary_name)
                     else:
                         assert False, f"bin: {bin}"
                     script_lines.extend(cmd_block)
