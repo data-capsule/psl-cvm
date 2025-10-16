@@ -166,8 +166,8 @@ force_parse = true
 xlabels = ["1", "2", "4", "8", "16"]
 # xlabels = ["16"]
 xtitle = "Number of Nodes"
-# legend_order = ["Nimble", "HarborMaster", "Unprotected"]
-legend_order = ["Nimble"]
+legend_order = ["Nimble", "HarborMaster", "Unprotected"]
+# legend_order = ["Nimble"]
 
 
 [results.legends]
