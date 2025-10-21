@@ -1,9 +1,17 @@
 // Copyright (c) Shubham Mishra. All rights reserved.
 // Licensed under the MIT License.
 
-use log::{debug, error, info};
+use log::{debug, error, info, warn};
 use psl::config::{self, Config, PSLWorkerConfig};
+use psl::proto::client::ProtoClientRequest;
+use psl::proto::execution::{ProtoTransaction, ProtoTransactionOp, ProtoTransactionOpType, ProtoTransactionPhase};
+use psl::rpc::server::LatencyProfile;
+use psl::rpc::{PinnedMessage, SenderType};
+use psl::utils::channel::make_channel;
+use psl::worker::TxWithAckChanTag;
 use psl::{sequencer, storage_server, worker};
+use tokio::fs::File;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
 use tokio::{runtime, signal};
 use std::process::exit;
 use std::{env, fs, io, path, sync::{atomic::AtomicUsize, Arc, Mutex}};
@@ -89,7 +97,99 @@ async fn run_sequencer(cfg: Config) -> NodeType {
 
 
 async fn run_worker(cfg: PSLWorkerConfig) -> NodeType {
-    let node = worker::PSLWorker::<worker::engines::AbortableKVSTask>::new(cfg);
+    let (client_request_tx, client_request_rx) = make_channel::<TxWithAckChanTag>(cfg.rpc_config.channel_depth as usize);
+
+    let (reply_tx, mut reply_rx) = tokio::sync::mpsc::channel(cfg.rpc_config.channel_depth as usize);
+
+    let __dummy_tx = reply_tx.clone();
+    tokio::spawn(async move {
+        // Just send "yo" to "/tmp/psl_fifo_out" for every response.
+
+        // Open in append mode.
+        let file = File::options().append(true).create(true).open("/tmp/psl_fifo_out").await.unwrap();
+        let mut writer = BufWriter::new(file);
+        while let Some(_) = reply_rx.recv().await {
+            writer.write_all(b"yo\n").await.unwrap();
+            writer.flush().await.unwrap();
+        }
+        __dummy_tx.send((PinnedMessage::from(vec![], 0, SenderType::Anon), LatencyProfile::new())).await.unwrap();
+    });
+
+    let _tx = client_request_tx.clone();
+    tokio::spawn(async move {
+        // Read "/tmp/psl_fifo_in"
+        // Format: 
+        // Read request: R base64_key
+        // Write request: W base64_key base64_value
+
+
+        let file = File::open("/tmp/psl_fifo_in").await.unwrap();
+        let mut reader = BufReader::new(file);
+        let mut line = Vec::new();
+        let mut client_tag = 0;
+        while let Ok(n) = reader.read_until(b'\n', &mut line).await {
+            if n == 0 {
+                continue;
+            }
+            let request = String::from_utf8(line.clone()).unwrap();
+            let request = request.split_whitespace().collect::<Vec<&str>>();
+            if request.len() < 2 {
+                continue;
+            }
+
+            let op = request[0];
+            client_tag += 1;
+            match op {
+                "R" => {
+                    let key = request[1];
+                    let request = ProtoTransaction {
+                        on_receive: Some(ProtoTransactionPhase {
+                            ops: vec![ProtoTransactionOp {
+                                op_type: ProtoTransactionOpType::Read as i32,
+                                operands: vec![key.as_bytes().to_vec()],
+                            }],
+                        }),
+                        on_byzantine_commit: None,
+                        on_crash_commit: None,
+                        is_2pc: false,
+                        is_reconfiguration: false,
+                    };
+
+
+                    let tx_with_ack_chan_tag: TxWithAckChanTag = (Some(request), (reply_tx.clone(), client_tag, SenderType::Auth("client1".to_string(), 100)));
+                    _tx.send(tx_with_ack_chan_tag).await.unwrap();
+                }
+                "W" => {
+                    let key = request[1];
+                    let value = request[2];
+                    let request = ProtoTransaction {
+                        on_receive: Some(ProtoTransactionPhase {
+                            ops: vec![ProtoTransactionOp {
+                                op_type: ProtoTransactionOpType::Write as i32,
+                                operands: vec![key.as_bytes().to_vec(), value.as_bytes().to_vec()],
+                            }],
+                        }),
+                        on_byzantine_commit: None,
+                        on_crash_commit: None,
+                        is_2pc: false,
+                        is_reconfiguration: false,
+                    };
+
+                    let tx_with_ack_chan_tag: TxWithAckChanTag = (Some(request), (reply_tx.clone(), client_tag, SenderType::Auth("client1".to_string(), 100)));
+                    _tx.send(tx_with_ack_chan_tag).await.unwrap();
+                },
+                _ => {
+                    warn!("Unknown operation: {}", op);
+                }
+            }
+
+            line.clear();
+        }
+
+        panic!("Drop!");
+    });
+    
+    let node = worker::PSLWorker::<worker::engines::AbortableKVSTask>::mew(cfg, client_request_tx, client_request_rx);
 
     NodeType::Worker(node)
 }

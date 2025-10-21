@@ -15,16 +15,12 @@ pub use crate::consensus::batch_proposal::TxWithAckChanTag;
 
 use crate::{
     config::{AtomicConfig, AtomicPSLWorkerConfig, PSLWorkerConfig},
-    crypto::{AtomicKeyStore, CryptoService, KeyStore},
+    crypto::{AtomicKeyStore, CryptoService, KeyStore, DIGEST_LENGTH},
     proto::{
-        checkpoint::ProtoBackfillQuery,
-        consensus::ProtoAppendEntries,
-        rpc::ProtoPayload,
+        checkpoint::ProtoBackfillQuery, client::{ProtoClientReply, ProtoTransactionReceipt}, consensus::ProtoAppendEntries, rpc::ProtoPayload
     },
     rpc::{
-        client::Client,
-        server::{MsgAckChan, RespType, Server, ServerContextType},
-        MessageRef, SenderType,
+        client::Client, server::{LatencyProfile, MsgAckChan, RespType, Server, ServerContextType}, MessageRef, PinnedMessage, SenderType
     },
     storage_server::logserver::LogServer,
     utils::{
@@ -161,6 +157,23 @@ impl ServerContextType for PinnedPSLWorkerServerContext {
                     .send((client_request.tx, (ack_chan, client_tag, sender)))
                     .await
                     .expect("Channel send error");
+
+                // let reply = ProtoClientReply {
+                //     reply: Some(crate::proto::client::proto_client_reply::Reply::Receipt(ProtoTransactionReceipt {
+                //         req_digest: vec![0u8; DIGEST_LENGTH],
+                //         block_n: 0,
+                //         tx_n: 0,
+                //         results:None,
+                //         await_byz_response: false,
+                //         byz_responses: vec![],
+                //     })),
+                //     client_tag,
+                // };
+
+                // let reply_ser = reply.encode_to_vec();
+                // let _sz = reply_ser.len();
+                // let reply_msg = PinnedMessage::from(reply_ser, _sz, crate::rpc::SenderType::Anon);
+                // let _ = ack_chan.send((reply_msg, LatencyProfile::new())).await;
 
                 trace!("Queue time: {:?}", start_time.elapsed());
 
