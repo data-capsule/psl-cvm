@@ -28,21 +28,22 @@ signature_max_delay_ms = 102 # roughly batch_max_delay_ms * signature_max_delay_
 num_crypto_workers = 5
 view_timeout_ms = 4000
 batch_max_delay_ms = 50
-max_audit_snapshots = 5
-max_audit_buffer_size = 10
-max_audit_delay_ms = 1000
+max_audit_snapshots = 500000
+max_audit_buffer_size = 10000000
+max_audit_delay_ms = 1000000000
 
 [node_config.worker_config]
-all_writes_max_batch_size = 1000
+all_writes_max_batch_size = 16
 self_writes_max_batch_size = 16
 self_reads_max_batch_size = 16
-batch_max_delay_ms = 2
+batch_max_delay_ms = 50
 signature_max_delay_ms = 20000
 signature_max_delay_blocks = 50
-num_crypto_workers = 5
+num_crypto_workers = 8
 num_worker_threads_per_worker = 4
 num_replier_threads_per_worker = 4
 read_cache_size = 1
+heartbeat_max_delay_ms = 60_000
 
 [node_config.worker_config.state_storage_config.RocksDB]
 write_buffer_size = 67_108_864 # 64MB
@@ -55,7 +56,7 @@ max_write_buffer_number = 1
 max_write_buffers_to_merge = 1
 
 [node_config.app_config]
-logger_stats_report_ms = 100
+logger_stats_report_ms = 1000
 checkpoint_interval_ms = 60000
 
 [node_config.evil_config]
@@ -74,29 +75,8 @@ client_max_retry = 10
 request_config = "Blanks"
 max_concurrent_requests = 16
 
-# [[experiments]]
-# name = "flink"
-# repeats = 1
-# num_storage_nodes = 3
-# num_sequencer_nodes = 1
-# node_distribution = "tag:worker"
-# storage_distribution = "uniform"
-# sequencer_distribution = "uniform"
-# num_clients = 1
-# type = "flink"
-# build_command = "make"
-# duration = 60
-
-# [experiments.client_config]
-# psl_enabled = true
-
-# [experiments.sweeping_parameters]
-# # num_clients = [10, 20, 50, 100, 200, 250, 300, 350, 400]
-# # num_clients = [100, 200, 400, 500, 700, 800]
-# num_nodes = [1, 2, 4, 8, 16]
-
 [[experiments]]
-name = "flink_no_psl"
+name = "flink"
 repeats = 1
 num_storage_nodes = 3
 num_sequencer_nodes = 1
@@ -109,12 +89,34 @@ build_command = "make"
 duration = 60
 
 [experiments.client_config]
-psl_enabled = false
+psl_enabled = true
 
 [experiments.sweeping_parameters]
 # num_clients = [10, 20, 50, 100, 200, 250, 300, 350, 400]
 # num_clients = [100, 200, 400, 500, 700, 800]
-num_nodes = [1, 2, 4, 8, 16]
+# num_nodes = [1, 2, 4, 8, 16]
+num_nodes = [1]
+
+# [[experiments]]
+# name = "flink_no_psl"
+# repeats = 1
+# num_storage_nodes = 3
+# num_sequencer_nodes = 1
+# node_distribution = "tag:worker"
+# storage_distribution = "uniform"
+# sequencer_distribution = "uniform"
+# num_clients = 1
+# type = "flink"
+# build_command = "make"
+# duration = 60
+
+# [experiments.client_config]
+# psl_enabled = false
+
+# [experiments.sweeping_parameters]
+# # num_clients = [10, 20, 50, 100, 200, 250, 300, 350, 400]
+# # num_clients = [100, 200, 400, 500, 700, 800]
+# num_nodes = [1, 2, 4, 8, 16]
 
 [[results]]
 name = "flink_results_parse"

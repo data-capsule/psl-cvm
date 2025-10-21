@@ -470,9 +470,7 @@ where
         let server_ = server.clone();
         let mut stream = acceptor.accept(socket).await?;
         let (sender, is_reply_chan, client_sub_id) = Self::handle_auth(server.clone(), &mut stream, addr).await?;
-        
         let map_name = sender.to_string() + "#" + &client_sub_id.to_string();
-        
         if is_reply_chan {
             parked_streams.insert(map_name, stream);
             return Ok(());

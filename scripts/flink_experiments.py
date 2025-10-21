@@ -145,7 +145,7 @@ class FlinkExperiment(Experiment):
         state.backend: rocksdb
         psl.ssl.cert: /home/psladmin/{config_dir}/Pft_root_cert.pem
         psl.ed25519.private-key: /home/psladmin/{config_dir}/client1_signing_privkey.pem
-        psl.node.host: {psl_node if psl_enabled else ""}
+        psl.node.host: {"localhost" if psl_enabled else ""}
         psl.node.port: {psl_port if psl_enabled else 0}
         psl.lookup.rate: 0.10
         psl.enabled: {"true" if psl_enabled else "false"}
