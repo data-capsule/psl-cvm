@@ -129,9 +129,12 @@ impl CacheConnector {
         let command = CacheCommand::Put(key.clone(), value, BlockSeqNumQuery::WaitForSeqNum(tx), response_tx);
 
 
+        error!("Sending put request for key: {:?}", String::from_utf8(key.clone()).unwrap_or(hex::encode(key.clone())));
         self.cache_tx.send(command).await.unwrap();
+        error!("Put request sent for key: {:?}", String::from_utf8(key.clone()).unwrap_or(hex::encode(key.clone())));
 
         let result = response_rx.await.unwrap()?;
+        error!("Put request received for key: {:?}", String::from_utf8(key.clone()).unwrap_or(hex::encode(key.clone())));
         std::result::Result::Ok((result, Some(rx)))
     }
 
