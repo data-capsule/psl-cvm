@@ -123,7 +123,8 @@ async fn prepare_fifo_reader_writer(idx: usize, channel_depth: usize, client_req
                     ctr = 0; 
                 }
                 Some(_) = reply_rx.recv() => {
-                    writer.write_all(b"yo\n").await.unwrap();
+                    // timeouwriter.write_all(b"yo\n").await.unwrap();
+                    tokio::time::timeout(Duration::from_secs(1), writer.write_all(b"yo\n")).await.unwrap().unwrap();
                     ctr += 1;
                 },
                 // Ok(_) = eof_rx => {
