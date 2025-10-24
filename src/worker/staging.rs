@@ -270,7 +270,8 @@ impl Staging {
             let _ = self.block_broadcaster_to_other_workers_tx.send(new_ci).await;
     
             // Send the commit index to the client reply handler.
-            let _ = self.client_reply_tx.send(new_ci);
+            let res = self.client_reply_tx.send(new_ci);
+            log::error!("Sent commit index to client reply handler: {:?}", res);
         }
 
     }

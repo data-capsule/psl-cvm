@@ -461,7 +461,7 @@ impl<T: ClientHandlerTask + Send + Sync + 'static> PSLAppEngine<T> {
                     tokio::select! {
                         std::result::Result::Ok(seq_num) = _commit_rx.recv() => {
                             commit_seq_num = seq_num;
-                            
+                            error!("Commit sequence number: {}", seq_num);
                         },
                         Some(result) = _reply_rx.recv() => {
                             let (result, ack_chan, seq_num) = result;
