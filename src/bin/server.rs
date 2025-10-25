@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 use log::{debug, error, info, warn};
+use nix::libc;
 use psl::config::{self, Config, PSLWorkerConfig};
 use psl::proto::client::ProtoClientRequest;
 use psl::proto::execution::{ProtoTransaction, ProtoTransactionOp, ProtoTransactionOpType, ProtoTransactionPhase};
@@ -108,24 +109,24 @@ async fn prepare_fifo_reader_writer(idx: usize, channel_depth: usize, client_req
         // Just send "yo" to "/tmp/psl_fifo/psl_fifo_out" for every response.
 
         // Open in append mode.
-        let file = File::options().append(true).create(true).open(format!("/tmp/psl_fifo/psl_fifo_out{}", idx)).await.unwrap();
+        let file = File::options().append(true).create(true)
+            .custom_flags(libc::O_NONBLOCK as i32)
+            .open(format!("/tmp/psl_fifo/psl_fifo_out{}", idx)).await.unwrap();
         
         let mut writer = BufWriter::new(file);
         let flush_timer = ResettableTimer::new(Duration::from_secs(1));
 
         flush_timer.run().await;
 
-        let mut ctr = 0;
+        // let mut ctr = 0;
         loop {
             tokio::select! {
                 _ = flush_timer.wait() => {
                     writer.flush().await.unwrap();
-                    ctr = 0; 
                 }
                 Some(_) = reply_rx.recv() => {
-                    // timeouwriter.write_all(b"yo\n").await.unwrap();
-                    tokio::time::timeout(Duration::from_secs(1), writer.write_all(b"yo\n")).await.unwrap().unwrap();
-                    ctr += 1;
+                    // timeouwriter.write_all(b"yo\n").await.unwrap();          
+                    writer.write_all(b"yo\n").await.unwrap();
                 },
                 // Ok(_) = eof_rx => {
                 //     writer.flush().await.unwrap();
@@ -134,10 +135,6 @@ async fn prepare_fifo_reader_writer(idx: usize, channel_depth: usize, client_req
                 //     drop(file);
                 //     return;
                 // }
-            }
-            if ctr >= 1000 {
-                writer.flush().await.unwrap();
-                ctr = 0;
             }
         }
         __dummy_tx.send((PinnedMessage::from(vec![], 0, SenderType::Anon), LatencyProfile::new())).await.unwrap();
