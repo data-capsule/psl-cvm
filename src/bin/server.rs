@@ -109,24 +109,39 @@ async fn prepare_fifo_reader_writer(idx: usize, channel_depth: usize, client_req
         // Just send "yo" to "/tmp/psl_fifo/psl_fifo_out" for every response.
 
         // Open in append mode.
-        let file = File::options().append(true).create(true)
-            .custom_flags(libc::O_NONBLOCK as i32)
-            .open(format!("/tmp/psl_fifo/psl_fifo_out{}", idx)).await.unwrap();
+        let file = loop {
+
+            match File::options().append(true).create(true)
+                .custom_flags(libc::O_NONBLOCK as i32)
+                .open(format!("/tmp/psl_fifo/psl_fifo_out{}", idx)).await {
+
+                    Ok(file) => break file,
+                    Err(e) => {
+                        error!("Failed to open file: {:?}", e);
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                    }
+                }
+        };
+        
         
         let mut writer = BufWriter::new(file);
         let flush_timer = ResettableTimer::new(Duration::from_secs(1));
 
         flush_timer.run().await;
 
+        let mut ack_counter = 0usize;
+
         // let mut ctr = 0;
         loop {
             tokio::select! {
                 _ = flush_timer.wait() => {
-                    writer.flush().await.unwrap();
+                    let _ = writer.flush().await;
                 }
                 Some(_) = reply_rx.recv() => {
-                    // timeouwriter.write_all(b"yo\n").await.unwrap();          
-                    writer.write_all(b"yo\n").await.unwrap();
+                    // timeouwriter.write_all(b"yo\n").await.unwrap();
+                    let val = format!("{}\n", ack_counter);       
+                    let _ = writer.write_all(val.as_bytes()).await;
+                    ack_counter += 1;
                 },
                 // Ok(_) = eof_rx => {
                 //     writer.flush().await.unwrap();
