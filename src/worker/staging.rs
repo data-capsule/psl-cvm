@@ -271,7 +271,6 @@ impl Staging {
     
             // Send the commit index to the client reply handler.
             let res = self.client_reply_tx.send(new_ci);
-            log::error!("Sent commit index to client reply handler: {:?}", res);
         }
 
     }

@@ -142,12 +142,13 @@ class FlinkExperiment(Experiment):
         env.java.opts.taskmanager: "-Djava.io.tmpdir=/home/psladmin/flink-tmp/tmp"
         env.java.opts.jobmanager: "-Djava.io.tmpdir=/home/psladmin/flink-tmp/tmp"
 
+        state.backend.local-recovery: true
         state.backend: rocksdb
         psl.ssl.cert: /home/psladmin/{config_dir}/Pft_root_cert.pem
         psl.ed25519.private-key: /home/psladmin/{config_dir}/client1_signing_privkey.pem
         psl.node.host: {"localhost" if psl_enabled else ""}
         psl.node.port: {psl_port if psl_enabled else 0}
-        psl.lookup.rate: 0.10
+        psl.lookup.rate: 0.05
         psl.enabled: {"true" if psl_enabled else "false"}
             """
         return flink_conf
@@ -503,6 +504,7 @@ class FlinkExperiment(Experiment):
             f"$SSH_CMD {self.dev_ssh_user}@{vm.public_ip} 'sudo rm -rf /data/*' || true",
             f"$SCP_CMD {self.dev_ssh_user}@{vm.public_ip}:{self.remote_workdir}/logs/{repeat_num}/{bin}.log {self.remote_workdir}/logs/{repeat_num}/{bin}.log || true",
             f"$SCP_CMD {self.dev_ssh_user}@{vm.public_ip}:{self.remote_workdir}/logs/{repeat_num}/{bin}.err {self.remote_workdir}/logs/{repeat_num}/{bin}.err || true",
+            f"$SSH_CMD {self.dev_ssh_user}@{vm.public_ip} 'sudo rm -rf /tmp/psl_fifo/psl_fifo_*.lease' || true",
         ]
 
     def generate_arbiter_script(self):
@@ -523,12 +525,14 @@ class FlinkExperiment(Experiment):
             f"sudo cp -f /home/psladmin/{self.local_workdir}/configs/core-site.xml /usr/local/hadoop/etc/hadoop/core-site.xml;",
             f"cp -f /home/psladmin/{self.local_workdir}/configs/core-site.xml /home/psladmin/flink-psl/build-target/conf/core-site.xml;",
             f"cp -f /home/psladmin/{self.local_workdir}/configs/hdfs-site.xml /home/psladmin/flink-psl/build-target/conf/hdfs-site.xml;",
+            f"sudo rm -rf /tmp/psl_fifo/psl_fifo_*.lease || true",
         ]
 
         for repeat_num in range(self.repeats):
             for vm, bin_list in self.binary_mapping.items():
                 ssh_command_prefix = f"$SSH_CMD {self.dev_ssh_user}@{vm.public_ip} '"
                 # Boot up the nodes first
+                bin_list = list(sorted(bin_list))[::-1]
                 for bin in bin_list:
                     log_dump_lines = [
                         f"> {self.remote_workdir}/logs/{repeat_num}/{bin}.log \\",
@@ -599,13 +603,7 @@ class FlinkExperiment(Experiment):
                             "sleep 1",
                         ]
                     elif "client" in bin:
-                        binary_name = "client"
-                        cmd_block = [
-                            ssh_command_prefix,
-                            f"sudo {self.remote_workdir}/build/{binary_name} {self.remote_workdir}/configs/{bin}_config.json \\",
-                            *log_dump_lines,
-                            "sleep 1",
-                        ]
+                        cmd_block = []
                     else:
                         assert False, f"bin: {bin}"
                     script_lines.extend(cmd_block)
@@ -619,6 +617,7 @@ class FlinkExperiment(Experiment):
             ])
 
             script_lines.extend([
+                f"sleep 3;",
                 f"sudo chmod +x /etc/profile.d/bigdata_env.sh;",
                 f". /etc/profile.d/bigdata_env.sh;",
                 f"/usr/local/hadoop/bin/hdfs dfsadmin -safemode leave || true",
@@ -638,6 +637,7 @@ class FlinkExperiment(Experiment):
             script_lines.extend([
                 f"hdfs dfs -get -f /results {self.remote_workdir}/results_{repeat_num}.txt",
                 f"hdfs dfs -rm -f /results || true",
+                f"sudo rm -rf /tmp/psl_fifo/psl_fifo_*.lease || true",
             ])
 
             
@@ -654,6 +654,7 @@ class FlinkExperiment(Experiment):
                         # flink-conf_{node_num}.yaml => node_num
                         cmd_block = [
                             ssh_command_prefix,
+                            f" sudo rm -rf /tmp/psl_fifo/psl_fifo_*.lease || true; \\",
                             f"/home/psladmin/flink-psl/build-target/bin/taskmanager.sh stop'",
                             "sleep 1",
                         ]
@@ -673,8 +674,7 @@ class FlinkExperiment(Experiment):
                         binary_name = "server"
                         cmd_block = self.generate_kill_block(bin, vm, repeat_num, binary_name)
                     elif "client" in bin:
-                        binary_name = "client"
-                        cmd_block = self.generate_kill_block(bin, vm, repeat_num, binary_name)
+                        cmd_block = []
                     else:
                         assert False, f"bin: {bin}"
                     script_lines.extend(cmd_block)

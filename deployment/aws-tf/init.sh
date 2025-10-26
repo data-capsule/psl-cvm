@@ -307,13 +307,13 @@ MODE=660                 # rw for user+group
 NUM_FIFO_QUEUES=${NUM_FIFO_QUEUES:-4}   # creates 1..N
 
 sudo mkdir -p "$BASE_FIFO_DIR"
-sudo chown "psladmin:ubuntu" "$BASE_FIFO_DIR"
+sudo chown psladmin:"$GRP" "$BASE_FIFO_DIR"
 sudo chmod 755 "$BASE_FIFO_DIR"
 
 for i in $(seq 1 "$NUM_FIFO_QUEUES"); do
   sudo mkfifo -m "$MODE" "$BASE_FIFO_DIR/psl_fifo_in$i"
   sudo mkfifo -m "$MODE" "$BASE_FIFO_DIR/psl_fifo_out$i"
-  sudo chown "psladmin:ubuntu" "$BASE_FIFO_DIR/psl_fifo_in$i" "$BASE_FIFO_DIR/psl_fifo_out$i"
+  sudo chown psladmin:"$GRP" "$BASE_FIFO_DIR/psl_fifo_in$i" "$BASE_FIFO_DIR/psl_fifo_out$i"
 done
 
 # ------- Passwordless self-SSH for Hadoop scripts (required by start-dfs.sh) --
