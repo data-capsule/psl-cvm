@@ -112,7 +112,7 @@ async fn prepare_fifo_reader_writer(idx: usize, channel_depth: usize, client_req
         let file = loop {
 
             match File::options().append(true).create(true)
-                .custom_flags(libc::O_NONBLOCK as i32)
+                // .custom_flags(libc::O_NONBLOCK as i32)
                 .open(format!("/tmp/psl_fifo/psl_fifo_out{}", idx)).await {
 
                     Ok(file) => break file,
