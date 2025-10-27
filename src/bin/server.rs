@@ -167,6 +167,7 @@ async fn prepare_fifo_reader_writer(idx: usize, channel_depth: usize, client_req
         let mut line = Vec::new();
         let mut client_tag = 0;
         while let Ok(n) = reader.read_until(b'\n', &mut line).await {
+            continue;
             if n == 0 {
                 continue;
             }

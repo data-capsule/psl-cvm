@@ -119,7 +119,8 @@ class FlinkExperiment(Experiment):
 
         self.copy_back_build_files()
 
-    def generate_flink_conf(self, config_dir, psl_node, psl_port, psl_enabled):
+    def generate_flink_conf(self, config_dir, psl_node, psl_port, psl_enabled, nn_host):
+        NN_RPC_PORT = 9000
         flink_leader_host = self.extract_flink_leader_private_ip()
         flink_conf = f"""\
         jobmanager.rpc.address: {flink_leader_host}
@@ -143,7 +144,17 @@ class FlinkExperiment(Experiment):
         env.java.opts.jobmanager: "-Djava.io.tmpdir=/home/psladmin/flink-tmp/tmp"
 
         state.backend.local-recovery: true
+        execution.checkpointing.interval: 1min
+        # execution.checkpointing.externalized-checkpoint-retention: [DELETE_ON_CANCELLATION, RETAIN_ON_CANCELLATION]
+        execution.checkpointing.max-concurrent-checkpoints: 1
+        # execution.checkpointing.min-pause: 0
+        # execution.checkpointing.mode: [EXACTLY_ONCE, AT_LEAST_ONCE]
+        execution.checkpointing.timeout: 10min
+        # execution.checkpointing.tolerable-failed-checkpoints: 0
+        execution.checkpointing.unaligned: false
+
         state.backend: rocksdb
+        state.checkpoints.dir: hdfs://{nn_host}:{NN_RPC_PORT}/flink/checkpoints
         psl.ssl.cert: /home/psladmin/{config_dir}/Pft_root_cert.pem
         psl.ed25519.private-key: /home/psladmin/{config_dir}/client1_signing_privkey.pem
         psl.node.host: {"localhost" if psl_enabled else ""}
@@ -265,6 +276,46 @@ class FlinkExperiment(Experiment):
         sequencer_names = []
         port = deployment.node_port_base
 
+        for node_num in range(1, self.num_storage_nodes+1):
+            port += 1
+            listen_addr = f"0.0.0.0:{port}"
+            name = f"storage{node_num}"
+            domain = f"{name}.pft.org"
+
+            _vm = storage_vms[rr_cnt % len(storage_vms)]
+            self.binary_mapping[_vm].append(name)
+            if node_num == 1:
+                self.binary_mapping[_vm].append("hdfs")
+                nn_host = _vm.private_ip
+                core_site, hdfs_site = self.hdfs_generate_conf(nn_host)
+                with open(os.path.join(config_dir, "core-site.xml"), "w") as f:
+                    f.write(core_site)
+                with open(os.path.join(config_dir, "hdfs-site.xml"), "w") as f:
+                    f.write(hdfs_site)
+
+            storage_names.append(name)
+            
+            private_ip = _vm.private_ip
+            rr_cnt += 1
+            connect_addr = f"{private_ip}:{port}"
+            
+            nodelist.append(name[:])
+            nodes[name] = {
+                "addr": connect_addr,
+                "domain": domain
+            }
+
+            node_list_for_crypto[name] = (connect_addr, domain)
+
+            config = deepcopy(self.base_node_config)
+            config["net_config"]["name"] = name
+            config["net_config"]["addr"] = listen_addr
+            data_dir = os.path.join(self.data_dir, f"{name}-db")
+            config["consensus_config"]["log_storage_config"]["RocksDB"]["db_path"] = str(data_dir)
+
+            node_configs[name] = config
+
+
         flink_worker_addrs = []
         for node_num in range(1, self.num_nodes+1):
             port += 1
@@ -306,57 +357,19 @@ class FlinkExperiment(Experiment):
             with open(os.path.join(config_dir, f"flink-conf_{node_num}.yaml"), "w") as f:
                 connect_addr = nodes[name]["addr"]
                 name_host = connect_addr.split(":")[0]
-                flink_conf = self.generate_flink_conf(config_dir, name_host, port, True)
+                flink_conf = self.generate_flink_conf(config_dir, name_host, port, True, nn_host)
                 f.write(flink_conf)
             
             with open(os.path.join(config_dir, f"flink-conf_{node_num}_psl_disabled.yaml"), "w") as f:
                 connect_addr = nodes[name]["addr"]
                 name_host = connect_addr.split(":")[0]
-                flink_conf = self.generate_flink_conf(config_dir, name_host, port, False)
+                flink_conf = self.generate_flink_conf(config_dir, name_host, port, False, nn_host)
                 f.write(flink_conf)
 
         
         with open(os.path.join(config_dir, "workers"), "w") as f:
             f.write("\n".join(flink_worker_addrs))
 
-        for node_num in range(1, self.num_storage_nodes+1):
-            port += 1
-            listen_addr = f"0.0.0.0:{port}"
-            name = f"storage{node_num}"
-            domain = f"{name}.pft.org"
-
-            _vm = storage_vms[rr_cnt % len(storage_vms)]
-            self.binary_mapping[_vm].append(name)
-            if node_num == 1:
-                self.binary_mapping[_vm].append("hdfs")
-                nn_host = _vm.private_ip
-                core_site, hdfs_site = self.hdfs_generate_conf(nn_host)
-                with open(os.path.join(config_dir, "core-site.xml"), "w") as f:
-                    f.write(core_site)
-                with open(os.path.join(config_dir, "hdfs-site.xml"), "w") as f:
-                    f.write(hdfs_site)
-
-            storage_names.append(name)
-            
-            private_ip = _vm.private_ip
-            rr_cnt += 1
-            connect_addr = f"{private_ip}:{port}"
-            
-            nodelist.append(name[:])
-            nodes[name] = {
-                "addr": connect_addr,
-                "domain": domain
-            }
-
-            node_list_for_crypto[name] = (connect_addr, domain)
-
-            config = deepcopy(self.base_node_config)
-            config["net_config"]["name"] = name
-            config["net_config"]["addr"] = listen_addr
-            data_dir = os.path.join(self.data_dir, f"{name}-db")
-            config["consensus_config"]["log_storage_config"]["RocksDB"]["db_path"] = str(data_dir)
-
-            node_configs[name] = config
 
         for node_num in range(1, self.num_sequencer_nodes+1):
             port += 1
@@ -434,7 +447,11 @@ class FlinkExperiment(Experiment):
             v["rpc_config"]["allowed_keylist_path"] = allowed_keylist_path
             v["rpc_config"]["signing_priv_key_path"] = signing_priv_key_path
             v["worker_config"]["all_worker_list"] = worker_names[:]
-            v["worker_config"]["storage_list"] = storage_names[:] 
+
+            if k in worker_names:
+                v["worker_config"]["storage_list"] = []
+            else:
+                v["worker_config"]["storage_list"] = storage_names[:] 
             v["worker_config"]["sequencer_list"] = sequencer_names[:]
 
             # Only simulate Byzantine behavior in node1.

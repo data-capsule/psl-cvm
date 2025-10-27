@@ -11,6 +11,9 @@ usermod -m -d /home/psladmin psladmin
 # Add the psladmin user to the sudoers file
 echo "psladmin ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
 
+# Set the pipe max size to 1GB
+echo 1073741824 > /proc/sys/fs/pipe-max-size
+
 
 # Docker keys and repos
 apt-get update

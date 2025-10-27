@@ -33,17 +33,17 @@ max_audit_buffer_size = 10000000
 max_audit_delay_ms = 1000000000
 
 [node_config.worker_config]
-all_writes_max_batch_size = 1000
-self_writes_max_batch_size = 1000
-self_reads_max_batch_size = 1000
+all_writes_max_batch_size = 10000
+self_writes_max_batch_size = 16
+self_reads_max_batch_size = 16
 batch_max_delay_ms = 1000
 signature_max_delay_ms = 20000
 signature_max_delay_blocks = 50
-num_crypto_workers = 8
-num_worker_threads_per_worker = 4
-num_replier_threads_per_worker = 4
+num_crypto_workers = 3
+num_worker_threads_per_worker = 1
+num_replier_threads_per_worker = 2
 read_cache_size = 1
-heartbeat_max_delay_ms = 60_000
+heartbeat_max_delay_ms = 60_000_000
 
 [node_config.worker_config.state_storage_config.RocksDB]
 write_buffer_size = 67_108_864 # 64MB
@@ -75,28 +75,8 @@ client_max_retry = 10
 request_config = "Blanks"
 max_concurrent_requests = 16
 
-[[experiments]]
-name = "flink"
-repeats = 1
-num_storage_nodes = 3
-num_sequencer_nodes = 1
-node_distribution = "tag:worker"
-storage_distribution = "uniform"
-sequencer_distribution = "uniform"
-num_clients = 1
-type = "flink"
-build_command = "make"
-duration = 60
-
-[experiments.client_config]
-psl_enabled = true
-
-[experiments.sweeping_parameters]
-# num_nodes = [1, 2, 4, 8, 16]
-num_nodes = [1]
-
 # [[experiments]]
-# name = "flink_no_psl"
+# name = "flink"
 # repeats = 1
 # num_storage_nodes = 3
 # num_sequencer_nodes = 1
@@ -109,10 +89,31 @@ num_nodes = [1]
 # duration = 60
 
 # [experiments.client_config]
-# psl_enabled = false
+# psl_enabled = true
 
 # [experiments.sweeping_parameters]
+# # num_nodes = [1, 2, 4, 8, 16]
+# num_nodes = [1]
+
+[[experiments]]
+name = "flink_no_psl"
+repeats = 1
+num_storage_nodes = 3
+num_sequencer_nodes = 1
+node_distribution = "tag:worker"
+storage_distribution = "uniform"
+sequencer_distribution = "uniform"
+num_clients = 1
+type = "flink"
+build_command = "make"
+duration = 60
+
+[experiments.client_config]
+psl_enabled = false
+
+[experiments.sweeping_parameters]
 # num_nodes = [1, 2, 4, 8, 16]
+num_nodes = [1]
 
 [[results]]
 name = "flink_results_parse"
