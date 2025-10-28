@@ -33,9 +33,9 @@ max_audit_buffer_size = 10000000
 max_audit_delay_ms = 1000000000
 
 [node_config.worker_config]
-all_writes_max_batch_size = 1000
-self_writes_max_batch_size = 1000
-self_reads_max_batch_size = 1000
+all_writes_max_batch_size = 5000
+self_writes_max_batch_size = 5000
+self_reads_max_batch_size = 5000
 batch_max_delay_ms = 1000
 signature_max_delay_ms = 20000
 signature_max_delay_blocks = 50

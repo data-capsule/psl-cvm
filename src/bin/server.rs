@@ -100,7 +100,7 @@ async fn run_sequencer(cfg: Config) -> NodeType {
 }
 
 
-async fn prepare_fifo_reader_writer(idx: usize, channel_depth: usize, client_request_tx: Sender<TxWithAckChanTag>) {
+async fn prepare_fifo_reader_writer(idx: usize, channel_depth: usize, batch_size: usize, client_request_tx: Sender<TxWithAckChanTag>) {
     let (reply_tx, mut reply_rx) = tokio::sync::mpsc::channel(channel_depth);
 
     let __dummy_tx = reply_tx.clone();
@@ -168,7 +168,6 @@ async fn prepare_fifo_reader_writer(idx: usize, channel_depth: usize, client_req
         let mut line = Vec::new();
         let mut client_tag = 0;
         let mut ops = Vec::new();
-        let _batch_size = 1_000;
         while let Ok(n) = reader.read_until(b'\n', &mut line).await {
             if n == 0 {
                 continue;
@@ -247,7 +246,7 @@ async fn prepare_fifo_reader_writer(idx: usize, channel_depth: usize, client_req
 
             line.clear();
 
-            if ops.len() >= _batch_size {
+            if ops.len() >= batch_size {
                 let request = ProtoTransaction {
                     on_receive: Some(ProtoTransactionPhase {
                         ops: ops.clone(),
@@ -284,7 +283,7 @@ async fn run_worker(cfg: PSLWorkerConfig) -> NodeType {
 
     make_all_fifo_files(4).await;
     for i in 1..=4 {
-        prepare_fifo_reader_writer(i, cfg.rpc_config.channel_depth as usize, client_request_tx.clone()).await;
+        prepare_fifo_reader_writer(i, cfg.rpc_config.channel_depth as usize, cfg.worker_config.self_writes_max_batch_size, client_request_tx.clone()).await;
     }
     
     
