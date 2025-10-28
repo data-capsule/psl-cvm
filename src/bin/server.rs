@@ -167,6 +167,8 @@ async fn prepare_fifo_reader_writer(idx: usize, channel_depth: usize, client_req
         let mut reader = BufReader::new(file);
         let mut line = Vec::new();
         let mut client_tag = 0;
+        let mut ops = Vec::new();
+        let _batch_size = 1_000;
         while let Ok(n) = reader.read_until(b'\n', &mut line).await {
             if n == 0 {
                 continue;
@@ -186,22 +188,26 @@ async fn prepare_fifo_reader_writer(idx: usize, channel_depth: usize, client_req
                         continue;
                     }
                     let key = request[1];
-                    let request = ProtoTransaction {
-                        on_receive: Some(ProtoTransactionPhase {
-                            ops: vec![ProtoTransactionOp {
-                                op_type: ProtoTransactionOpType::Read as i32,
-                                operands: vec![key.as_bytes().to_vec()],
-                            }],
-                        }),
-                        on_byzantine_commit: None,
-                        on_crash_commit: None,
-                        is_2pc: false,
-                        is_reconfiguration: false,
-                    };
+                    // let request = ProtoTransaction {
+                    //     on_receive: Some(ProtoTransactionPhase {
+                    //         ops: vec![ProtoTransactionOp {
+                    //             op_type: ProtoTransactionOpType::Read as i32,
+                    //             operands: vec![key.as_bytes().to_vec()],
+                    //         }],
+                    //     }),
+                    //     on_byzantine_commit: None,
+                    //     on_crash_commit: None,
+                    //     is_2pc: false,
+                    //     is_reconfiguration: false,
+                    // };
+                    ops.push(ProtoTransactionOp {
+                        op_type: ProtoTransactionOpType::Read as i32,
+                        operands: vec![key.as_bytes().to_vec()],
+                    });
 
 
-                    let tx_with_ack_chan_tag: TxWithAckChanTag = (Some(request), (reply_tx.clone(), client_tag, SenderType::Auth("client1".to_string(), 100 + idx as u64)));
-                    client_request_tx.send(tx_with_ack_chan_tag).await.unwrap();
+                    // let tx_with_ack_chan_tag: TxWithAckChanTag = (Some(request), (reply_tx.clone(), client_tag, SenderType::Auth("client1".to_string(), 100 + idx as u64)));
+                    // client_request_tx.send(tx_with_ack_chan_tag).await.unwrap();
                 }
                 "W" => {
                     if request.len() < 3 {
@@ -210,21 +216,25 @@ async fn prepare_fifo_reader_writer(idx: usize, channel_depth: usize, client_req
                     }
                     let key = request[1];
                     let value = request[2];
-                    let request = ProtoTransaction {
-                        on_receive: Some(ProtoTransactionPhase {
-                            ops: vec![ProtoTransactionOp {
-                                op_type: ProtoTransactionOpType::Write as i32,
-                                operands: vec![key.as_bytes().to_vec(), value.as_bytes().to_vec()],
-                            }],
-                        }),
-                        on_byzantine_commit: None,
-                        on_crash_commit: None,
-                        is_2pc: false,
-                        is_reconfiguration: false,
-                    };
+                    // let request = ProtoTransaction {
+                    //     on_receive: Some(ProtoTransactionPhase {
+                    //         ops: vec![ProtoTransactionOp {
+                    //             op_type: ProtoTransactionOpType::Write as i32,
+                    //             operands: vec![key.as_bytes().to_vec(), value.as_bytes().to_vec()],
+                    //         }],
+                    //     }),
+                    //     on_byzantine_commit: None,
+                    //     on_crash_commit: None,
+                    //     is_2pc: false,
+                    //     is_reconfiguration: false,
+                    // };
+                    ops.push(ProtoTransactionOp {
+                        op_type: ProtoTransactionOpType::Write as i32,
+                        operands: vec![key.as_bytes().to_vec(), value.as_bytes().to_vec()],
+                    });
 
-                    let tx_with_ack_chan_tag: TxWithAckChanTag = (Some(request), (reply_tx.clone(), client_tag, SenderType::Auth("client1".to_string(), 100 + idx as u64)));
-                    client_request_tx.send(tx_with_ack_chan_tag).await.unwrap();
+                    // let tx_with_ack_chan_tag: TxWithAckChanTag = (Some(request), (reply_tx.clone(), client_tag, SenderType::Auth("client1".to_string(), 100 + idx as u64)));
+                    // client_request_tx.send(tx_with_ack_chan_tag).await.unwrap();
                 },
                 // "E" => {
                 //     eof_tx.send(()).unwrap();
@@ -236,6 +246,23 @@ async fn prepare_fifo_reader_writer(idx: usize, channel_depth: usize, client_req
             }
 
             line.clear();
+
+            if ops.len() >= _batch_size {
+                let request = ProtoTransaction {
+                    on_receive: Some(ProtoTransactionPhase {
+                        ops: ops.clone(),
+                    }),
+                    on_byzantine_commit: None,
+                    on_crash_commit: None,
+                    is_2pc: false,
+                    is_reconfiguration: false,
+                };
+
+                let tx_with_ack_chan_tag: TxWithAckChanTag = (Some(request), (reply_tx.clone(), client_tag, SenderType::Auth("client1".to_string(), 100 + idx as u64)));
+                client_request_tx.send(tx_with_ack_chan_tag).await.unwrap();
+                ops.clear();
+            }
+
         }
 
         panic!("Drop!");

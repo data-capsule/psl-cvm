@@ -16,7 +16,7 @@ client_max_retry = 10
 
 [node_config.rpc_config]
 recv_buffer_size = 32768
-channel_depth = 1000
+channel_depth = 100_000
 
 [node_config.consensus_config]
 commit_index_gap_soft = 250
@@ -34,8 +34,8 @@ max_audit_delay_ms = 1000000000
 
 [node_config.worker_config]
 all_writes_max_batch_size = 10000
-self_writes_max_batch_size = 16
-self_reads_max_batch_size = 16
+self_writes_max_batch_size = 10000
+self_reads_max_batch_size = 10000
 batch_max_delay_ms = 1000
 signature_max_delay_ms = 20000
 signature_max_delay_blocks = 50
