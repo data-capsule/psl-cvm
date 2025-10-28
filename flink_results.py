@@ -100,7 +100,7 @@ def plot_flink_compare(flink_map, flink_no_psl_map, output=None, width=30, heigh
     plt.show()
 
 if __name__ == "__main__":
-    flink_map, flink_no_psl_map = collect_flink_runtimes("flink-psl-results")
+    flink_map, flink_no_psl_map = collect_flink_runtimes("deployment_artifacts/2025-10-26T16:39:18.792631+00:00")
     print(flink_map)
     print(flink_no_psl_map)
     plot_flink_compare(flink_map, flink_no_psl_map, output="flink_experiment.pdf")

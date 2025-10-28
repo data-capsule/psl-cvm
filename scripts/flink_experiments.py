@@ -661,6 +661,7 @@ class FlinkExperiment(Experiment):
             
             for vm, bin_list in self.binary_mapping.items():            
                 # Boot up the nodes first
+                ssh_command_prefix = f"$SSH_CMD {self.dev_ssh_user}@{vm.public_ip} '"
                 for bin in bin_list:
                     if "flink_leader" in bin:
                         cmd_block = [
