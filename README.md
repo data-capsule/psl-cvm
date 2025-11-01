@@ -1,40 +1,24 @@
-# PirateShip
+# HarborMaster
 
-This is a prototype implementation of the PirateShip consensus protocol for VM-based TEEs (eg, AMD SEV-SNP and Intel TDX).
+This codebase implements the HarborMaster rollback detection protocol for confidential VMs.
+The code is forked from PirateShip, a consensus protocol, but only for the performant data plane.
+Hence, you will see certain consensus protocols implemented here (`src/consensus`), but those aren't part of HarborMaster.
+The code may refer to the protocol as `PSL`, which is the older name for HarborMaster.
 
-> WARNING: Code is still under development and is not audited. DO NOT use it in production.
-
-## Supported protocols
-
-We use Rust features to use the same codebase to implement multiple protocols for benchmarking.
-Protocols currently available are:
-
-- PirateShip
-- Raft (also called `lucky_raft`)
-- Signed Raft
-- PBFT (Linearized version)
-- Jolteon
-- Hotstuff
-- Engraft
-
-All protocols except PirateShip only have their steady-states implemented without leader election/view change.
+Clone this with `--recurse-submodules` to include our baseline, Nimble.
 
 ## Building
 
-PirateShip uses Rust. So `cargo build` should suffice.
-For convenience, we have provided a `Makefile` with multiple targets for different protocols and PirateShip with different features/apps.
-
-See `Makefile` for more details.
+Requires `protoc`, `clang`, and Rust installed in your system.
+Simply run `make` to build.
 
 
 ## Deployment
 
-See `scripts` for instructions on how to deploy and run PirateShip experiments.
-The `deployment` directory is tailor-made for deploying VMs in Azure using Terraform.
-However, porting to another cloud is possible: subclass the `Deployment` class in `scripts` to use your own deployment scripts.
+See `scripts` for instructions on how to deploy and run HarborMaster experiments. This requires an AWS subscription currently.
+Although Azure can be used as well.
 
-## Current Performance Results
+## Experiments
 
-**Setup**: 7 node LAN setup with 16 core SEV nodes with 64 GB RAM and 10 Gbps NIC capacity.
-
-![PirateShip Performance](perf.png)
+Run the experiments in `experiments/psl` to generate the graphs in the paper.
+For Flink Experiments, move to the `flink-dev` branch and run `experiments/flink_experiment.toml`.
