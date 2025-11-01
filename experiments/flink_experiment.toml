@@ -77,7 +77,7 @@ max_concurrent_requests = 16
 
 [[experiments]]
 name = "flink"
-repeats = 1
+repeats = 3
 num_storage_nodes = 3
 num_sequencer_nodes = 1
 node_distribution = "tag:worker"
@@ -93,11 +93,11 @@ psl_enabled = true
 
 [experiments.sweeping_parameters]
 num_nodes = [1, 2, 4, 8, 16]
-# num_nodes = [1,2]
+# num_nodes = [8,16]
 
 [[experiments]]
 name = "flink_no_psl"
-repeats = 1
+repeats = 3
 num_storage_nodes = 3
 num_sequencer_nodes = 1
 node_distribution = "tag:worker"
@@ -113,6 +113,7 @@ psl_enabled = false
 
 [experiments.sweeping_parameters]
 num_nodes = [1, 2, 4, 8, 16]
+# num_nodes = [8,16]
 
 [[results]]
 name = "flink_results_parse"

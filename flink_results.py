@@ -3,6 +3,7 @@ import matplotlib.pyplot as plt
 import re
 from pathlib import Path
 from collections import OrderedDict
+import statistics as stats  # <-- added
 
 RUNTIME_RGX = re.compile(r"Job Runtime:\s*([0-9]+)\s*ms")
 
@@ -21,10 +22,28 @@ def parse_runtime_ms(log_path: Path) -> int | None:
     except FileNotFoundError:
         return None
 
+# <-- added minimal helper to gather all runs under logs/*/flink.log
+def _parse_worker_runs(worker_dir: Path) -> list[int]:
+    """
+    For a worker dir (e.g., experiments/flink/3), collect all runtimes from logs/*/flink.log.
+    Returns a list of ms values (one per successful run).
+    """
+    runtimes = []
+    logs_dir = worker_dir / "logs"
+    if not logs_dir.is_dir():
+        return runtimes
+    for run_dir in sorted((p for p in logs_dir.iterdir() if p.is_dir() and p.name.isdigit()),
+                          key=lambda p: int(p.name)):
+        log_path = run_dir / "flink.log"
+        ms = parse_runtime_ms(log_path)
+        if ms is not None:
+            runtimes.append(ms)
+    return runtimes
+
 def collect_flink_runtimes(top_level_dir: str):
     """
-    Walk experiments/{flink,flink_no_psl}/{0,1,2,...}/logs/0/flink.log
-    Build two dicts: {workers -> runtime_ms}.
+    Walk experiments/{flink,flink_no_psl}/{0,1,2,...}/logs/*/flink.log
+    Build two dicts: {workers -> mean_runtime_ms}.
     workers = 2**i for directory name i.
     """
     top = Path(top_level_dir).expanduser().resolve()
@@ -41,14 +60,12 @@ def collect_flink_runtimes(top_level_dir: str):
                         key=lambda p: int(p.name)):
             idx = int(d.name)
             workers = 2 ** idx
-            log_path = d / "logs" / "0" / "flink.log"
-            ms = parse_runtime_ms(log_path)
-            if ms is not None:
-                result[suite][workers] = ms
-            else:
-                # If desired, try a fallback or just skip
-                # e.g., parse from flink.err or another repeat
-                pass
+
+            # NEW: average across all runs found in logs/*/flink.log
+            runs_ms = _parse_worker_runs(d)
+            if runs_ms:
+                mean_ms = stats.fmean(runs_ms)
+                result[suite][workers] = mean_ms
 
         # Make it ordered by workers for nice printing
         result[suite] = OrderedDict(sorted(result[suite].items()))
@@ -94,13 +111,13 @@ def plot_flink_compare(flink_map, flink_no_psl_map, output=None, width=30, heigh
         plt.legend(loc='upper center', bbox_to_anchor=(0.5, 1.25), ncol=2, fontsize=70)
         # plt.yscale('log')
         plt.xticks(x, [str(int(x)) for x in x])
-        plt.yticks([100, 200, 400, 600, 800, 900])
+        plt.yticks([0, 100, 200, 300, 400])
     plt.grid()
     plt.savefig("flink_experiment.pdf", bbox_inches="tight")
     plt.show()
 
 if __name__ == "__main__":
-    flink_map, flink_no_psl_map = collect_flink_runtimes("deployment_artifacts/2025-10-26T16:39:18.792631+00:00")
+    flink_map, flink_no_psl_map = collect_flink_runtimes("deployment_artifacts/2025-10-28T21:28:00.451452+00:00")
     print(flink_map)
     print(flink_no_psl_map)
     plot_flink_compare(flink_map, flink_no_psl_map, output="flink_experiment.pdf")

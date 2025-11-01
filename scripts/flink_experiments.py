@@ -144,17 +144,17 @@ class FlinkExperiment(Experiment):
         env.java.opts.jobmanager: "-Djava.io.tmpdir=/home/psladmin/flink-tmp/tmp"
 
         state.backend.local-recovery: true
-        execution.checkpointing.interval: 1min
+        # execution.checkpointing.interval: 1min
         # execution.checkpointing.externalized-checkpoint-retention: [DELETE_ON_CANCELLATION, RETAIN_ON_CANCELLATION]
-        execution.checkpointing.max-concurrent-checkpoints: 1
+        # execution.checkpointing.max-concurrent-checkpoints: 1
         # execution.checkpointing.min-pause: 0
         # execution.checkpointing.mode: [EXACTLY_ONCE, AT_LEAST_ONCE]
-        execution.checkpointing.timeout: 10min
+        # execution.checkpointing.timeout: 10min
         # execution.checkpointing.tolerable-failed-checkpoints: 0
-        execution.checkpointing.unaligned: false
+        # execution.checkpointing.unaligned: false
 
         state.backend: rocksdb
-        state.checkpoints.dir: hdfs://{nn_host}:{NN_RPC_PORT}/flink/checkpoints
+        # state.checkpoints.dir: hdfs://{nn_host}:{NN_RPC_PORT}/flink/checkpoints
         psl.ssl.cert: /home/psladmin/{config_dir}/Pft_root_cert.pem
         psl.ed25519.private-key: /home/psladmin/{config_dir}/client1_signing_privkey.pem
         psl.node.host: {"localhost" if psl_enabled else ""}
